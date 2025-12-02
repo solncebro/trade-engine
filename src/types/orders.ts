@@ -4,6 +4,8 @@ import {
   ExchangeResponseData,
 } from './exchange';
 
+import { ExchangeConnector } from '../services/exchangeConnector';
+
 export enum TimeInForce {
   GTC = 'GTC',
   IOC = 'IOC',
@@ -32,27 +34,27 @@ export interface OrderParams {
   params?: Record<string, unknown>;
 }
 
-export interface EntiryWithOrderId {
+export interface EntityWithOrderId {
   orderId?: string;
 }
 
-export interface EntiryWithErrorText {
+export interface EntityWithErrorText {
   errorText?: string;
 }
 
-export interface OrderAttributes extends EntiryWithErrorText {
+export interface OrderAttributes extends EntityWithErrorText {
   orderParams: OrderParams;
   exchangeName: ExchangeName;
 }
 
-export interface OrderResult extends OrderAttributes, EntiryWithOrderId {
+export interface OrderResult extends OrderAttributes, EntityWithOrderId {
   actualExchangeParams?: ExchangeOrderParams;
   responseData?: ExchangeResponseData;
 }
 
 export interface CloseOrderResult
-  extends EntiryWithErrorText,
-    EntiryWithOrderId {
+  extends EntityWithErrorText,
+    EntityWithOrderId {
   price?: number;
 }
 
@@ -86,3 +88,15 @@ export interface SymbolMappingResult {
 }
 
 export type SymbolMappingByExchange = Map<ExchangeName, Map<string, string>>;
+
+export interface CreateOrderArgs {
+  exchangeConnector: ExchangeConnector;
+  orderParams: OrderParams;
+}
+
+export interface CreateCloseOrderArgs {
+  exchangeConnector: ExchangeConnector;
+  orderParams: OrderParams;
+  priceShiftPercent: number;
+  isTakeProfit: boolean;
+}

@@ -1,5 +1,4 @@
-import { EntiryWithOrderId } from '../types';
+import { EntityWithOrderId } from '../types';
 
-export const isOrderSuccessful = (result: EntiryWithOrderId): boolean =>
+export const isOrderSuccessful = (result: EntityWithOrderId): boolean =>
   !!result.orderId;
-
