@@ -1,0 +1,71 @@
+{
+  "name": "@solncebro/trade-engine",
+  "version": "1.0.0",
+  "description": "Universal trading engine library for cryptocurrency exchanges with Telegram integration and Firebase support",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "scripts": {
+    "build": "rm -rf dist && npm test && tsc -p tsconfig.json",
+    "test": "jest",
+    "test:watch": "jest --watch",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "prepublishOnly": "npm run build",
+    "deploy": "npm run build && rsync --archive --compress --delete .env dist package.json node_modules root@84.252.74.98:/var/www/trade-engine/"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "keywords": [
+    "websocket",
+    "trading",
+    "binance",
+    "bybit",
+    "ccxt",
+    "futures"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "@logtail/pino": "^0.4.0",
+    "ccxt": "^4.5.1",
+    "dayjs": "^1.11.18",
+    "dotenv": "^16.4.5",
+    "firebase-admin": "^12.0.0",
+    "pino": "^9.6.0",
+    "telegraf": "^4.16.3",
+    "telegram": "^2.26.22",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.34.0",
+    "@types/eslint__js": "^8.42.3",
+    "@types/jest": "^30.0.0",
+    "@types/node": "^22.10.1",
+    "@types/ws": "^8.5.13",
+    "@typescript-eslint/eslint-plugin": "^8.41.0",
+    "@typescript-eslint/parser": "^8.41.0",
+    "eslint": "^9.34.0",
+    "eslint-config-prettier": "^10.1.8",
+    "eslint-import-resolver-typescript": "^4.4.4",
+    "eslint-plugin-import": "^2.32.0",
+    "jest": "^30.0.5",
+    "pino-pretty": "^10.3.1",
+    "prettier": "^3.6.2",
+    "ts-jest": "^29.4.1",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.7.2",
+    "typescript-eslint": "^8.41.0"
+  }
+}
