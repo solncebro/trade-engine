@@ -6,8 +6,8 @@ import { logger } from '../core/logger';
 export interface FirebaseServiceArgs<T> {
   documentPath: string;
   defaultData: T;
-  onNotify?: (message: string) => void | Promise<void>;
-  onError?: (message: string, error: unknown) => void | Promise<void>;
+  onNotify: (message: string) => void | Promise<void>;
+  onError: (message: string, error: unknown) => void | Promise<void>;
 }
 
 export class FirebaseService<T> extends EventEmitter {
@@ -16,8 +16,8 @@ export class FirebaseService<T> extends EventEmitter {
   private settingsListener: (() => void) | null = null;
   private currentData: T;
   private defaultData: T;
-  private onNotify?: (message: string) => void | Promise<void>;
-  private onError?: (message: string, error: unknown) => void | Promise<void>;
+  protected onNotify: (message: string) => void | Promise<void>;
+  protected onError: (message: string, error: unknown) => void | Promise<void>;
 
   constructor(args: FirebaseServiceArgs<T>) {
     super();
@@ -114,15 +114,11 @@ export class FirebaseService<T> extends EventEmitter {
   }
 
   private async notify(message: string): Promise<void> {
-    if (this.onNotify) {
-      await this.onNotify(message);
-    }
+    await this.onNotify(message);
   }
 
   private async notifyError(message: string, error: unknown): Promise<void> {
-    if (this.onError) {
-      await this.onError(message, error);
-    }
+    await this.onError(message, error);
   }
 
   public async disconnect(): Promise<void> {
