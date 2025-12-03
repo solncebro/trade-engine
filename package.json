@@ -20,8 +20,7 @@
     "lint:fix": "eslint . --fix",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
-    "prepublishOnly": "npm run build",
-    "deploy": "npm run build && rsync --archive --compress --delete .env dist package.json node_modules root@84.252.74.98:/var/www/trade-engine/"
+    "prepublishOnly": "npm run build"
   },
   "files": [
     "dist",
