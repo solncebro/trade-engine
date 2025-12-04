@@ -5,4 +5,3 @@ export * from './firebase';
 export * from './orders';
 export * from './telegram';
 export * from './telegramCommandHandler';
-export * from './websocket';

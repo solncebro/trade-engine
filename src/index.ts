@@ -3,7 +3,6 @@ export { ExchangeConnector } from './services/exchangeConnector';
 export { FirebaseService } from './services/firebaseService';
 export { TelegramCommandHandler } from './services/telegramCommandHandler';
 export { TelegramMessageListener } from './services/telegramMessageListener';
-export { TelegramMessageParser } from './services/telegramMessageParser';
 export { TelegramNotifier } from './services/telegramNotifier';
 
 export { ConfigManager } from './core/config';

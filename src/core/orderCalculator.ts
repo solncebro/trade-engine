@@ -8,7 +8,6 @@ import {
   OrderDirection,
   OrderParams,
   OrderType,
-  ParsedSignal,
   SymbolMappingByExchange,
 } from '../types';
 
@@ -97,12 +96,12 @@ export class OrderCalculator {
   }
 
   public static resolveSymbolsForExchanges(
-    parsedSignal: ParsedSignal,
+    symbolList: string[],
     exchangeConnectorByName: ExchangeConnectorByName
   ): SymbolMappingByExchange {
     const symbolMappingByExchange: SymbolMappingByExchange = new Map();
 
-    for (const symbol of parsedSignal.remainingSymbolList) {
+    for (const symbol of symbolList) {
       for (const [exchangeName, exchangeConnector] of exchangeConnectorByName) {
         const resolvedSymbol =
           exchangeConnector.resolveSymbolWithPrefix(symbol);
