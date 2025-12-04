@@ -3,6 +3,11 @@ import { EventEmitter } from 'events';
 import admin from 'firebase-admin';
 
 import { logger } from '../core/logger';
+import {
+  FirebaseStrategySettingsValues,
+  SettingChange,
+} from '../types/firebase';
+
 export interface FirebaseServiceArgs<T> {
   documentPath: string;
   defaultData: T;
@@ -119,6 +124,119 @@ export class FirebaseService<T> extends EventEmitter {
 
   private async notifyError(message: string, error: unknown): Promise<void> {
     await this.onError(message, error);
+  }
+
+  protected getChangedSettings(
+    current: T,
+    previous: T
+  ): SettingChange<T[keyof T], keyof T>[] {
+    const resultList: SettingChange<T[keyof T], keyof T>[] = [];
+
+    for (const key in current) {
+      if (!Object.prototype.hasOwnProperty.call(current, key)) {
+        continue;
+      }
+
+      const currentValue = current[key];
+      const previousValue = previous[key];
+
+      const isChanged =
+        Array.isArray(currentValue) && Array.isArray(previousValue)
+          ? JSON.stringify(currentValue) !== JSON.stringify(previousValue)
+          : currentValue !== previousValue;
+
+      resultList.push({
+        key,
+        current: currentValue,
+        previous: previousValue,
+        isChanged,
+      });
+    }
+
+    return resultList;
+  }
+
+  protected getAddedAndRemovedItemsMessage<Item>(
+    current: Item[],
+    previous: Item[]
+  ): string {
+    const setCurrent = new Set(current);
+    const setPrevious = new Set(previous);
+
+    const currentDifference = current.filter(item => !setPrevious.has(item));
+    const previousDifference = previous.filter(item => !setCurrent.has(item));
+
+    const addedItems =
+      currentDifference.length > 0
+        ? `Added: ${currentDifference.join(', ')}`
+        : '';
+    const removedItems =
+      previousDifference.length > 0
+        ? `Removed: ${previousDifference.join(', ')}`
+        : '';
+
+    return `${addedItems}${addedItems && removedItems ? '; ' : ''}${removedItems}`;
+  }
+
+  protected formatSettingMessage<
+    V extends FirebaseStrategySettingsValues,
+    K = PropertyKey
+  >(
+    setting: SettingChange<V, K>,
+    booleanConfigMap?: Record<
+      string,
+      { label: string; emojiOn: string; emojiOff: string }
+    >,
+    numericConfigMap?: Record<string, { label: string; suffix: string }>,
+    arrayConfigMap?: Record<string, { label: string }>
+  ): string {
+    const { key, current, previous, isChanged } = setting;
+
+    if (typeof current === 'boolean' && typeof previous === 'boolean') {
+      const config = booleanConfigMap?.[key as string];
+
+      let emoji: string;
+
+      if (config) {
+        emoji = current ? config.emojiOn : config.emojiOff;
+      } else {
+        emoji = current ? '✅' : '❌';
+      }
+
+      const label = config?.label ?? (key as string);
+      const currentText = current ? 'YES' : 'NO';
+
+      let previousText: string | null = null;
+
+      if (isChanged) {
+        previousText = previous ? 'YES' : 'NO';
+      }
+
+      const changeText = previousText ? ` (was: ${previousText})` : '';
+
+      return `${label}: ${emoji} *${currentText}*${changeText}`;
+    }
+
+    if (typeof current === 'number' && typeof previous === 'number') {
+      const config = numericConfigMap?.[key as string];
+      const suffix = config?.suffix ?? '';
+      const label = config?.label ?? (key as string);
+      const changeText = isChanged ? ` (was: ${previous}${suffix})` : '';
+
+      return `${label}: *${current}${suffix}*${changeText}`;
+    }
+
+    if (Array.isArray(current) && Array.isArray(previous)) {
+      const config = arrayConfigMap?.[key as string];
+      const label = config?.label ?? (key as string);
+      const changeInfo = isChanged
+        ? ` (${this.getAddedAndRemovedItemsMessage(current, previous)})`
+        : '';
+
+      return `${label}: ${current.length > 0 ? current.join(', ') : 'EMPTY'}${changeInfo}`;
+    }
+
+    return `\n${String(key)}: ${current}${isChanged ? ` (was: ${previous})` : ''}`;
   }
 
   public async disconnect(): Promise<void> {

@@ -1,26 +1,18 @@
-export interface FirebaseStrategySettings {
-  isActiveModule: boolean;
-  orderVolumeUsdt: number;
-  excludedNotSymbolWordList: string[];
-  stopWordList: string[];
-  excludedSymbolList: string[];
-  takeProfitPercent: number;
-  stopBuyAfterPercent: number;
-  isUpbitOnly: boolean;
-  isOnlyOneSymbolAllowed: boolean;
-  leverage: number;
-}
-
-export type FirebaseStrategySettingsValues = string[] | number | boolean;
-
-export type SettingChange<T> = {
-  key: keyof FirebaseStrategySettings;
-  current: T;
-  previous: T;
-  isChanged: boolean;
-};
-
 export enum MarginType {
   ISOLATED = 'isolated',
   CROSS = 'cross',
 }
+
+export type FirebaseStrategySettingsValues = string[] | number | boolean;
+
+export interface SettingChange<V, K = PropertyKey> {
+  key: K;
+  current: V;
+  previous: V;
+  isChanged: boolean;
+}
+
+export type FirebaseSettingChange<
+  T extends Record<string, FirebaseStrategySettingsValues>,
+  K extends keyof T = keyof T
+> = SettingChange<T[K], K>;
