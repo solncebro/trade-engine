@@ -1,18 +1,23 @@
-export enum MarginType {
-  ISOLATED = 'isolated',
-  CROSS = 'cross',
-}
-
 export type FirebaseStrategySettingsValues = string[] | number | boolean;
 
-export interface SettingChange<V, K = PropertyKey> {
-  key: K;
+import {
+  BooleanSettingConfig,
+  NumericSettingConfig,
+  SettingConfigBase,
+} from './telegramCommandHandler';
+
+export interface SettingChange<V> {
+  key: string;
   current: V;
   previous: V;
   isChanged: boolean;
 }
 
-export type FirebaseSettingChange<
-  T extends Record<string, FirebaseStrategySettingsValues>,
-  K extends keyof T = keyof T
-> = SettingChange<T[K], K>;
+export interface FormatSettingMessageArgs<
+  V extends FirebaseStrategySettingsValues,
+> {
+  setting: SettingChange<V>;
+  booleanConfigList: BooleanSettingConfig[];
+  numericConfigList: NumericSettingConfig[];
+  arrayConfigList: SettingConfigBase[];
+}

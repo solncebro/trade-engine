@@ -31,6 +31,8 @@ export interface OrderParams {
   amount: number;
   price: number;
   type: OrderType;
+  triggerPrice?: number;
+  triggerDirection?: 1 | 2;
   params?: Record<string, unknown>;
 }
 
@@ -68,11 +70,13 @@ export interface OrderTimings {
   entryOrder: OrderTiming;
   takeProfitOrder?: OrderTiming;
   stopLossOrder?: OrderTiming;
+  emergencyExitOrder?: OrderTiming;
 }
 
 export interface SignalExecutionDetails extends OrderResult {
   takeProfitOrderResult?: CloseOrderResult;
   stopLossOrderResult?: CloseOrderResult;
+  emergencyExitOrderResult?: CloseOrderResult;
   timings?: OrderTimings;
 }
 
@@ -99,4 +103,5 @@ export interface CreateCloseOrderArgs {
   orderParams: OrderParams;
   priceShiftPercent: number;
   isTakeProfit: boolean;
+  isEmergencyExitPosition?: boolean;
 }

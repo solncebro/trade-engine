@@ -16,6 +16,7 @@ export interface SettingConfigBase<T = string> {
 }
 
 export interface NumericSettingConfig<T = string> extends SettingConfigBase<T> {
+  suffix: string;
   emoji: string;
 }
 

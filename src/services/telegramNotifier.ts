@@ -27,14 +27,18 @@ export class TelegramNotifier {
       try {
         await config.handler(context);
       } catch (error) {
-        await this.handleError(`Command ${config.command} failed`, context, error);
+        await this.handleError(
+          `Command ${config.command} failed`,
+          context,
+          error
+        );
       }
     });
   }
 
   public async start(): Promise<void> {
     await this.setupMenuButton();
-    this.bot.launch();
+    this.bot.launch({ dropPendingUpdates: true });
 
     logger.info({ chatId: this.chatId }, 'Telegram bot started');
   }
@@ -43,7 +47,11 @@ export class TelegramNotifier {
     return context.chat?.id.toString() === this.chatId;
   }
 
-  private async handleError(message: string, context: Context, error?: unknown): Promise<void> {
+  private async handleError(
+    message: string,
+    context: Context,
+    error?: unknown
+  ): Promise<void> {
     const replyMessage = `\u274c ${message}`;
 
     if (error) {
@@ -64,10 +72,14 @@ export class TelegramNotifier {
     await this.bot.telegram.setMyCommands(commandList);
   }
 
-  public async sendMessage(message: string): Promise<void> {
+  public async sendMessage(
+    message: string,
+    isSilent: boolean = false
+  ): Promise<void> {
     try {
       await this.bot.telegram.sendMessage(this.chatId, message, {
         parse_mode: 'Markdown',
+        disable_notification: isSilent,
       });
 
       logger.info(message);

@@ -1,10 +1,18 @@
+import { Position } from 'ccxt';
+
 import { ExtensibleRecord } from './common';
 import { OrderParams } from './orders';
 
+import { BybitResponseData } from '../services/bybitNativeTradeWebSocket';
 import { ExchangeConnector } from '../services/exchangeConnector';
 
 export type ExchangeName = 'binance' | 'bybit';
 export type ExchangeConnectorByName = Map<ExchangeName, ExchangeConnector>;
+
+export enum MarginType {
+  ISOLATED = 'isolated',
+  CROSS = 'cross',
+}
 
 export interface ExchangeOrderParams extends ExtensibleRecord {
   symbol: string;
@@ -61,6 +69,7 @@ export interface MarketInfo extends ExtensibleRecord {
 export interface BybitResponse {
   retCode?: number;
   retMsg?: string;
+  data?: BybitResponseData;
 }
 
 export interface ErrorResultBase {
@@ -82,4 +91,47 @@ export interface CreateBybitErrorResultArgs {
   response: BybitResponse;
   actualExchangeParams: ExchangeOrderParams;
   prefix?: string;
+}
+
+export interface PositionInfo {
+  symbol: string;
+  leverage: string;
+  autoAddMargin: string;
+  avgPrice: string;
+  liqPrice: string;
+  riskLimitValue: string;
+  takeProfit: string;
+  positionValue: string;
+  isReduceOnly: boolean;
+  positionIMByMp: string;
+  tpslMode: string;
+  riskId: string;
+  trailingStop: string;
+  liqPriceByMp: string;
+  unrealisedPnl: string;
+  markPrice: string;
+  adlRankIndicator: string;
+  cumRealisedPnl: string;
+  positionMM: string;
+  createdTime: string;
+  positionIdx: string;
+  positionIM: string;
+  positionMMByMp: string;
+  seq: string;
+  updatedTime: string;
+  side: string;
+  bustPrice: string;
+  positionBalance: string;
+  leverageSysUpdatedTime: string;
+  curRealisedPnl: string;
+  size: string;
+  positionStatus: string;
+  mmrSysUpdatedTime: string;
+  stopLoss: string;
+  tradeMode: string;
+  sessionAvgPrice: string;
+}
+
+export interface PositionWithTypedInfo<T> extends Position {
+  info: T;
 }

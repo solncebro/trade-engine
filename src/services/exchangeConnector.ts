@@ -20,6 +20,8 @@ import {
   OrderParams,
   OrderResult,
   OrderType,
+  PositionInfo,
+  PositionWithTypedInfo,
   TimeInForce,
 } from '../types';
 import { normalizeSymbol } from '../utils/symbol.utils';
@@ -334,7 +336,10 @@ export class ExchangeConnector extends EventEmitter {
   private createBybitErrorResult(
     args: CreateBybitErrorResultArgs
   ): OrderResult {
-    const errorText = `${args.prefix ? `${args.prefix}: ` : ''}${args.response.retCode ?? 'Unknown'}: ${args.response.retMsg ?? 'Unknown error'}`;
+    const dataErrorText = args.response.data?.errorText;
+    const errorText = dataErrorText
+      ? dataErrorText
+      : `${args.prefix ? `${args.prefix}: ` : ''}${args.response.retCode ?? 'Unknown'}: ${args.response.retMsg ?? 'Unknown error'}`;
 
     return {
       ...args.resultBase,
@@ -350,7 +355,16 @@ export class ExchangeConnector extends EventEmitter {
       throw new Error('Bybit native WebSocket not initialized');
     }
 
-    const { symbol, amount, side, type, price, params } = orderParams;
+    const {
+      symbol,
+      amount,
+      side,
+      type,
+      price,
+      triggerPrice,
+      triggerDirection,
+      params,
+    } = orderParams;
 
     const normalizedQty = this.exchange.amountToPrecision(symbol, amount);
 
@@ -373,8 +387,19 @@ export class ExchangeConnector extends EventEmitter {
       'Creating Bybit native order'
     );
 
-    if (type.toLowerCase() === OrderType.Limit.toLowerCase()) {
+    if (type === OrderType.Limit) {
       bybitOrderParams.price = this.exchange.priceToPrecision(symbol, price);
+    }
+
+    if (triggerPrice !== undefined) {
+      bybitOrderParams.triggerPrice = this.exchange.priceToPrecision(
+        symbol,
+        triggerPrice
+      );
+    }
+
+    if (triggerDirection !== undefined) {
+      bybitOrderParams.triggerDirection = triggerDirection;
     }
 
     if (params?.reduceOnly) {
@@ -390,7 +415,7 @@ export class ExchangeConnector extends EventEmitter {
       actualExchangeParams: bybitOrderParams,
     };
 
-    if (response.retCode === 0 && response.data) {
+    if (response.retCode === 0 && response.data && !response.data.errorText) {
       return {
         ...resultBase,
         orderId: response.data.orderId as string,
@@ -403,6 +428,23 @@ export class ExchangeConnector extends EventEmitter {
       response,
       actualExchangeParams: bybitOrderParams,
     });
+  }
+
+  public async fetchPosition(
+    symbol: string
+  ): Promise<PositionWithTypedInfo<PositionInfo> | null> {
+    try {
+      const position = await this.exchange.fetchPosition(symbol);
+
+      return position as PositionWithTypedInfo<PositionInfo>;
+    } catch (error) {
+      logger.error(
+        { error, symbol, exchange: this.exchangeName },
+        'Failed to fetch position'
+      );
+
+      return null;
+    }
   }
 
   public async setLeverage(symbol: string, leverage: number): Promise<boolean> {

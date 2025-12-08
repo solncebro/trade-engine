@@ -10,7 +10,12 @@ import {
   BYBIT_TRADING_WEBSOCKET_URL,
 } from '../constants/bybit';
 import { logger } from '../core/logger';
-import { ExchangeConfig, ExtensibleRecord } from '../types';
+import {
+  BybitResponse,
+  EntityWithErrorText,
+  ExchangeConfig,
+  ExtensibleRecord,
+} from '../types';
 
 const BYBIT_TRADING_WEBSOCKET_NAME = 'Bybit Trading WebSocket';
 
@@ -20,6 +25,8 @@ export interface BybitOrderParams extends ExtensibleRecord {
   orderType: 'Market' | 'Limit';
   qty: string;
   price?: string;
+  triggerPrice?: string;
+  triggerDirection?: 1 | 2;
   category: 'linear' | 'spot' | 'option' | 'inverse';
   timeInForce?: 'GTC' | 'IOC' | 'FOK' | 'PostOnly';
 }
@@ -36,14 +43,16 @@ export interface BybitOrderResult {
   updatedTime?: number;
 }
 
-export interface BybitWebSocketData extends ExtensibleRecord {
-  order?: BybitOrderResult;
+export interface BybitResponseData extends EntityWithErrorText {
+  orderId?: string;
 }
 
-export interface BybitWebSocketResponse {
+export interface BybitWebSocketData
+  extends ExtensibleRecord,
+    BybitResponseData {}
+
+export interface BybitWebSocketResponse extends BybitResponse {
   isSuccess?: boolean;
-  retMsg?: string;
-  retCode?: number;
   result?: BybitOrderResult;
   data?: BybitWebSocketData;
   op?: string;

@@ -6,6 +6,7 @@ import {
   CreateCloseOrderArgs,
   CreateOrderArgs,
   OrderResult,
+  OrderType,
 } from '../types';
 import { formatErrorMessage } from '../utils/errorFormatter.utils';
 import { isOrderSuccessful } from '../utils/order.utils';
@@ -44,15 +45,33 @@ export class OrderExecutor {
   protected async createCloseOrder(
     args: CreateCloseOrderArgs
   ): Promise<CloseOrderResult> {
-    const { exchangeConnector, orderParams, priceShiftPercent, isTakeProfit } =
-      args;
-    const closeOrderParams = OrderCalculator.calculateCloseOrder(
+    const {
+      exchangeConnector,
+      orderParams,
+      priceShiftPercent,
+      isTakeProfit,
+      isEmergencyExitPosition,
+    } = args;
+    let closeOrderParams = OrderCalculator.calculateCloseOrder(
       orderParams,
       priceShiftPercent,
       isTakeProfit
     );
 
-    const orderTypeText = isTakeProfit ? 'take profit' : 'stop loss';
+    if (isEmergencyExitPosition) {
+      closeOrderParams = {
+        ...closeOrderParams,
+        type: OrderType.Market,
+        params: { reduceOnly: true },
+        triggerPrice: undefined,
+        triggerDirection: undefined,
+      };
+    }
+
+    const regularOrderTypeText = isTakeProfit ? 'take profit' : 'stop loss';
+    const orderTypeText = isEmergencyExitPosition
+      ? 'emergency exit'
+      : regularOrderTypeText;
 
     logger.info(
       {
@@ -61,7 +80,7 @@ export class OrderExecutor {
         priceShiftPercent,
         isTakeProfit,
       },
-      `Creating ${orderTypeText} order`
+      `Creating ${orderTypeText} order...`
     );
 
     const result = await this.createOrder({
@@ -70,15 +89,12 @@ export class OrderExecutor {
     });
 
     if (isOrderSuccessful(result)) {
-      const capitalizedOrderTypeText =
-        orderTypeText.charAt(0).toUpperCase() + orderTypeText.slice(1);
-
       logger.info(
         {
           closeOrderId: result.orderId,
           isTakeProfit,
         },
-        `${capitalizedOrderTypeText} order created successfully`
+        `${orderTypeText} order created successfully`
       );
 
       return {

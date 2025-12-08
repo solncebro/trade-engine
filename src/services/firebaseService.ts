@@ -5,8 +5,10 @@ import admin from 'firebase-admin';
 import { logger } from '../core/logger';
 import {
   FirebaseStrategySettingsValues,
+  FormatSettingMessageArgs,
   SettingChange,
 } from '../types/firebase';
+import { SettingConfigBase } from '../types/telegramCommandHandler';
 
 export interface FirebaseServiceArgs<T> {
   documentPath: string;
@@ -126,11 +128,11 @@ export class FirebaseService<T> extends EventEmitter {
     await this.onError(message, error);
   }
 
-  protected getChangedSettings(
+  public getChangedSettings(
     current: T,
     previous: T
-  ): SettingChange<T[keyof T], keyof T>[] {
-    const resultList: SettingChange<T[keyof T], keyof T>[] = [];
+  ): SettingChange<T[keyof T]>[] {
+    const resultList: SettingChange<T[keyof T]>[] = [];
 
     for (const key in current) {
       if (!Object.prototype.hasOwnProperty.call(current, key)) {
@@ -178,27 +180,29 @@ export class FirebaseService<T> extends EventEmitter {
     return `${addedItems}${addedItems && removedItems ? '; ' : ''}${removedItems}`;
   }
 
-  protected formatSettingMessage<
-    V extends FirebaseStrategySettingsValues,
-    K = PropertyKey
-  >(
-    setting: SettingChange<V, K>,
-    booleanConfigMap?: Record<
-      string,
-      { label: string; emojiOn: string; emojiOff: string }
-    >,
-    numericConfigMap?: Record<string, { label: string; suffix: string }>,
-    arrayConfigMap?: Record<string, { label: string }>
+  private getConfigByKey<T extends SettingConfigBase>(
+    key: string,
+    configList: T[]
+  ): T | null {
+    const foundConfig = configList.find(configItem => configItem.key === key);
+
+    return foundConfig ?? null;
+  }
+
+  protected formatSettingMessage<V extends FirebaseStrategySettingsValues>(
+    args: FormatSettingMessageArgs<V>
   ): string {
+    const { setting, booleanConfigList, numericConfigList, arrayConfigList } =
+      args;
     const { key, current, previous, isChanged } = setting;
 
     if (typeof current === 'boolean' && typeof previous === 'boolean') {
-      const config = booleanConfigMap?.[key as string];
+      const config = this.getConfigByKey(key, booleanConfigList);
 
       let emoji: string;
 
       if (config) {
-        emoji = current ? config.emojiOn : config.emojiOff;
+        emoji = current ? config.enabledEmoji : config.disabledEmoji;
       } else {
         emoji = current ? '✅' : '❌';
       }
@@ -218,7 +222,7 @@ export class FirebaseService<T> extends EventEmitter {
     }
 
     if (typeof current === 'number' && typeof previous === 'number') {
-      const config = numericConfigMap?.[key as string];
+      const config = this.getConfigByKey(key, numericConfigList);
       const suffix = config?.suffix ?? '';
       const label = config?.label ?? (key as string);
       const changeText = isChanged ? ` (was: ${previous}${suffix})` : '';
@@ -227,7 +231,7 @@ export class FirebaseService<T> extends EventEmitter {
     }
 
     if (Array.isArray(current) && Array.isArray(previous)) {
-      const config = arrayConfigMap?.[key as string];
+      const config = this.getConfigByKey(key, arrayConfigList);
       const label = config?.label ?? (key as string);
       const changeInfo = isChanged
         ? ` (${this.getAddedAndRemovedItemsMessage(current, previous)})`
@@ -236,7 +240,7 @@ export class FirebaseService<T> extends EventEmitter {
       return `${label}: ${current.length > 0 ? current.join(', ') : 'EMPTY'}${changeInfo}`;
     }
 
-    return `\n${String(key)}: ${current}${isChanged ? ` (was: ${previous})` : ''}`;
+    return `\n${key}: ${current}${isChanged ? ` (was: ${previous})` : ''}`;
   }
 
   public async disconnect(): Promise<void> {

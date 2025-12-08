@@ -279,11 +279,13 @@ export class OrderCalculator {
   public static calculateCloseOrder(
     orderParams: OrderParams,
     priceShiftPercent: number,
-    isIncrease: boolean
+    isTakeProfit: boolean
   ): OrderParams {
+    const isIncrease = priceShiftPercent > 0;
+
     const shiftedPrice = OrderCalculator.addPercent(
       orderParams.price,
-      priceShiftPercent,
+      Math.abs(priceShiftPercent),
       isIncrease
     );
     const oppositeSide =
@@ -291,7 +293,7 @@ export class OrderCalculator {
         ? OrderDirection.Sell
         : OrderDirection.Buy;
 
-    return {
+    const baseCloseOrderParams: OrderParams = {
       symbol: orderParams.symbol,
       side: oppositeSide,
       amount: orderParams.amount,
@@ -299,5 +301,13 @@ export class OrderCalculator {
       type: OrderType.Limit,
       params: { reduceOnly: true },
     };
+
+    if (!isTakeProfit) {
+      baseCloseOrderParams.triggerPrice = shiftedPrice;
+      baseCloseOrderParams.triggerDirection =
+        orderParams.side === OrderDirection.Buy ? 2 : 1;
+    }
+
+    return baseCloseOrderParams;
   }
 }
