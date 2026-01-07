@@ -473,7 +473,7 @@ export class ExchangeConnector extends EventEmitter {
   public async getFuturesSymbols(): Promise<string[]> {
     try {
       if (Object.keys(this.exchange.markets).length === 0) {
-        await this.exchange.loadMarkets();
+        await this.exchange.loadMarkets(true);
       }
 
       const marketList = Object.values(this.exchange.markets) as MarketInfo[];

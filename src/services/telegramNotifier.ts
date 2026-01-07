@@ -74,13 +74,14 @@ export class TelegramNotifier {
 
   public async sendMessage(
     message: string,
-    isSilent: boolean = false
+    isLogOnly: boolean = false
   ): Promise<void> {
     try {
-      await this.bot.telegram.sendMessage(this.chatId, message, {
-        parse_mode: 'Markdown',
-        disable_notification: isSilent,
-      });
+      if (!isLogOnly) {
+        await this.bot.telegram.sendMessage(this.chatId, message, {
+          parse_mode: 'Markdown',
+        });
+      }
 
       logger.info(message);
     } catch (error) {

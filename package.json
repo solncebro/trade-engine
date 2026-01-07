@@ -38,7 +38,7 @@
   "license": "MIT",
   "dependencies": {
     "@logtail/pino": "^0.4.0",
-    "ccxt": "^4.5.1",
+    "ccxt": "^4.5.24",
     "dayjs": "^1.11.18",
     "dotenv": "^16.4.5",
     "firebase-admin": "^12.0.0",
