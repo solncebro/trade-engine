@@ -17,6 +17,7 @@ import {
   ExchangeErrorInfo,
   ExchangeName,
   MarketInfo,
+  MarketType,
   OrderParams,
   OrderResult,
   OrderType,
@@ -24,11 +25,14 @@ import {
   PositionWithTypedInfo,
   TimeInForce,
 } from '../types';
+import { isSpot } from '../utils/order.utils';
 import { normalizeSymbol } from '../utils/symbol.utils';
 
 export class ExchangeConnector extends EventEmitter {
   private exchange: Exchange;
+  private spotExchange: Exchange | null = null;
   private exchangeName: ExchangeName;
+  private config: ExchangeConfig;
   private tickerDataMap: Map<string, Ticker> = new Map();
   private isWatchingTickers: boolean = false;
   private tickerUpdateIntervalId: NodeJS.Timeout | null = null;
@@ -41,6 +45,7 @@ export class ExchangeConnector extends EventEmitter {
   ) {
     super();
     this.exchangeName = exchangeName;
+    this.config = config;
 
     const ExchangeClass = this.getExchangeClass(exchangeName);
 
@@ -66,6 +71,30 @@ export class ExchangeConnector extends EventEmitter {
         telegramNotifier
       );
     }
+  }
+
+  private getSpotExchange(): Exchange {
+    if (!this.spotExchange) {
+      const ExchangeClass = this.getExchangeClass(this.exchangeName);
+
+      const spotOptions: Record<string, unknown> = {
+        defaultType: 'spot',
+      };
+
+      if (this.exchangeName === 'bybit') {
+        spotOptions.recvWindow = BYBIT_RECV_WINDOW;
+      }
+
+      this.spotExchange = new ExchangeClass({
+        apiKey: this.config.apiKey,
+        secret: this.config.secret,
+        sandbox: false,
+        testnet: false,
+        options: spotOptions,
+      });
+    }
+
+    return this.spotExchange;
   }
 
   private getExchangeClass(exchangeName: ExchangeName): typeof Exchange {
@@ -159,16 +188,26 @@ export class ExchangeConnector extends EventEmitter {
     }
   }
 
-  private processTickerList(tickers: Tickers): void {
+  private processTickerList(
+    tickers: Tickers,
+    marketType: MarketType = MarketType.Futures
+  ): void {
     const tickerEntries = Object.entries(tickers);
 
     tickerEntries.forEach(([symbol, ticker]) => {
       const normalizedSymbol = normalizeSymbol(symbol);
+      const tickerKey = this.getTickerKey(normalizedSymbol, marketType);
 
       if (ticker.close !== undefined) {
-        this.tickerDataMap.set(normalizedSymbol, ticker);
+        this.tickerDataMap.set(tickerKey, ticker);
       }
     });
+  }
+
+  private getTickerKey(symbol: string, marketType?: MarketType): string {
+    const type = marketType ?? MarketType.Futures;
+
+    return `${type}:${symbol}`;
   }
 
   private async startBinanceTickerUpdates(): Promise<void> {
@@ -180,8 +219,15 @@ export class ExchangeConnector extends EventEmitter {
 
     while (this.isWatchingTickers) {
       try {
-        const tickerList = await this.exchange.watchTickers();
-        this.processTickerList(tickerList);
+        const spotExchange = this.getSpotExchange();
+
+        const [futuresTickerList, spotTickerList] = await Promise.all([
+          this.exchange.watchTickers(),
+          spotExchange.watchTickers(),
+        ]);
+
+        this.processTickerList(futuresTickerList, MarketType.Futures);
+        this.processTickerList(spotTickerList, MarketType.Spot);
       } catch (error) {
         logger.error(
           { error, exchange: this.exchangeName },
@@ -204,8 +250,13 @@ export class ExchangeConnector extends EventEmitter {
       }
 
       try {
-        const tickers = await this.exchange.fetchTickers();
-        this.processTickerList(tickers);
+        const futuresTickers = await this.exchange.fetchTickers();
+        this.processTickerList(futuresTickers, MarketType.Futures);
+
+        const spotExchange = this.getSpotExchange();
+        await spotExchange.loadMarkets();
+        const spotTickers = await spotExchange.fetchTickers();
+        this.processTickerList(spotTickers, MarketType.Spot);
       } catch (error) {
         logger.warn(
           { error, exchange: this.exchangeName },
@@ -230,20 +281,31 @@ export class ExchangeConnector extends EventEmitter {
 
   private readonly SYMBOL_PREFIX_LIST = [10, 100, 1000, 10000, 100000, 1000000];
 
-  public resolveSymbolWithPrefix(symbol: string): string {
-    if (this.tickerDataMap.has(symbol)) {
+  public resolveSymbolWithPrefix(
+    symbol: string,
+    marketType?: MarketType
+  ): string {
+    const defaultMarketType = marketType ?? MarketType.Futures;
+    const tickerKey = this.getTickerKey(symbol, defaultMarketType);
+
+    if (this.tickerDataMap.has(tickerKey)) {
       return symbol;
     }
 
     for (const prefix of this.SYMBOL_PREFIX_LIST) {
       const prefixedSymbol = `${prefix}${symbol}`;
+      const prefixedTickerKey = this.getTickerKey(
+        prefixedSymbol,
+        defaultMarketType
+      );
 
-      if (this.tickerDataMap.has(prefixedSymbol)) {
+      if (this.tickerDataMap.has(prefixedTickerKey)) {
         logger.info(
           {
             originalSymbol: symbol,
             resolvedSymbol: prefixedSymbol,
             exchange: this.exchangeName,
+            marketType: defaultMarketType,
           },
           'Symbol resolved with prefix'
         );
@@ -256,6 +318,7 @@ export class ExchangeConnector extends EventEmitter {
       {
         symbol,
         exchange: this.exchangeName,
+        marketType: defaultMarketType,
         testedPrefixes: this.SYMBOL_PREFIX_LIST,
       },
       'Symbol not found with any prefix'
@@ -264,8 +327,13 @@ export class ExchangeConnector extends EventEmitter {
     return symbol;
   }
 
-  public getTicker(symbol: string): Ticker | undefined {
-    return this.tickerDataMap.get(symbol);
+  public getTicker(
+    symbol: string,
+    marketType?: MarketType
+  ): Ticker | undefined {
+    const tickerKey = this.getTickerKey(symbol, marketType);
+
+    return this.tickerDataMap.get(tickerKey);
   }
 
   public async createOrder(orderParams: OrderParams): Promise<OrderResult> {
@@ -284,7 +352,7 @@ export class ExchangeConnector extends EventEmitter {
 
       const fullOrderParams = {
         ...orderParams,
-        params: this.getOrderParams(orderParams.type),
+        params: this.getOrderParams(orderParams.type, orderParams.marketType),
       };
 
       const order = await this.exchange.createOrderWs(
@@ -319,7 +387,14 @@ export class ExchangeConnector extends EventEmitter {
     }
   }
 
-  private getOrderParams(orderType: OrderType): Record<string, unknown> {
+  private getOrderParams(
+    orderType: OrderType,
+    marketType?: MarketType
+  ): Record<string, unknown> {
+    if (isSpot(marketType)) {
+      return {};
+    }
+
     const baseParams = { hedgeMode: true };
 
     if (orderType === 'limit') {
@@ -364,16 +439,18 @@ export class ExchangeConnector extends EventEmitter {
       triggerPrice,
       triggerDirection,
       params,
+      marketType,
     } = orderParams;
 
     const normalizedQty = this.exchange.amountToPrecision(symbol, amount);
+    const category = isSpot(marketType) ? 'spot' : 'linear';
 
     const bybitOrderParams: BybitOrderParams = {
       symbol,
       side: side === 'buy' ? 'Buy' : 'Sell',
       orderType: this.capitalizeOrderType(type),
       qty: normalizedQty,
-      category: 'linear',
+      category,
       timeInForce:
         type === OrderType.Market ? TimeInForce.IOC : TimeInForce.GTC,
     };
@@ -402,7 +479,7 @@ export class ExchangeConnector extends EventEmitter {
       bybitOrderParams.triggerDirection = triggerDirection;
     }
 
-    if (params?.reduceOnly) {
+    if (!isSpot(marketType) && params?.reduceOnly) {
       bybitOrderParams.reduceOnly = true;
     }
 
@@ -470,46 +547,37 @@ export class ExchangeConnector extends EventEmitter {
     }
   }
 
-  public async getFuturesSymbols(): Promise<string[]> {
+  private async getSymbolsByFilter(
+    filterFn: (market: MarketInfo) => boolean,
+    logData: {
+      countKey: string;
+      logMessage: string;
+      errorMessage: string;
+    },
+    exchangeInstance?: Exchange
+  ): Promise<string[]> {
     try {
-      if (Object.keys(this.exchange.markets).length === 0) {
-        await this.exchange.loadMarkets(true);
+      const exchange = exchangeInstance ?? this.exchange;
+
+      if (Object.keys(exchange.markets).length === 0) {
+        await exchange.loadMarkets(true);
       }
 
-      const marketList = Object.values(this.exchange.markets) as MarketInfo[];
-      logger.info(
-        {
-          exchange: this.exchangeName,
-          totalMarkets: marketList.length,
-          marketTypes: [...new Set(marketList.map(market => market.type))],
-        },
-        'Market data loaded'
-      );
-
-      const futureMarketList = marketList.filter((market: MarketInfo) => {
-        const isFuture = market.type === 'future' || market.type === 'swap';
-        const isActive = market.active;
-        const hasLinear =
-          this.exchangeName === 'bybit'
-            ? ('linear' in market && market.linear === true) ||
-              ('settle' in market && market.settle === 'USDT')
-            : true;
-
-        return isFuture && isActive && hasLinear;
-      });
+      const marketList = Object.values(exchange.markets) as MarketInfo[];
+      const filteredMarketList = marketList.filter(filterFn);
 
       logger.info(
         {
           exchange: this.exchangeName,
-          futuresCount: futureMarketList.length,
-          sampleSymbols: futureMarketList
+          [logData.countKey]: filteredMarketList.length,
+          sampleSymbols: filteredMarketList
             .slice(0, 5)
             .map(market => market.symbol),
         },
-        'Futures symbols filtered'
+        logData.logMessage
       );
 
-      return futureMarketList.map(market =>
+      return filteredMarketList.map(market =>
         this.exchangeName === 'bybit'
           ? normalizeSymbol(market.symbol)
           : market.symbol
@@ -517,11 +585,53 @@ export class ExchangeConnector extends EventEmitter {
     } catch (error) {
       logger.error(
         { error, exchange: this.exchangeName },
-        'Failed to get futures symbols'
+        logData.errorMessage
       );
 
       return [];
     }
+  }
+
+  public async getFuturesSymbols(): Promise<string[]> {
+    return this.getSymbolsByFilter(
+      (market: MarketInfo): boolean => {
+        const isFuture = market.type === 'future' || market.type === 'swap';
+        const isActive = market.active ?? false;
+        const hasLinear =
+          this.exchangeName === 'bybit'
+            ? Boolean(
+                ('linear' in market && market.linear === true) ||
+                  ('settle' in market && market.settle === 'USDT')
+              )
+            : true;
+
+        return isFuture && isActive && hasLinear;
+      },
+      {
+        countKey: 'futuresCount',
+        logMessage: 'Futures symbols filtered',
+        errorMessage: 'Failed to get futures symbols',
+      }
+    );
+  }
+
+  public async getSpotSymbols(): Promise<string[]> {
+    const spotExchange = this.getSpotExchange();
+
+    return this.getSymbolsByFilter(
+      (market: MarketInfo): boolean => {
+        const isSpot = market.type === 'spot';
+        const isActive = market.active ?? false;
+
+        return isSpot && isActive;
+      },
+      {
+        countKey: 'spotCount',
+        logMessage: 'Spot symbols filtered',
+        errorMessage: 'Failed to get spot symbols',
+      },
+      spotExchange
+    );
   }
 
   public getExchangeName(): ExchangeName {
@@ -565,6 +675,21 @@ export class ExchangeConnector extends EventEmitter {
         { exchange: this.exchangeName },
         'Bybit native WebSocket disconnected'
       );
+    }
+
+    if (this.spotExchange) {
+      try {
+        await this.spotExchange.close();
+        logger.info(
+          { exchange: this.exchangeName },
+          'Spot exchange connection closed'
+        );
+      } catch (error) {
+        logger.error(
+          { error, exchange: this.exchangeName },
+          'Error closing spot exchange connection'
+        );
+      }
     }
 
     if (this.exchange) {

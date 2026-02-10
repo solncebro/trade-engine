@@ -1,15 +1,20 @@
 import { logger } from './logger';
 
+import { ExchangeConnector } from '../services/exchangeConnector';
 import {
   ExchangeConnectorByName,
   ExchangeName,
   MarginType,
+  MarketType,
   OrderAttributes,
   OrderDirection,
   OrderParams,
   OrderType,
   SymbolMappingByExchange,
 } from '../types';
+import { isSpot } from '../utils/order.utils';
+
+const NO_PRICE_DATA_AVAILABLE = 'No price data available';
 
 interface IterateSymbolMappingByExchangeCallbackArgs {
   exchangeName: ExchangeName;
@@ -28,12 +33,30 @@ interface SetupLeverageAndMarginModeArgs {
   leverage: number;
 }
 
-interface CreateOrderAttributesForSymbolArgs {
-  isLong: boolean;
-  exchangeConnectorByName: ExchangeConnectorByName;
+interface BaseOrderCalculationArgs {
   stopBuyAfterPercent: number;
   orderVolumeUsdt: number;
+  leverage: number;
+  uniqueSymbolCount: number;
+}
+
+interface CreateOrderAttributesForSymbolArgs extends BaseOrderCalculationArgs {
+  isLong: boolean;
+  exchangeConnectorByName: ExchangeConnectorByName;
   symbolMappingByExchange: SymbolMappingByExchange;
+}
+
+interface CreateOrderAttributesForMarketTypeArgs extends BaseOrderCalculationArgs {
+  exchangeConnector: ExchangeConnector;
+  exchangeName: ExchangeName;
+  symbol: string;
+  isLong: boolean;
+  marketType: MarketType;
+}
+
+interface EnrichWithSpotFallbackArgs extends BaseOrderCalculationArgs {
+  orderAttributesList: OrderAttributes[];
+  exchangeConnectorByName: ExchangeConnectorByName;
 }
 
 export class OrderCalculator {
@@ -54,7 +77,7 @@ export class OrderCalculator {
   ): number {
     const volumeUsdtPerSymbol = orderVolumeUsdt / symbolCount;
 
-    return volumeUsdtPerSymbol / price;
+    return Math.floor(volumeUsdtPerSymbol / price);
   }
 
   private static getOrderSide(isLong: boolean): OrderDirection {
@@ -80,7 +103,7 @@ export class OrderCalculator {
     }
   }
 
-  private static getUniqueSymbolCountFromMapping(
+  public static getUniqueSymbolCountFromMapping(
     symbolMappingByExchange: SymbolMappingByExchange
   ): number {
     const uniqueSymbolSet = new Set<string>();
@@ -93,6 +116,121 @@ export class OrderCalculator {
     });
 
     return uniqueSymbolSet.size;
+  }
+
+  private static calculateAmountForMarketType(args: {
+    price: number;
+    orderVolumeUsdt: number;
+    uniqueSymbolCount: number;
+    leverage: number;
+    marketType: MarketType;
+  }): number {
+    const { price, orderVolumeUsdt, uniqueSymbolCount, leverage, marketType } =
+      args;
+
+    const amount = OrderCalculator.calculateOrderAmount(
+      price,
+      uniqueSymbolCount,
+      marketType === MarketType.Spot
+        ? orderVolumeUsdt / leverage
+        : orderVolumeUsdt
+    );
+
+    return amount;
+  }
+
+  private static createOrderAttributesForMarketType(
+    args: CreateOrderAttributesForMarketTypeArgs
+  ): OrderAttributes {
+    const {
+      exchangeConnector,
+      exchangeName,
+      symbol,
+      isLong,
+      stopBuyAfterPercent,
+      orderVolumeUsdt,
+      uniqueSymbolCount,
+      leverage,
+      marketType,
+    } = args;
+
+    const ticker = exchangeConnector.getTicker(symbol, marketType);
+    const price = ticker?.close;
+
+    const baseOrderParams: OrderParams = {
+      symbol,
+      side: OrderCalculator.getOrderSide(isLong),
+      amount: 0,
+      price: price ?? 0,
+      type: OrderType.Market,
+      marketType,
+    };
+
+    const baseOrderParamsWithExchange: OrderAttributes = {
+      orderParams: baseOrderParams,
+      exchangeName,
+    };
+
+    if (!price) {
+      const marketLabel = marketType === MarketType.Spot ? 'on spot ' : '';
+      const errorText = `🏷️ ${NO_PRICE_DATA_AVAILABLE} for ${symbol} ${marketLabel}on ${exchangeName}`;
+
+      logger.warn({ symbol, exchange: exchangeName, marketType }, errorText);
+
+      return {
+        ...baseOrderParamsWithExchange,
+        errorText,
+      };
+    }
+
+    if (
+      ticker.percentage !== undefined &&
+      ticker.percentage >= stopBuyAfterPercent
+    ) {
+      const marketLabel =
+        marketType === MarketType.Spot ? MarketType.Spot : MarketType.Futures;
+      const errorText = `📈 Symbol ${symbol} has grown ${ticker.percentage.toFixed(2)}% (≥${stopBuyAfterPercent}%) in 24 hours on ${marketLabel} - order creation blocked`;
+
+      logger.warn(
+        {
+          symbol,
+          exchange: exchangeName,
+          percentage: ticker.percentage,
+          stopBuyAfterPercent,
+          marketType,
+        },
+        errorText
+      );
+
+      return {
+        ...baseOrderParamsWithExchange,
+        errorText,
+      };
+    }
+
+    const amount = OrderCalculator.calculateAmountForMarketType({
+      price,
+      orderVolumeUsdt,
+      uniqueSymbolCount,
+      leverage,
+      marketType,
+    });
+
+    logger.info(
+      {
+        symbol,
+        exchange: exchangeName,
+        price,
+        amount,
+        marketType,
+      },
+      `Order attributes created for ${marketType} market`
+    );
+
+    return {
+      ...baseOrderParamsWithExchange,
+      orderParams: { ...baseOrderParams, amount },
+    };
   }
 
   public static resolveSymbolsForExchanges(
@@ -174,99 +312,102 @@ export class OrderCalculator {
       stopBuyAfterPercent,
       orderVolumeUsdt,
       symbolMappingByExchange,
+      leverage,
+      uniqueSymbolCount,
     } = args;
-    const uniqueSymbolCount = OrderCalculator.getUniqueSymbolCountFromMapping(
-      symbolMappingByExchange
-    );
+
     const orderAttributesList: OrderAttributes[] = [];
 
     OrderCalculator.iterateSymbolMappingByExchange({
       symbolMappingByExchange,
-      callback: ({ exchangeName, originalSymbol, resolvedSymbol }) => {
+      callback: ({ exchangeName, resolvedSymbol }) => {
         const exchangeConnector = exchangeConnectorByName.get(exchangeName);
 
         if (!exchangeConnector) {
           return;
         }
 
-        const { close: price, percentage } =
-          exchangeConnector.getTicker(resolvedSymbol) ?? {};
-
-        const baseOrderParams: OrderParams = {
-          symbol: resolvedSymbol,
-          side: OrderCalculator.getOrderSide(isLong),
-          amount: 0,
-          price: price ?? 0,
-          type: OrderType.Market,
-        };
-
-        const baseOrderParamsWithExchange = {
-          orderParams: baseOrderParams,
-          exchangeName,
-        };
-
-        if (!price) {
-          const errorText = `🏷️ No price data available for ${resolvedSymbol} (original: ${originalSymbol}) on ${exchangeName}`;
-          logger.warn(
-            { symbol: originalSymbol, resolvedSymbol, exchange: exchangeName },
-            errorText
-          );
-
-          orderAttributesList.push({
-            ...baseOrderParamsWithExchange,
-            errorText,
+        const orderAttributes =
+          OrderCalculator.createOrderAttributesForMarketType({
+            exchangeConnector,
+            exchangeName,
+            symbol: resolvedSymbol,
+            isLong,
+            stopBuyAfterPercent,
+            orderVolumeUsdt,
+            uniqueSymbolCount,
+            leverage,
+            marketType: MarketType.Futures,
           });
 
-          return;
-        }
-
-        if (percentage !== undefined && percentage >= stopBuyAfterPercent) {
-          const errorText = `📈 Symbol ${resolvedSymbol} (original: ${originalSymbol}) has grown ${percentage.toFixed(2)}% (≥${stopBuyAfterPercent}%) in 24 hours - order creation blocked`;
-          logger.warn(
-            {
-              symbol: originalSymbol,
-              resolvedSymbol,
-              exchange: exchangeName,
-              percentage,
-              stopBuyAfterPercent,
-            },
-            errorText
-          );
-
-          orderAttributesList.push({
-            ...baseOrderParamsWithExchange,
-            errorText,
-          });
-
-          return;
-        }
-
-        const amount = OrderCalculator.calculateOrderAmount(
-          price,
-          uniqueSymbolCount,
-          orderVolumeUsdt
-        );
-
-        orderAttributesList.push({
-          ...baseOrderParamsWithExchange,
-          orderParams: { ...baseOrderParams, amount },
-        });
+        orderAttributesList.push(orderAttributes);
       },
     });
 
     return orderAttributesList;
   }
 
+  public static enrichWithSpotFallback(
+    args: EnrichWithSpotFallbackArgs
+  ): OrderAttributes[] {
+    const {
+      orderAttributesList,
+      exchangeConnectorByName,
+      stopBuyAfterPercent,
+      orderVolumeUsdt,
+      leverage,
+      uniqueSymbolCount,
+    } = args;
+
+    return orderAttributesList.map(orderAttributes => {
+      const isNoPriceError = orderAttributes.errorText?.includes(
+        NO_PRICE_DATA_AVAILABLE
+      );
+
+      if (!isNoPriceError) {
+        return orderAttributes;
+      }
+
+      const { exchangeName, orderParams } = orderAttributes;
+      const exchangeConnector = exchangeConnectorByName.get(exchangeName);
+
+      if (!exchangeConnector) {
+        return orderAttributes;
+      }
+
+      return OrderCalculator.createOrderAttributesForMarketType({
+        exchangeConnector,
+        exchangeName,
+        symbol: orderParams.symbol,
+        isLong: orderParams.side === OrderDirection.Buy,
+        stopBuyAfterPercent,
+        orderVolumeUsdt,
+        uniqueSymbolCount,
+        leverage,
+        marketType: MarketType.Spot,
+      });
+    });
+  }
+
   public static calculateLimitOrderWithPriceAdjustment(
     orderParams: OrderParams,
     priceAdjustmentPercent: number,
-    orderVolumeUsdt: number
+    orderVolumeUsdt: number,
+    leverage: number = 1
   ): OrderParams {
     const adjustedPrice = OrderCalculator.addPercent(
       orderParams.price,
       priceAdjustmentPercent
     );
-    const adjustedAmount = orderVolumeUsdt / adjustedPrice;
+    const isSpotMarket = orderParams.marketType === MarketType.Spot;
+    const rawAmount = isSpotMarket
+      ? OrderCalculator.calculateOrderAmount(
+          adjustedPrice,
+          1,
+          orderVolumeUsdt / leverage
+        )
+      : OrderCalculator.calculateOrderAmount(adjustedPrice, 1, orderVolumeUsdt);
+    const adjustedAmount = isSpotMarket ? Math.round(rawAmount) : rawAmount;
 
     return {
       ...orderParams,
@@ -299,8 +440,12 @@ export class OrderCalculator {
       amount: orderParams.amount,
       price: shiftedPrice,
       type: OrderType.Limit,
-      params: { reduceOnly: true },
+      marketType: orderParams.marketType,
     };
+
+    if (!isSpot(orderParams.marketType)) {
+      baseCloseOrderParams.params = { reduceOnly: true };
+    }
 
     if (!isTakeProfit) {
       baseCloseOrderParams.triggerPrice = shiftedPrice;

@@ -9,7 +9,7 @@ import {
   OrderType,
 } from '../types';
 import { formatErrorMessage } from '../utils/errorFormatter.utils';
-import { isOrderSuccessful } from '../utils/order.utils';
+import { isOrderSuccessful, isSpot } from '../utils/order.utils';
 
 export class OrderExecutor {
   protected async createOrder(args: CreateOrderArgs): Promise<OrderResult> {
@@ -62,10 +62,13 @@ export class OrderExecutor {
       closeOrderParams = {
         ...closeOrderParams,
         type: OrderType.Market,
-        params: { reduceOnly: true },
         triggerPrice: undefined,
         triggerDirection: undefined,
       };
+
+      if (!isSpot(closeOrderParams.marketType)) {
+        closeOrderParams.params = { reduceOnly: true };
+      }
     }
 
     const regularOrderTypeText = isTakeProfit ? 'take profit' : 'stop loss';

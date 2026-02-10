@@ -17,7 +17,7 @@ export {
   createHumanTimestamp,
   formatTimestamp,
 } from './utils/date.utils';
-export { isOrderSuccessful } from './utils/order.utils';
+export { isOrderSuccessful, isSpot } from './utils/order.utils';
 export { ReadlineHelper } from './utils/readline.utils';
 export { normalizeSymbol } from './utils/symbol.utils';
 export { getCommandFromKey } from './utils/telegramCommand.utils';

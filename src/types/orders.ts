@@ -25,12 +25,18 @@ export enum OrderDirection {
   Sell = 'sell',
 }
 
+export enum MarketType {
+  Futures = 'futures',
+  Spot = 'spot',
+}
+
 export interface OrderParams {
   symbol: string;
   side: OrderDirection;
   amount: number;
   price: number;
   type: OrderType;
+  marketType?: MarketType;
   triggerPrice?: number;
   triggerDirection?: 1 | 2;
   params?: Record<string, unknown>;
