@@ -1,6 +1,6 @@
 {
   "name": "@solncebro/trade-engine",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Universal trading engine library for cryptocurrency exchanges with Telegram integration and Firebase support",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -20,7 +20,9 @@
     "lint:fix": "eslint . --fix",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
-    "prepublishOnly": "npm run build"
+    "prepublishOnly": "npm run build",
+    "deploy": "npm run build && rsync --archive --compress --delete dist package.json node_modules root@84.252.74.98:/var/www/trade-engine/",
+    "deploy_amazon": "npm run build && rsync --archive --compress --delete dist package.json node_modules ubuntu@18.141.178.148:/home/ubuntu/trade-engine/"
   },
   "files": [
     "dist",
@@ -38,6 +40,7 @@
   "license": "MIT",
   "dependencies": {
     "@logtail/pino": "^0.4.0",
+    "@solncebro/websocket-engine": "^0.1.0",
     "ccxt": "^4.5.24",
     "dayjs": "^1.11.18",
     "dotenv": "^16.4.5",

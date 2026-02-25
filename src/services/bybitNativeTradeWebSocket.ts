@@ -1,7 +1,11 @@
 import crypto from 'crypto';
-import { EventEmitter } from 'events';
 
-import WebSocket from 'ws';
+import {
+  ReliableWebSocket,
+  WebSocketLogger,
+  WebSocketOpenContext,
+  WebSocketStatus,
+} from '@solncebro/websocket-engine';
 
 import { TelegramNotifier } from './telegramNotifier';
 
@@ -10,14 +14,7 @@ import {
   BYBIT_TRADING_WEBSOCKET_URL,
 } from '../constants/bybit';
 import { logger } from '../core/logger';
-import {
-  BybitResponse,
-  EntityWithErrorText,
-  ExchangeConfig,
-  ExtensibleRecord,
-} from '../types';
-
-const BYBIT_TRADING_WEBSOCKET_NAME = 'Bybit Trading WebSocket';
+import { EntityWithErrorText, ExchangeConfig, ExtensibleRecord } from '../types';
 
 export interface BybitOrderParams extends ExtensibleRecord {
   symbol: string;
@@ -51,7 +48,9 @@ export interface BybitWebSocketData
   extends ExtensibleRecord,
     BybitResponseData {}
 
-export interface BybitWebSocketResponse extends BybitResponse {
+export interface BybitWebSocketResponse {
+  retCode?: number;
+  retMsg?: string;
   isSuccess?: boolean;
   result?: BybitOrderResult;
   data?: BybitWebSocketData;
@@ -61,279 +60,148 @@ export interface BybitWebSocketResponse extends BybitResponse {
   topic?: string;
 }
 
-export class BybitNativeTradeWebSocket extends EventEmitter {
-  private websocket: WebSocket | null = null;
-  private config: ExchangeConfig;
-  private isAuthenticated: boolean = false;
-  private reconnectAttemptQuantity: number = 0;
-  private maxReconnectAttemptQuantity: number = 5;
-  private pingInterval: NodeJS.Timeout | null = null;
-  private requestId: number = 1;
-  private onNotify?: (message: string) => void | Promise<void>;
-  private onError?: (message: string, error: unknown) => void | Promise<void>;
+const BYBIT_TRADING_WEBSOCKET_NAME = 'Bybit Trading WebSocket';
+
+const wsLogger: WebSocketLogger = {
+  debug: msg => logger.debug(msg),
+  info: msg => logger.info(msg),
+  warn: msg => logger.warn(msg),
+  error: msg => logger.error(msg),
+  fatal: msg => logger.fatal(msg),
+};
+
+export class BybitNativeTradeWebSocket {
+  private readonly config: ExchangeConfig;
+  private readonly onNotify?: (message: string) => void | Promise<void>;
+  private reliableWs: ReliableWebSocket<BybitWebSocketResponse> | null = null;
+  private isAuthenticated = false;
+  private requestId = 1;
 
   constructor(config: ExchangeConfig, telegramNotifier?: TelegramNotifier) {
-    super();
     this.config = config;
 
     if (telegramNotifier) {
       this.onNotify = telegramNotifier.sendMessage.bind(telegramNotifier);
-      this.onError = telegramNotifier.sendError.bind(telegramNotifier);
     }
   }
 
   private generateSignature(expires: number): string {
-    try {
-      const param = `GET/realtime${expires}`;
+    const param = `GET/realtime${expires}`;
 
-      return crypto
-        .createHmac('sha256', this.config.secret)
-        .update(param)
-        .digest('hex');
-    } catch (error) {
-      logger.error({ error, expires }, 'Failed to generate signature');
-      throw error;
+    return crypto
+      .createHmac('sha256', this.config.secret)
+      .update(param)
+      .digest('hex');
+  }
+
+  private async authenticate(
+    context: WebSocketOpenContext<BybitWebSocketResponse>
+  ): Promise<void> {
+    const expires = Date.now() + 10000;
+    const signature = this.generateSignature(expires);
+
+    const responsePromise = context.waitForMessage(msg => msg.op === 'auth', 10000);
+
+    context.send({ op: 'auth', args: [this.config.apiKey, expires, signature] });
+
+    const response = await responsePromise;
+
+    if (response.retMsg !== 'OK' && response.retCode !== 0) {
+      throw new Error(
+        `Authentication failed: ${response.retMsg} (code: ${response.retCode})`
+      );
     }
   }
 
-  public async connect(): Promise<void> {
-    return new Promise((resolve, reject) => {
-      try {
-        logger.info('BybitNativeTradeWebSocket connecting');
-        this.websocket = new WebSocket(BYBIT_TRADING_WEBSOCKET_URL);
+  public connect(): Promise<void> {
+    return new Promise<void>((resolve, reject) => {
+      let isFirstOpen = true;
 
-        this.websocket.on('open', () => {
-          this.reconnectAttemptQuantity = 0;
-          this.authenticate()
-            .then(async () => {
-              if (this.onNotify) {
-                await this.onNotify(
-                  `⛓️✅ ${BYBIT_TRADING_WEBSOCKET_NAME} authenticated`
-                );
-              }
-
-              resolve();
-            })
-            .catch(async (error: Error) => {
-              if (this.onNotify) {
-                await this.onNotify(
-                  `⛓️❌ ${BYBIT_TRADING_WEBSOCKET_NAME} authentification error\n${error.message}`
-                );
-              }
-
-              reject();
-            });
-        });
-
-        this.websocket.on('message', (data: WebSocket.Data) => {
-          this.handleMessage(data);
-        });
-
-        this.websocket.on('error', async (error: Error) => {
-          if (this.onNotify) {
-            await this.onNotify(
-              `⛓️‍💥🔴 ${BYBIT_TRADING_WEBSOCKET_NAME} error: ${error.message}`
-            );
-          }
-
-          reject(error);
-        });
-
-        this.websocket.on('close', async () => {
-          if (this.onNotify) {
-            await this.onNotify(
-              `⛓️‍💥🟡 ${BYBIT_TRADING_WEBSOCKET_NAME} disconnected, reconnecting...`
-            );
-          }
-
-          this.isAuthenticated = false;
-          this.cleanup();
-          this.scheduleReconnect();
-        });
-      } catch (error) {
-        reject(error);
-      }
-    });
-  }
-
-  private async authenticate(): Promise<void> {
-    return new Promise((resolve, reject) => {
-      const expires = Date.now() + 10000;
-      const signature = this.generateSignature(expires);
-
-      const authRequest = {
-        op: 'auth',
-        args: [this.config.apiKey, expires, signature],
-      };
-
-      const timeoutId = setTimeout(() => {
-        reject(new Error('Authentication timeout'));
-      }, 10000);
-
-      const authHandler = (response: BybitWebSocketResponse) => {
-        if (response.op === 'auth') {
-          clearTimeout(timeoutId);
-          this.off('authenticated', authHandler);
-
-          if (response.retMsg === 'OK' || response.retCode === 0) {
+      this.reliableWs = new ReliableWebSocket<BybitWebSocketResponse>({
+        url: BYBIT_TRADING_WEBSOCKET_URL,
+        label: BYBIT_TRADING_WEBSOCKET_NAME,
+        logger: wsLogger,
+        parseMessage: rawData => JSON.parse(rawData.toString()) as BybitWebSocketResponse,
+        heartbeat: {
+          buildPayload: () => ({ op: 'ping' }),
+          isResponse: msg => msg.op === 'pong',
+        },
+        onOpen: async context => {
+          try {
+            await this.authenticate(context);
             this.isAuthenticated = true;
-            this.startPingInterval();
 
-            resolve();
-          } else {
-            reject(
-              new Error(
-                `Authentication failed: ${response.retMsg} (code: ${response.retCode})`
-              )
-            );
+            if (isFirstOpen) {
+              isFirstOpen = false;
+              this.onNotify?.(`⛓️✅ ${BYBIT_TRADING_WEBSOCKET_NAME} authenticated`);
+              resolve();
+            } else {
+              this.onNotify?.(`⛓️✅ ${BYBIT_TRADING_WEBSOCKET_NAME} reconnected and authenticated`);
+            }
+          } catch (error) {
+            this.isAuthenticated = false;
+
+            if (isFirstOpen) {
+              isFirstOpen = false;
+              this.reliableWs?.close();
+              reject(error);
+            }
+
+            throw error;
           }
-        }
-      };
-
-      this.on('authenticated', authHandler);
-      this.send(authRequest);
-    });
-  }
-
-  private handleMessage(data: WebSocket.Data): void {
-    try {
-      const message = JSON.parse(data.toString());
-      logger.debug(
-        { message },
-        `${BYBIT_TRADING_WEBSOCKET_NAME} message received`
-      );
-
-      if (message.op === 'auth') {
-        this.emit('authenticated', message);
-
-        return;
-      }
-
-      if (message.op === 'pong') {
-        return;
-      }
-
-      if (message.op === 'order.create' || message.topic === 'order') {
-        this.emit('orderResponse', message);
-
-        return;
-      }
-
-      this.emit('message', message);
-    } catch (error) {
-      logger.error(
-        { error, data: data.toString() },
-        'Failed to parse WebSocket message'
-      );
-    }
-  }
-
-  private send(data: Record<string, unknown>): void {
-    if (this.websocket && this.websocket.readyState === WebSocket.OPEN) {
-      this.websocket.send(JSON.stringify(data));
-    } else {
-      throw new Error('WebSocket not connected');
-    }
-  }
-
-  private startPingInterval(): void {
-    this.pingInterval = setInterval(() => {
-      if (this.websocket && this.websocket.readyState === WebSocket.OPEN) {
-        this.send({ op: 'ping' });
-      }
-    }, 20000);
-  }
-
-  private cleanup(): void {
-    if (this.pingInterval) {
-      clearInterval(this.pingInterval);
-      this.pingInterval = null;
-    }
-  }
-
-  private scheduleReconnect(): void {
-    if (this.reconnectAttemptQuantity >= this.maxReconnectAttemptQuantity) {
-      logger.error('Max reconnection attempts reached');
-
-      return;
-    }
-
-    const delay = Math.pow(2, this.reconnectAttemptQuantity) * 1000;
-    this.reconnectAttemptQuantity++;
-
-    logger.info(
-      {
-        attempt: this.reconnectAttemptQuantity,
-        maxAttempts: this.maxReconnectAttemptQuantity,
-        delay,
-      },
-      'Scheduling Bybit WebSocket reconnection'
-    );
-
-    setTimeout(() => {
-      this.connect().catch(error => {
-        logger.error({ error }, 'Reconnection failed');
+        },
+        onMessage: message => {
+          logger.debug({ message }, `${BYBIT_TRADING_WEBSOCKET_NAME} unhandled message`);
+        },
+        onNotify: this.onNotify,
       });
-    }, delay);
+    });
   }
 
   public async createOrder(
     orderParams: BybitOrderParams
   ): Promise<BybitWebSocketResponse> {
-    if (!this.isAuthenticated) {
+    if (!this.isAuthenticated || !this.reliableWs) {
       throw new Error('WebSocket not authenticated');
     }
 
-    return new Promise((resolve, reject) => {
-      const requestId = `req_${this.requestId++}_${Date.now()}`;
-      const orderRequest = {
-        reqId: requestId,
-        header: {
-          'X-BAPI-TIMESTAMP': Date.now().toString(),
-          'X-BAPI-RECV-WINDOW': String(BYBIT_RECV_WINDOW),
-        },
-        op: 'order.create',
-        args: [orderParams],
-      };
+    const requestId = `req_${this.requestId++}_${Date.now()}`;
+    const orderRequest = {
+      reqId: requestId,
+      header: {
+        'X-BAPI-TIMESTAMP': Date.now().toString(),
+        'X-BAPI-RECV-WINDOW': String(BYBIT_RECV_WINDOW),
+      },
+      op: 'order.create',
+      args: [orderParams],
+    };
 
-      const timeoutId = setTimeout(() => {
-        this.off('orderResponse', responseHandler);
-        reject(new Error('Order creation timeout'));
-      }, 30000);
+    logger.debug({ orderRequest, requestId }, `Sending ${BYBIT_TRADING_WEBSOCKET_NAME} order request`);
 
-      const responseHandler = (response: BybitWebSocketResponse) => {
-        logger.debug({ response, requestId }, 'Order response received');
+    const responsePromise = this.reliableWs.waitForMessage(
+      msg => msg.reqId === requestId,
+      30000
+    );
 
-        if (response.reqId === requestId) {
-          clearTimeout(timeoutId);
-          this.off('orderResponse', responseHandler);
-          resolve(response);
-        }
-      };
+    this.reliableWs.sendToConnectedSocket(orderRequest);
 
-      this.on('orderResponse', responseHandler);
-      logger.debug(
-        { orderRequest, requestId },
-        `Sending ${BYBIT_TRADING_WEBSOCKET_NAME} order request`
-      );
-      this.send(orderRequest);
-    });
+    const response = await responsePromise;
+
+    logger.debug({ response, requestId }, 'Order response received');
+
+    return response;
   }
 
   public disconnect(): void {
-    this.cleanup();
-
-    if (this.websocket) {
-      this.websocket.close();
-      this.websocket = null;
-    }
+    this.isAuthenticated = false;
+    this.reliableWs?.close();
+    this.reliableWs = null;
   }
 
   public isConnected(): boolean {
-    return !!(
-      this.websocket &&
-      this.websocket.readyState === WebSocket.OPEN &&
-      this.isAuthenticated
+    return (
+      this.isAuthenticated &&
+      this.reliableWs?.getStatus() === WebSocketStatus.CONNECTED
     );
   }
 }

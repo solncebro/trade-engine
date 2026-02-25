@@ -46,7 +46,8 @@ interface CreateOrderAttributesForSymbolArgs extends BaseOrderCalculationArgs {
   symbolMappingByExchange: SymbolMappingByExchange;
 }
 
-interface CreateOrderAttributesForMarketTypeArgs extends BaseOrderCalculationArgs {
+interface CreateOrderAttributesForMarketTypeArgs
+  extends BaseOrderCalculationArgs {
   exchangeConnector: ExchangeConnector;
   exchangeName: ExchangeName;
   symbol: string;
@@ -224,7 +225,7 @@ export class OrderCalculator {
         amount,
         marketType,
       },
-      `Order attributes created for ${marketType} market`
+      `Order attributes created for ${marketType.toUpperCase()}`
     );
 
     return {
