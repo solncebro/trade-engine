@@ -1,0 +1,13 @@
+src/
+tests/
+.env
+.env.*
+.vscode/
+.claude/
+eslint.config.js
+jest.config.js
+.prettierrc.json
+tsconfig.json
+*.log
+.DS_Store
+logs/

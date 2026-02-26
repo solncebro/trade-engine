@@ -172,8 +172,10 @@ export class OrderCalculator {
       exchangeName,
     };
 
+    const marketLabel =
+      marketType === MarketType.Spot ? 'on spot ' : 'on futures ';
+
     if (!price) {
-      const marketLabel = marketType === MarketType.Spot ? 'on spot ' : '';
       const errorText = `🏷️ ${NO_PRICE_DATA_AVAILABLE} for ${symbol} ${marketLabel}on ${exchangeName}`;
 
       logger.warn({ symbol, exchange: exchangeName, marketType }, errorText);
@@ -185,11 +187,10 @@ export class OrderCalculator {
     }
 
     if (
+      marketType !== MarketType.Spot &&
       ticker.percentage !== undefined &&
       ticker.percentage >= stopBuyAfterPercent
     ) {
-      const marketLabel =
-        marketType === MarketType.Spot ? MarketType.Spot : MarketType.Futures;
       const errorText = `📈 Symbol ${symbol} has grown ${ticker.percentage.toFixed(2)}% (≥${stopBuyAfterPercent}%) in 24 hours on ${marketLabel} - order creation blocked`;
 
       logger.warn(
