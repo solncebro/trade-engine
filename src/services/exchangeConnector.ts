@@ -33,6 +33,7 @@ export class ExchangeConnector extends EventEmitter {
   private spotExchange: Exchange | null = null;
   private exchangeName: ExchangeName;
   private config: ExchangeConfig;
+  private isDemoMode: boolean;
   private tickerDataMap: Map<string, Ticker> = new Map();
   private isWatchingTickers: boolean = false;
   private tickerUpdateIntervalId: NodeJS.Timeout | null = null;
@@ -46,6 +47,7 @@ export class ExchangeConnector extends EventEmitter {
     super();
     this.exchangeName = exchangeName;
     this.config = config;
+    this.isDemoMode = config.demo ?? false;
 
     const ExchangeClass = this.getExchangeClass(exchangeName);
 
@@ -60,12 +62,14 @@ export class ExchangeConnector extends EventEmitter {
     this.exchange = new ExchangeClass({
       apiKey: config.apiKey,
       secret: config.secret,
-      sandbox: false,
-      testnet: false,
       options: baseOptions,
     });
 
-    if (exchangeName === 'bybit') {
+    if (this.isDemoMode) {
+      this.exchange.enableDemoTrading(true);
+    }
+
+    if (exchangeName === 'bybit' && !this.isDemoMode) {
       this.bybitNativeTradeWebSocket = new BybitNativeTradeWebSocket(
         config,
         telegramNotifier
@@ -88,10 +92,12 @@ export class ExchangeConnector extends EventEmitter {
       this.spotExchange = new ExchangeClass({
         apiKey: this.config.apiKey,
         secret: this.config.secret,
-        sandbox: false,
-        testnet: false,
         options: spotOptions,
       });
+
+      if (this.isDemoMode) {
+        this.spotExchange.enableDemoTrading(true);
+      }
     }
 
     return this.spotExchange;
@@ -179,13 +185,17 @@ export class ExchangeConnector extends EventEmitter {
 
     if (this.exchangeName === 'binance') {
       this.startBinanceTickerUpdates();
-      logger.info('Started Binance watching tickers via WebSocket');
+      logger.info('Started Binance watching tickers via REST API');
     } else if (this.exchangeName === 'bybit') {
       this.startBybitTickerUpdates();
-      logger.info(
-        'Started Bybit watching tickers via REST API (updates every 30 seconds)'
-      );
+      logger.info('Started Bybit watching tickers via REST API');
     }
+  }
+
+  private isDeliveryContract(symbol: string): boolean {
+    const contractPart = symbol.split(':')[1];
+
+    return contractPart !== undefined && contractPart.includes('-');
   }
 
   private processTickerList(
@@ -195,6 +205,10 @@ export class ExchangeConnector extends EventEmitter {
     const tickerEntries = Object.entries(tickers);
 
     tickerEntries.forEach(([symbol, ticker]) => {
+      if (this.isDeliveryContract(symbol)) {
+        return;
+      }
+
       const normalizedSymbol = normalizeSymbol(symbol);
       const tickerKey = this.getTickerKey(normalizedSymbol, marketType);
 
@@ -211,34 +225,41 @@ export class ExchangeConnector extends EventEmitter {
   }
 
   private async startBinanceTickerUpdates(): Promise<void> {
-    if (!this.isWatchingTickers) {
-      return;
-    }
+    const updateInterval = 30000;
 
-    logger.info('Starting Binance ticker WebSocket connection');
+    const updateTickers = async () => {
+      if (!this.isWatchingTickers) {
+        return;
+      }
 
-    while (this.isWatchingTickers) {
       try {
+        const futuresTickers = await this.exchange.fetchTickers();
+        this.processTickerList(futuresTickers, MarketType.Futures);
+
         const spotExchange = this.getSpotExchange();
-
-        const [futuresTickerList, spotTickerList] = await Promise.all([
-          this.exchange.watchTickers(),
-          spotExchange.watchTickers(),
-        ]);
-
-        this.processTickerList(futuresTickerList, MarketType.Futures);
-        this.processTickerList(spotTickerList, MarketType.Spot);
+        await spotExchange.loadMarkets();
+        const spotTickers = await spotExchange.fetchTickers();
+        this.processTickerList(spotTickers, MarketType.Spot);
       } catch (error) {
-        logger.error(
+        logger.warn(
           { error, exchange: this.exchangeName },
-          'Error watching Binance tickers'
+          'Failed to update Binance tickers'
         );
+      }
+    };
 
-        if (this.isWatchingTickers) {
-          await new Promise(resolve => setTimeout(resolve, 5000));
+    await updateTickers();
+
+    this.tickerUpdateIntervalId = setInterval(async () => {
+      if (this.isWatchingTickers) {
+        await updateTickers();
+      } else {
+        if (this.tickerUpdateIntervalId) {
+          clearInterval(this.tickerUpdateIntervalId);
+          this.tickerUpdateIntervalId = null;
         }
       }
-    }
+    }, updateInterval);
   }
 
   private async startBybitTickerUpdates(): Promise<void> {
@@ -352,10 +373,17 @@ export class ExchangeConnector extends EventEmitter {
 
       const fullOrderParams = {
         ...orderParams,
-        params: this.getOrderParams(orderParams.type, orderParams.marketType),
+        params: {
+          ...this.getOrderParams(orderParams.type, orderParams.marketType),
+          ...orderParams.params,
+        },
       };
 
-      const order = await this.exchange.createOrderWs(
+      const createOrderFn = this.isDemoMode
+        ? this.exchange.createOrder.bind(this.exchange)
+        : this.exchange.createOrderWs.bind(this.exchange);
+
+      const order = await createOrderFn(
         fullOrderParams.symbol,
         fullOrderParams.type,
         fullOrderParams.side,
@@ -387,6 +415,24 @@ export class ExchangeConnector extends EventEmitter {
     }
   }
 
+  public async cancelOrder(
+    orderId: string,
+    symbol: string
+  ): Promise<boolean> {
+    try {
+      await this.exchange.cancelOrder(orderId, symbol);
+
+      return true;
+    } catch (error) {
+      logger.error(
+        { error, orderId, symbol, exchange: this.exchangeName },
+        'Failed to cancel order'
+      );
+
+      return false;
+    }
+  }
+
   private getOrderParams(
     orderType: OrderType,
     marketType?: MarketType
@@ -395,13 +441,7 @@ export class ExchangeConnector extends EventEmitter {
       return {};
     }
 
-    const baseParams = { hedgeMode: true };
-
-    if (orderType === 'limit') {
-      return { ...baseParams, reduceOnly: true };
-    }
-
-    return baseParams;
+    return { hedgeMode: true };
   }
 
   private capitalizeOrderType(type: OrderType): 'Market' | 'Limit' {
@@ -559,7 +599,7 @@ export class ExchangeConnector extends EventEmitter {
     try {
       const exchange = exchangeInstance ?? this.exchange;
 
-      if (Object.keys(exchange.markets).length === 0) {
+      if (!exchange.markets || Object.keys(exchange.markets).length === 0) {
         await exchange.loadMarkets(true);
       }
 

@@ -73,12 +73,14 @@ const wsLogger: WebSocketLogger = {
 export class BybitNativeTradeWebSocket {
   private readonly config: ExchangeConfig;
   private readonly onNotify?: (message: string) => void | Promise<void>;
+  private readonly websocketUrl: string;
   private reliableWs: ReliableWebSocket<BybitWebSocketResponse> | null = null;
   private isAuthenticated = false;
   private requestId = 1;
 
-  constructor(config: ExchangeConfig, telegramNotifier?: TelegramNotifier) {
+  constructor(config: ExchangeConfig, telegramNotifier?: TelegramNotifier, websocketUrl?: string) {
     this.config = config;
+    this.websocketUrl = websocketUrl ?? BYBIT_TRADING_WEBSOCKET_URL;
 
     if (telegramNotifier) {
       this.onNotify = telegramNotifier.sendMessage.bind(telegramNotifier);
@@ -118,7 +120,7 @@ export class BybitNativeTradeWebSocket {
       let isFirstOpen = true;
 
       this.reliableWs = new ReliableWebSocket<BybitWebSocketResponse>({
-        url: BYBIT_TRADING_WEBSOCKET_URL,
+        url: this.websocketUrl,
         label: BYBIT_TRADING_WEBSOCKET_NAME,
         logger: wsLogger,
         parseMessage: rawData => JSON.parse(rawData.toString()) as BybitWebSocketResponse,

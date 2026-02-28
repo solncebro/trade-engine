@@ -36,6 +36,7 @@ export interface ExchangeResponseData extends ExtensibleRecord {
   side?: string;
   amount?: number;
   price?: number;
+  average?: number;
   timestamp?: number;
   filled?: number;
   remaining?: number;
