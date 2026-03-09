@@ -10,11 +10,12 @@ import {
 import { isOrderSuccessful } from '../../src/utils/order.utils';
 
 import {
-  describeIfCredentials,
-  BYBIT_DEMO_CONFIG,
   BINANCE_DEMO_CONFIG,
-  MULTIPLE_TEST_SYMBOLS,
-  MIN_BTC_ORDER_QTY,
+  BINANCE_FUTURES_TEST_SYMBOL_LIST,
+  BYBIT_DEMO_CONFIG,
+  BYBIT_FUTURES_TEST_SYMBOL_LIST,
+  calculateTestAmount,
+  describeIfCredentials,
   waitForTickers,
 } from './helpers/testnet.helpers';
 
@@ -27,7 +28,7 @@ describeIfCredentials('bybit', 'Bybit Multiple Symbols Integration', () => {
     await connector.initialize();
 
     // Wait for all test symbols to load
-    for (const symbol of MULTIPLE_TEST_SYMBOLS) {
+    for (const symbol of BYBIT_FUTURES_TEST_SYMBOL_LIST) {
       await waitForTickers(connector, symbol);
     }
   }, 90000);
@@ -39,7 +40,7 @@ describeIfCredentials('bybit', 'Bybit Multiple Symbols Integration', () => {
   describe('Multiple Symbols', () => {
     test('resolveSymbolsForExchanges creates mapping for all symbols', () => {
       const mapping = OrderCalculator.resolveSymbolsForExchanges(
-        MULTIPLE_TEST_SYMBOLS,
+        BYBIT_FUTURES_TEST_SYMBOL_LIST,
         new Map([[exchangeName, connector]])
       );
 
@@ -47,26 +48,26 @@ describeIfCredentials('bybit', 'Bybit Multiple Symbols Integration', () => {
       expect(mapping.has(exchangeName)).toBe(true);
 
       const exchangeMap = mapping.get(exchangeName)!;
-      expect(exchangeMap.size).toBe(MULTIPLE_TEST_SYMBOLS.length);
+      expect(exchangeMap.size).toBe(BYBIT_FUTURES_TEST_SYMBOL_LIST.length);
 
-      MULTIPLE_TEST_SYMBOLS.forEach(symbol => {
+      BYBIT_FUTURES_TEST_SYMBOL_LIST.forEach(symbol => {
         expect(exchangeMap.has(symbol)).toBe(true);
       });
     });
 
     test('getUniqueSymbolCountFromMapping counts symbols correctly', () => {
       const mapping = OrderCalculator.resolveSymbolsForExchanges(
-        MULTIPLE_TEST_SYMBOLS,
+        BYBIT_FUTURES_TEST_SYMBOL_LIST,
         new Map([[exchangeName, connector]])
       );
 
       const count = OrderCalculator.getUniqueSymbolCountFromMapping(mapping);
-      expect(count).toBe(MULTIPLE_TEST_SYMBOLS.length);
+      expect(count).toBe(BYBIT_FUTURES_TEST_SYMBOL_LIST.length);
     });
 
     test('createOrderAttributesForSymbol creates attributes for all symbols', () => {
       const mapping = OrderCalculator.resolveSymbolsForExchanges(
-        MULTIPLE_TEST_SYMBOLS,
+        BYBIT_FUTURES_TEST_SYMBOL_LIST,
         new Map([[exchangeName, connector]])
       );
 
@@ -77,10 +78,10 @@ describeIfCredentials('bybit', 'Bybit Multiple Symbols Integration', () => {
         stopBuyAfterPercent: 50,
         orderVolumeUsdt: 100,
         leverage: 5,
-        uniqueSymbolCount: MULTIPLE_TEST_SYMBOLS.length,
+        uniqueSymbolCount: BYBIT_FUTURES_TEST_SYMBOL_LIST.length,
       });
 
-      expect(attributes.length).toBe(MULTIPLE_TEST_SYMBOLS.length);
+      expect(attributes.length).toBe(BYBIT_FUTURES_TEST_SYMBOL_LIST.length);
 
       attributes.forEach((attr, index) => {
         expect(attr.exchangeName).toBe(exchangeName);
@@ -90,8 +91,9 @@ describeIfCredentials('bybit', 'Bybit Multiple Symbols Integration', () => {
     });
 
     test('all symbols have available tickers in market', () => {
-      MULTIPLE_TEST_SYMBOLS.forEach(symbol => {
-        const ticker = connector.getTicker(symbol, MarketType.Futures);
+      BYBIT_FUTURES_TEST_SYMBOL_LIST.forEach(symbol => {
+        const resolvedSymbol = connector.resolveSymbolWithPrefix(symbol);
+        const ticker = connector.getTicker(resolvedSymbol, MarketType.Futures);
         expect(ticker).toBeDefined();
         expect(ticker!.close).toBeGreaterThan(0);
       });
@@ -99,7 +101,7 @@ describeIfCredentials('bybit', 'Bybit Multiple Symbols Integration', () => {
 
     test('setupLeverageAndMarginMode handles multiple symbols in parallel', async () => {
       const mapping = OrderCalculator.resolveSymbolsForExchanges(
-        MULTIPLE_TEST_SYMBOLS,
+        BYBIT_FUTURES_TEST_SYMBOL_LIST,
         new Map([[exchangeName, connector]])
       );
 
@@ -115,7 +117,7 @@ describeIfCredentials('bybit', 'Bybit Multiple Symbols Integration', () => {
 
     test('creates orders for multiple symbols and verifies all are successful', async () => {
       const mapping = OrderCalculator.resolveSymbolsForExchanges(
-        MULTIPLE_TEST_SYMBOLS,
+        BYBIT_FUTURES_TEST_SYMBOL_LIST,
         new Map([[exchangeName, connector]])
       );
 
@@ -127,7 +129,7 @@ describeIfCredentials('bybit', 'Bybit Multiple Symbols Integration', () => {
       });
 
       // Create orders for first 2 symbols in parallel
-      const symbolsToTrade = MULTIPLE_TEST_SYMBOLS.slice(0, 2);
+      const symbolsToTrade = BYBIT_FUTURES_TEST_SYMBOL_LIST.slice(0, 2);
       const orderPromises = symbolsToTrade.map(symbol => {
         const ticker = connector.getTicker(symbol, MarketType.Futures);
         if (!ticker?.close) {
@@ -137,7 +139,7 @@ describeIfCredentials('bybit', 'Bybit Multiple Symbols Integration', () => {
         return connector.createOrder({
           symbol,
           side: OrderDirection.Buy,
-          amount: MIN_BTC_ORDER_QTY,
+          amount: calculateTestAmount(connector, symbol, ticker.close),
           price: ticker.close,
           type: OrderType.Market,
           marketType: MarketType.Futures,
@@ -146,13 +148,11 @@ describeIfCredentials('bybit', 'Bybit Multiple Symbols Integration', () => {
 
       const results = await Promise.all(orderPromises);
 
-      // All orders should be successful
       results.forEach((result, index) => {
         expect(isOrderSuccessful(result)).toBe(true);
         expect(result.orderId).toBeDefined();
       });
 
-      // Cleanup: close all positions
       const closePromises = symbolsToTrade.map(symbol => {
         const ticker = connector.getTicker(symbol, MarketType.Futures);
         if (!ticker?.close) {
@@ -162,7 +162,7 @@ describeIfCredentials('bybit', 'Bybit Multiple Symbols Integration', () => {
         return connector.createOrder({
           symbol,
           side: OrderDirection.Sell,
-          amount: MIN_BTC_ORDER_QTY,
+          amount: calculateTestAmount(connector, symbol, ticker.close),
           price: ticker.close,
           type: OrderType.Market,
           marketType: MarketType.Futures,
@@ -176,19 +176,21 @@ describeIfCredentials('bybit', 'Bybit Multiple Symbols Integration', () => {
     });
 
     test('can fetch positions for multiple symbols after trading', async () => {
+      const firstSymbol = BYBIT_FUTURES_TEST_SYMBOL_LIST[0];
       const mapping = OrderCalculator.resolveSymbolsForExchanges(
-        [MULTIPLE_TEST_SYMBOLS[0]],
+        [firstSymbol],
         new Map([[exchangeName, connector]])
       );
 
-      // Create and immediately close a position
-      const ticker = connector.getTicker(MULTIPLE_TEST_SYMBOLS[0], MarketType.Futures);
+      const ticker = connector.getTicker(firstSymbol, MarketType.Futures);
       if (!ticker?.close) return;
 
+      const qty = calculateTestAmount(connector, firstSymbol, ticker.close);
+
       const openResult = await connector.createOrder({
-        symbol: MULTIPLE_TEST_SYMBOLS[0],
+        symbol: firstSymbol,
         side: OrderDirection.Buy,
-        amount: MIN_BTC_ORDER_QTY,
+        amount: qty,
         price: ticker.close,
         type: OrderType.Market,
         marketType: MarketType.Futures,
@@ -196,14 +198,12 @@ describeIfCredentials('bybit', 'Bybit Multiple Symbols Integration', () => {
 
       if (!isOrderSuccessful(openResult)) return;
 
-      // Fetch position while open
-      const positionOpen = await connector.fetchPosition(MULTIPLE_TEST_SYMBOLS[0]);
+      const positionOpen = await connector.fetchPosition(firstSymbol);
 
-      // Close position
       const closeResult = await connector.createOrder({
-        symbol: MULTIPLE_TEST_SYMBOLS[0],
+        symbol: firstSymbol,
         side: OrderDirection.Sell,
-        amount: MIN_BTC_ORDER_QTY,
+        amount: qty,
         price: ticker.close,
         type: OrderType.Market,
         marketType: MarketType.Futures,
@@ -212,7 +212,7 @@ describeIfCredentials('bybit', 'Bybit Multiple Symbols Integration', () => {
       expect(isOrderSuccessful(closeResult)).toBe(true);
 
       // Fetch position after close
-      const positionClosed = await connector.fetchPosition(MULTIPLE_TEST_SYMBOLS[0]);
+      const positionClosed = await connector.fetchPosition(firstSymbol);
 
       // At least one should exist (open or closed state)
       expect(positionOpen !== null || positionClosed !== null).toBe(true);
@@ -220,11 +220,11 @@ describeIfCredentials('bybit', 'Bybit Multiple Symbols Integration', () => {
 
     test('volume calculation distributes correctly across multiple symbols', () => {
       const totalVolume = 300; // USDT
-      const symbolCount = MULTIPLE_TEST_SYMBOLS.length;
+      const symbolCount = BYBIT_FUTURES_TEST_SYMBOL_LIST.length;
       const volumePerSymbol = totalVolume / symbolCount;
 
       const mapping = OrderCalculator.resolveSymbolsForExchanges(
-        MULTIPLE_TEST_SYMBOLS,
+        BYBIT_FUTURES_TEST_SYMBOL_LIST,
         new Map([[exchangeName, connector]])
       );
 
@@ -257,7 +257,7 @@ describeIfCredentials('binance', 'Binance Multiple Symbols Integration', () => {
     await connector.initialize();
 
     // Wait for all test symbols to load
-    for (const symbol of MULTIPLE_TEST_SYMBOLS) {
+    for (const symbol of BINANCE_FUTURES_TEST_SYMBOL_LIST) {
       await waitForTickers(connector, symbol);
     }
   }, 90000);
@@ -269,18 +269,18 @@ describeIfCredentials('binance', 'Binance Multiple Symbols Integration', () => {
   describe('Multiple Symbols', () => {
     test('resolveSymbolsForExchanges creates mapping for all symbols on Binance', () => {
       const mapping = OrderCalculator.resolveSymbolsForExchanges(
-        MULTIPLE_TEST_SYMBOLS,
+        BINANCE_FUTURES_TEST_SYMBOL_LIST,
         new Map([[exchangeName, connector]])
       );
 
       expect(mapping.size).toBe(1);
 
       const exchangeMap = mapping.get(exchangeName)!;
-      expect(exchangeMap.size).toBe(MULTIPLE_TEST_SYMBOLS.length);
+      expect(exchangeMap.size).toBe(BINANCE_FUTURES_TEST_SYMBOL_LIST.length);
     });
 
     test('creates orders for multiple symbols on Binance', async () => {
-      const symbolsToTrade = MULTIPLE_TEST_SYMBOLS.slice(0, 2);
+      const symbolsToTrade = BINANCE_FUTURES_TEST_SYMBOL_LIST.slice(0, 2);
 
       await OrderCalculator.setupLeverageAndMarginMode({
         exchangeConnectorByName: new Map([[exchangeName, connector]]),
@@ -292,15 +292,16 @@ describeIfCredentials('binance', 'Binance Multiple Symbols Integration', () => {
       });
 
       const orderPromises = symbolsToTrade.map(symbol => {
-        const ticker = connector.getTicker(symbol, MarketType.Futures);
+        const resolvedSymbol = connector.resolveSymbolWithPrefix(symbol);
+        const ticker = connector.getTicker(resolvedSymbol, MarketType.Futures);
         if (!ticker?.close) {
           throw new Error(`No ticker for ${symbol}`);
         }
 
         return connector.createOrder({
-          symbol,
+          symbol: resolvedSymbol,
           side: OrderDirection.Buy,
-          amount: MIN_BTC_ORDER_QTY,
+          amount: calculateTestAmount(connector, resolvedSymbol, ticker.close),
           price: ticker.close,
           type: OrderType.Market,
           marketType: MarketType.Futures,
@@ -313,17 +314,17 @@ describeIfCredentials('binance', 'Binance Multiple Symbols Integration', () => {
         expect(isOrderSuccessful(result)).toBe(true);
       });
 
-      // Cleanup
       const closePromises = symbolsToTrade.map(symbol => {
-        const ticker = connector.getTicker(symbol, MarketType.Futures);
+        const resolvedSymbol = connector.resolveSymbolWithPrefix(symbol);
+        const ticker = connector.getTicker(resolvedSymbol, MarketType.Futures);
         if (!ticker?.close) {
           throw new Error(`No ticker for closing ${symbol}`);
         }
 
         return connector.createOrder({
-          symbol,
+          symbol: resolvedSymbol,
           side: OrderDirection.Sell,
-          amount: MIN_BTC_ORDER_QTY,
+          amount: calculateTestAmount(connector, resolvedSymbol, ticker.close),
           price: ticker.close,
           type: OrderType.Market,
           marketType: MarketType.Futures,

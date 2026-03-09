@@ -3,7 +3,12 @@ import path from 'path';
 import dotenv from 'dotenv';
 
 import { ExchangeConnector } from '../../../src/services/exchangeConnector';
-import { ExchangeConfig, ExchangeName, MarketType } from '../../../src/types';
+import {
+  ExchangeConfig,
+  ExchangeName,
+  MarketType,
+  SymbolMappingByExchange,
+} from '../../../src/types';
 
 dotenv.config({ path: path.resolve(__dirname, '../../../.env.test') });
 
@@ -42,14 +47,45 @@ export const describeIfCredentials = (
   }
 };
 
-export const FUTURES_TEST_SYMBOL = 'BTCUSDT';
-export const MIN_BTC_ORDER_QTY = 0.001;
+export const MIN_TEST_USDT = 100;
 
-export const MULTIPLE_TEST_SYMBOLS = ['BTCUSDT', 'ETHUSDT', 'XRPUSDT'];
+export const BYBIT_FUTURES_TEST_SYMBOL = 'BTCUSDT';
+export const BYBIT_FUTURES_TEST_SYMBOL_LIST = [
+  BYBIT_FUTURES_TEST_SYMBOL,
+  '10000QUBICUSDT',
+  'FLOKIUSDT',
+  'MOGUSDT',
+];
+export const BYBIT_SPOT_FALLBACK_SYMBOL = 'CFGUSDT';
 
-export const getSymbolsForExchange = (exchangeName: ExchangeName): string[] => {
-  return MULTIPLE_TEST_SYMBOLS;
+export const BINANCE_FUTURES_TEST_SYMBOL = 'ETHUSDT';
+export const BINANCE_FUTURES_TEST_SYMBOL_LIST = [
+  BINANCE_FUTURES_TEST_SYMBOL,
+  'FLOKIUSDT',
+  'SHIBUSDT',
+];
+export const BINANCE_SPOT_FALLBACK_SYMBOL = 'CFGUSDT';
+
+export const serializeMapping = (
+  mapping: SymbolMappingByExchange
+): Record<string, Record<string, string>> => {
+  const result: Record<string, Record<string, string>> = {};
+
+  for (const [exchange, symbolMap] of mapping) {
+    result[exchange] = Object.fromEntries(symbolMap);
+  }
+
+  return result;
 };
+
+export const calculateTestAmount = (
+  connector: ExchangeConnector,
+  symbol: string,
+  price: number
+): number =>
+  parseFloat(
+    connector.getClient().amountToPrecision(symbol, MIN_TEST_USDT / price)
+  );
 
 export const waitForTickers = async (
   connector: ExchangeConnector,
@@ -60,7 +96,8 @@ export const waitForTickers = async (
   const startTime = Date.now();
 
   while (Date.now() - startTime < timeoutMs) {
-    const ticker = connector.getTicker(symbol, MarketType.Futures);
+    const resolvedSymbol = connector.resolveSymbolWithPrefix(symbol);
+    const ticker = connector.getTicker(resolvedSymbol, MarketType.Futures);
 
     if (ticker?.close !== undefined && ticker.close > 0) {
       return;
@@ -74,21 +111,3 @@ export const waitForTickers = async (
   );
 };
 
-export const verifySymbolsAvailable = async (
-  connector: ExchangeConnector,
-  symbols: string[]
-): Promise<void> => {
-  const failedSymbols: string[] = [];
-
-  for (const symbol of symbols) {
-    try {
-      await waitForTickers(connector, symbol, 10000);
-    } catch (error) {
-      failedSymbols.push(symbol);
-    }
-  }
-
-  if (failedSymbols.length > 0) {
-    throw new Error(`Failed to verify symbols: ${failedSymbols.join(', ')}`);
-  }
-};

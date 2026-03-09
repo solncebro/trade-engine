@@ -13,8 +13,8 @@ import {
   describeIfCredentials,
   BYBIT_DEMO_CONFIG,
   BINANCE_DEMO_CONFIG,
-  FUTURES_TEST_SYMBOL,
-  MIN_BTC_ORDER_QTY,
+  BYBIT_FUTURES_TEST_SYMBOL,
+  BINANCE_FUTURES_TEST_SYMBOL,
   waitForTickers,
 } from './helpers/testnet.helpers';
 
@@ -25,7 +25,7 @@ describeIfCredentials('bybit', 'Bybit Error Handling Integration', () => {
   beforeAll(async () => {
     connector = new ExchangeConnector(exchangeName, BYBIT_DEMO_CONFIG);
     await connector.initialize();
-    await waitForTickers(connector, FUTURES_TEST_SYMBOL);
+    await waitForTickers(connector, BYBIT_FUTURES_TEST_SYMBOL);
   }, 60000);
 
   afterAll(async () => {
@@ -57,7 +57,7 @@ describeIfCredentials('bybit', 'Bybit Error Handling Integration', () => {
 
     test('setupLeverageAndMarginMode does not throw even on invalid leverage', async () => {
       const mapping = OrderCalculator.resolveSymbolsForExchanges(
-        [FUTURES_TEST_SYMBOL],
+        [BYBIT_FUTURES_TEST_SYMBOL],
         new Map([[exchangeName, connector]])
       );
 
@@ -73,7 +73,7 @@ describeIfCredentials('bybit', 'Bybit Error Handling Integration', () => {
 
     test('createOrder returns errorText instead of throwing on invalid amount', async () => {
       const result = await connector.createOrder({
-        symbol: FUTURES_TEST_SYMBOL,
+        symbol: BYBIT_FUTURES_TEST_SYMBOL,
         side: OrderDirection.Buy,
         amount: 0, // Invalid amount
         price: 50000,
@@ -129,14 +129,14 @@ describeIfCredentials('bybit', 'Bybit Error Handling Integration', () => {
     });
 
     test('setLeverage returns boolean on any error', async () => {
-      const result = await connector.setLeverage(FUTURES_TEST_SYMBOL, 999);
+      const result = await connector.setLeverage(BYBIT_FUTURES_TEST_SYMBOL, 999);
 
       // Should return boolean, not throw
       expect(typeof result).toBe('boolean');
     });
 
     test('setMarginMode returns boolean on any error', async () => {
-      const result = await connector.setMarginMode(FUTURES_TEST_SYMBOL, 'isolated');
+      const result = await connector.setMarginMode(BYBIT_FUTURES_TEST_SYMBOL, 'isolated');
 
       // Should return boolean, not throw
       expect(typeof result).toBe('boolean');
@@ -151,9 +151,9 @@ describeIfCredentials('bybit', 'Bybit Error Handling Integration', () => {
 
     test('createOrder with negative price returns errorText', async () => {
       const result = await connector.createOrder({
-        symbol: FUTURES_TEST_SYMBOL,
+        symbol: BYBIT_FUTURES_TEST_SYMBOL,
         side: OrderDirection.Buy,
-        amount: MIN_BTC_ORDER_QTY,
+        amount: 0.001,
         price: -100, // Negative price
         type: OrderType.Market,
         marketType: MarketType.Futures,
@@ -166,7 +166,7 @@ describeIfCredentials('bybit', 'Bybit Error Handling Integration', () => {
 
     test('createOrder with very large amount returns graceful error or success', async () => {
       const result = await connector.createOrder({
-        symbol: FUTURES_TEST_SYMBOL,
+        symbol: BYBIT_FUTURES_TEST_SYMBOL,
         side: OrderDirection.Buy,
         amount: 1000000, // Unreasonably large
         price: 50000,
@@ -204,9 +204,9 @@ describeIfCredentials('bybit', 'Bybit Error Handling Integration', () => {
 
     test('price adjustment handles zero price gracefully', () => {
       const baseOrderParams = {
-        symbol: FUTURES_TEST_SYMBOL,
+        symbol: BYBIT_FUTURES_TEST_SYMBOL,
         side: OrderDirection.Buy,
-        amount: MIN_BTC_ORDER_QTY,
+        amount: 0.001,
         price: 0, // Zero price
         type: OrderType.Market,
         marketType: MarketType.Futures,
@@ -227,7 +227,7 @@ describeIfCredentials('bybit', 'Bybit Error Handling Integration', () => {
     test('all order creation failures are non-throwing', async () => {
       const testCases = [
         {
-          symbol: FUTURES_TEST_SYMBOL,
+          symbol: BYBIT_FUTURES_TEST_SYMBOL,
           amount: 0, // Invalid
           price: 50000,
         },
@@ -237,7 +237,7 @@ describeIfCredentials('bybit', 'Bybit Error Handling Integration', () => {
           price: 50000,
         },
         {
-          symbol: FUTURES_TEST_SYMBOL,
+          symbol: BYBIT_FUTURES_TEST_SYMBOL,
           amount: 0.001,
           price: -100, // Invalid price
         },
@@ -268,7 +268,7 @@ describeIfCredentials('binance', 'Binance Error Handling Integration', () => {
   beforeAll(async () => {
     connector = new ExchangeConnector(exchangeName, BINANCE_DEMO_CONFIG);
     await connector.initialize();
-    await waitForTickers(connector, FUTURES_TEST_SYMBOL);
+    await waitForTickers(connector, BINANCE_FUTURES_TEST_SYMBOL);
   }, 60000);
 
   afterAll(async () => {
@@ -332,7 +332,7 @@ describeIfCredentials('binance', 'Binance Error Handling Integration', () => {
 
     test('setupLeverageAndMarginMode is non-blocking on Binance', async () => {
       const mapping = OrderCalculator.resolveSymbolsForExchanges(
-        [FUTURES_TEST_SYMBOL],
+        [BINANCE_FUTURES_TEST_SYMBOL],
         new Map([[exchangeName, connector]])
       );
 
@@ -370,13 +370,13 @@ describeIfCredentials('binance', 'Binance Error Handling Integration', () => {
         },
         {
           description: 'Zero amount',
-          symbol: FUTURES_TEST_SYMBOL,
+          symbol: BINANCE_FUTURES_TEST_SYMBOL,
           amount: 0,
           price: 50000,
         },
         {
           description: 'Negative price',
-          symbol: FUTURES_TEST_SYMBOL,
+          symbol: BINANCE_FUTURES_TEST_SYMBOL,
           amount: 0.001,
           price: -1000,
         },

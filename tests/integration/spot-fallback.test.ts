@@ -10,11 +10,13 @@ import {
 import { isOrderSuccessful } from '../../src/utils/order.utils';
 
 import {
-  describeIfCredentials,
-  BYBIT_DEMO_CONFIG,
   BINANCE_DEMO_CONFIG,
-  FUTURES_TEST_SYMBOL,
-  MIN_BTC_ORDER_QTY,
+  BINANCE_FUTURES_TEST_SYMBOL,
+  BYBIT_DEMO_CONFIG,
+  BYBIT_FUTURES_TEST_SYMBOL,
+  MIN_TEST_USDT,
+  calculateTestAmount,
+  describeIfCredentials,
   waitForTickers,
 } from './helpers/testnet.helpers';
 
@@ -26,7 +28,7 @@ describeIfCredentials('bybit', 'Bybit Spot Fallback Integration', () => {
   beforeAll(async () => {
     connector = new ExchangeConnector(exchangeName, BYBIT_DEMO_CONFIG);
     await connector.initialize();
-    await waitForTickers(connector, FUTURES_TEST_SYMBOL);
+    await waitForTickers(connector, BYBIT_FUTURES_TEST_SYMBOL);
   }, 60000);
 
   afterAll(async () => {
@@ -35,7 +37,7 @@ describeIfCredentials('bybit', 'Bybit Spot Fallback Integration', () => {
 
   describe('Spot Fallback', () => {
     test('futures ticker exists for real symbols', () => {
-      const ticker = connector.getTicker(FUTURES_TEST_SYMBOL, MarketType.Futures);
+      const ticker = connector.getTicker(BYBIT_FUTURES_TEST_SYMBOL, MarketType.Futures);
       expect(ticker).toBeDefined();
       expect(ticker!.close).toBeGreaterThan(0);
     });
@@ -98,23 +100,24 @@ describeIfCredentials('bybit', 'Bybit Spot Fallback Integration', () => {
     test('creates actual spot market order when fallback succeeds', async () => {
       // Use real BTCUSDT symbol - should exist in spot
       const mapping = OrderCalculator.resolveSymbolsForExchanges(
-        [FUTURES_TEST_SYMBOL],
+        [BYBIT_FUTURES_TEST_SYMBOL],
         new Map([[exchangeName, connector]])
       );
 
       // Get spot ticker
-      const spotTicker = connector.getTicker(FUTURES_TEST_SYMBOL, MarketType.Spot);
+      const spotTicker = connector.getTicker(BYBIT_FUTURES_TEST_SYMBOL, MarketType.Spot);
       if (!spotTicker?.close) {
         // Skip if spot ticker not available
-        console.warn(`Spot ticker for ${FUTURES_TEST_SYMBOL} not yet loaded, skipping test`);
+        console.warn(`Spot ticker for ${BYBIT_FUTURES_TEST_SYMBOL} not yet loaded, skipping test`);
         return;
       }
 
-      // Create spot order directly
+      const spotQty = parseFloat(connector.getClient(MarketType.Spot).amountToPrecision(BYBIT_FUTURES_TEST_SYMBOL, MIN_TEST_USDT / spotTicker.close));
+
       const spotOrderResult = await connector.createOrder({
-        symbol: FUTURES_TEST_SYMBOL,
+        symbol: BYBIT_FUTURES_TEST_SYMBOL,
         side: OrderDirection.Buy,
-        amount: MIN_BTC_ORDER_QTY,
+        amount: spotQty,
         price: spotTicker.close,
         type: OrderType.Market,
         marketType: MarketType.Spot,
@@ -123,11 +126,10 @@ describeIfCredentials('bybit', 'Bybit Spot Fallback Integration', () => {
       expect(isOrderSuccessful(spotOrderResult)).toBe(true);
       expect(spotOrderResult.orderId).toBeDefined();
 
-      // Cleanup: sell to close position
       const closeResult = await connector.createOrder({
-        symbol: FUTURES_TEST_SYMBOL,
+        symbol: BYBIT_FUTURES_TEST_SYMBOL,
         side: OrderDirection.Sell,
-        amount: MIN_BTC_ORDER_QTY,
+        amount: spotQty,
         price: spotTicker.close,
         type: OrderType.Market,
         marketType: MarketType.Spot,
@@ -137,8 +139,8 @@ describeIfCredentials('bybit', 'Bybit Spot Fallback Integration', () => {
     });
 
     test('spot and futures tickers are independently tracked', () => {
-      const futuresTicker = connector.getTicker(FUTURES_TEST_SYMBOL, MarketType.Futures);
-      const spotTicker = connector.getTicker(FUTURES_TEST_SYMBOL, MarketType.Spot);
+      const futuresTicker = connector.getTicker(BYBIT_FUTURES_TEST_SYMBOL, MarketType.Futures);
+      const spotTicker = connector.getTicker(BYBIT_FUTURES_TEST_SYMBOL, MarketType.Spot);
 
       // Both should be available
       expect(futuresTicker).toBeDefined();
@@ -190,7 +192,7 @@ describeIfCredentials('binance', 'Binance Spot Fallback Integration', () => {
   beforeAll(async () => {
     connector = new ExchangeConnector(exchangeName, BINANCE_DEMO_CONFIG);
     await connector.initialize();
-    await waitForTickers(connector, FUTURES_TEST_SYMBOL);
+    await waitForTickers(connector, BINANCE_FUTURES_TEST_SYMBOL);
   }, 60000);
 
   afterAll(async () => {
@@ -230,16 +232,18 @@ describeIfCredentials('binance', 'Binance Spot Fallback Integration', () => {
     });
 
     test('creates actual spot order on Binance', async () => {
-      const spotTicker = connector.getTicker(FUTURES_TEST_SYMBOL, MarketType.Spot);
+      const spotTicker = connector.getTicker(BINANCE_FUTURES_TEST_SYMBOL, MarketType.Spot);
       if (!spotTicker?.close) {
-        console.warn(`Spot ticker for ${FUTURES_TEST_SYMBOL} not yet loaded on Binance, skipping`);
+        console.warn(`Spot ticker for ${BINANCE_FUTURES_TEST_SYMBOL} not yet loaded on Binance, skipping`);
         return;
       }
 
+      const binanceSpotQty = parseFloat(connector.getClient(MarketType.Spot).amountToPrecision(BINANCE_FUTURES_TEST_SYMBOL, MIN_TEST_USDT / spotTicker.close));
+
       const openResult = await connector.createOrder({
-        symbol: FUTURES_TEST_SYMBOL,
+        symbol: BINANCE_FUTURES_TEST_SYMBOL,
         side: OrderDirection.Buy,
-        amount: MIN_BTC_ORDER_QTY,
+        amount: binanceSpotQty,
         price: spotTicker.close,
         type: OrderType.Market,
         marketType: MarketType.Spot,
@@ -247,11 +251,10 @@ describeIfCredentials('binance', 'Binance Spot Fallback Integration', () => {
 
       expect(isOrderSuccessful(openResult)).toBe(true);
 
-      // Cleanup
       const closeResult = await connector.createOrder({
-        symbol: FUTURES_TEST_SYMBOL,
+        symbol: BINANCE_FUTURES_TEST_SYMBOL,
         side: OrderDirection.Sell,
-        amount: MIN_BTC_ORDER_QTY,
+        amount: binanceSpotQty,
         price: spotTicker.close,
         type: OrderType.Market,
         marketType: MarketType.Spot,
@@ -261,8 +264,8 @@ describeIfCredentials('binance', 'Binance Spot Fallback Integration', () => {
     });
 
     test('spot ticker loading works independently from futures', () => {
-      const spotTicker = connector.getTicker(FUTURES_TEST_SYMBOL, MarketType.Spot);
-      const futuresTicker = connector.getTicker(FUTURES_TEST_SYMBOL, MarketType.Futures);
+      const spotTicker = connector.getTicker(BINANCE_FUTURES_TEST_SYMBOL, MarketType.Spot);
+      const futuresTicker = connector.getTicker(BINANCE_FUTURES_TEST_SYMBOL, MarketType.Futures);
 
       // Both should be available on Binance
       expect(spotTicker).toBeDefined();

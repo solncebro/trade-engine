@@ -1,8 +1,11 @@
 import {
   BYBIT_DEMO_CONFIG,
+  BYBIT_FUTURES_TEST_SYMBOL,
+  BYBIT_FUTURES_TEST_SYMBOL_LIST,
+  BYBIT_SPOT_FALLBACK_SYMBOL,
+  calculateTestAmount,
   describeIfCredentials,
-  FUTURES_TEST_SYMBOL,
-  MIN_BTC_ORDER_QTY,
+  serializeMapping,
   waitForTickers,
 } from './helpers/testnet.helpers';
 
@@ -15,30 +18,10 @@ import {
   MarketType,
   OrderDirection,
   OrderType,
-  SymbolMappingByExchange,
 } from '../../src/types';
 import { isOrderSuccessful } from '../../src/utils/order.utils';
 
-const TEST_SYMBOLS = [
-  FUTURES_TEST_SYMBOL,
-  '10000QUBICUSDT',
-  '1000FLOKIUSDT',
-  '1000000MOGUSDT',
-];
-
 const LIMIT_PRICE_ADJUSTMENT_PERCENT = 5;
-
-const serializeMapping = (
-  mapping: SymbolMappingByExchange
-): Record<string, Record<string, string>> => {
-  const result: Record<string, Record<string, string>> = {};
-
-  for (const [exchange, symbolMap] of mapping) {
-    result[exchange] = Object.fromEntries(symbolMap);
-  }
-
-  return result;
-};
 
 describeIfCredentials('bybit', 'Bybit Demo Integration', () => {
   let connector: ExchangeConnector;
@@ -47,7 +30,7 @@ describeIfCredentials('bybit', 'Bybit Demo Integration', () => {
   beforeAll(async () => {
     connector = new ExchangeConnector(exchangeName, BYBIT_DEMO_CONFIG);
     await connector.initialize();
-    await waitForTickers(connector, FUTURES_TEST_SYMBOL);
+    await waitForTickers(connector, BYBIT_FUTURES_TEST_SYMBOL);
   }, 60000);
 
   afterAll(async () => {
@@ -90,7 +73,7 @@ describeIfCredentials('bybit', 'Bybit Demo Integration', () => {
 
     test('getTicker() returns price data for futures', () => {
       const ticker = connector.getTicker(
-        FUTURES_TEST_SYMBOL,
+        BYBIT_FUTURES_TEST_SYMBOL,
         MarketType.Futures
       );
       logger.info({ ticker }, 'getTicker test result');
@@ -98,11 +81,10 @@ describeIfCredentials('bybit', 'Bybit Demo Integration', () => {
       expect(ticker!.close).toBeGreaterThan(0);
     });
 
-    test('resolveSymbolWithPrefix() resolves symbols including FLOKIUSDT → 1000FLOKIUSDT', () => {
-      const symbols = [...TEST_SYMBOLS, 'FLOKIUSDT'];
+    test('resolveSymbolWithPrefix() resolves FLOKIUSDT → 1000FLOKIUSDT, MOGUSDT → 1000000MOGUSDT', () => {
       const resolved: Record<string, string> = {};
 
-      for (const symbol of symbols) {
+      for (const symbol of BYBIT_FUTURES_TEST_SYMBOL_LIST) {
         resolved[symbol] = connector.resolveSymbolWithPrefix(symbol);
       }
 
@@ -110,15 +92,14 @@ describeIfCredentials('bybit', 'Bybit Demo Integration', () => {
 
       expect(resolved['BTCUSDT']).toBe('BTCUSDT');
       expect(resolved['10000QUBICUSDT']).toBe('10000QUBICUSDT');
-      expect(resolved['1000FLOKIUSDT']).toBe('1000FLOKIUSDT');
-      expect(resolved['1000000MOGUSDT']).toBe('1000000MOGUSDT');
       expect(resolved['FLOKIUSDT']).toBe('1000FLOKIUSDT');
+      expect(resolved['MOGUSDT']).toBe('1000000MOGUSDT');
     });
 
     test('setLeverage() completes without throwing', async () => {
-      const isSuccess = await connector.setLeverage(FUTURES_TEST_SYMBOL, 5);
+      const isSuccess = await connector.setLeverage(BYBIT_FUTURES_TEST_SYMBOL, 5);
       logger.info(
-        { symbol: FUTURES_TEST_SYMBOL, leverage: 5, isSuccess },
+        { symbol: BYBIT_FUTURES_TEST_SYMBOL, leverage: 5, isSuccess },
         'setLeverage test result'
       );
       expect(typeof isSuccess).toBe('boolean');
@@ -126,11 +107,11 @@ describeIfCredentials('bybit', 'Bybit Demo Integration', () => {
 
     test('setMarginMode() completes without throwing', async () => {
       const isSuccess = await connector.setMarginMode(
-        FUTURES_TEST_SYMBOL,
+        BYBIT_FUTURES_TEST_SYMBOL,
         'isolated'
       );
       logger.info(
-        { symbol: FUTURES_TEST_SYMBOL, marginMode: 'isolated', isSuccess },
+        { symbol: BYBIT_FUTURES_TEST_SYMBOL, marginMode: 'isolated', isSuccess },
         'setMarginMode test result'
       );
       expect(typeof isSuccess).toBe('boolean');
@@ -138,15 +119,17 @@ describeIfCredentials('bybit', 'Bybit Demo Integration', () => {
 
     test('createOrder() market: opens and closes a position', async () => {
       const ticker = connector.getTicker(
-        FUTURES_TEST_SYMBOL,
+        BYBIT_FUTURES_TEST_SYMBOL,
         MarketType.Futures
       );
       expect(ticker).toBeDefined();
 
+      const amount = calculateTestAmount(connector, BYBIT_FUTURES_TEST_SYMBOL, ticker!.close!);
+
       const openResult = await connector.createOrder({
-        symbol: FUTURES_TEST_SYMBOL,
+        symbol: BYBIT_FUTURES_TEST_SYMBOL,
         side: OrderDirection.Buy,
-        amount: MIN_BTC_ORDER_QTY,
+        amount,
         price: ticker!.close!,
         type: OrderType.Market,
         marketType: MarketType.Futures,
@@ -157,12 +140,13 @@ describeIfCredentials('bybit', 'Bybit Demo Integration', () => {
       expect(openResult.orderId).toBeDefined();
 
       const closeResult = await connector.createOrder({
-        symbol: FUTURES_TEST_SYMBOL,
+        symbol: BYBIT_FUTURES_TEST_SYMBOL,
         side: OrderDirection.Sell,
-        amount: MIN_BTC_ORDER_QTY,
+        amount,
         price: ticker!.close!,
         type: OrderType.Market,
         marketType: MarketType.Futures,
+        params: { reduceOnly: true },
       });
 
       logger.info({ result: closeResult }, 'createOrder market close test result');
@@ -171,16 +155,17 @@ describeIfCredentials('bybit', 'Bybit Demo Integration', () => {
 
     test('createOrder() limit: opens and closes a position', async () => {
       const ticker = connector.getTicker(
-        FUTURES_TEST_SYMBOL,
+        BYBIT_FUTURES_TEST_SYMBOL,
         MarketType.Futures
       );
       expect(ticker).toBeDefined();
       const currentPrice = ticker!.close!;
+      const amount = calculateTestAmount(connector, BYBIT_FUTURES_TEST_SYMBOL, currentPrice);
 
       const openResult = await connector.createOrder({
-        symbol: FUTURES_TEST_SYMBOL,
+        symbol: BYBIT_FUTURES_TEST_SYMBOL,
         side: OrderDirection.Buy,
-        amount: MIN_BTC_ORDER_QTY,
+        amount,
         price: currentPrice * 1.05,
         type: OrderType.Limit,
         marketType: MarketType.Futures,
@@ -191,9 +176,9 @@ describeIfCredentials('bybit', 'Bybit Demo Integration', () => {
       expect(openResult.orderId).toBeDefined();
 
       const closeResult = await connector.createOrder({
-        symbol: FUTURES_TEST_SYMBOL,
+        symbol: BYBIT_FUTURES_TEST_SYMBOL,
         side: OrderDirection.Sell,
-        amount: MIN_BTC_ORDER_QTY,
+        amount,
         price: currentPrice * 0.95,
         type: OrderType.Limit,
         marketType: MarketType.Futures,
@@ -205,7 +190,7 @@ describeIfCredentials('bybit', 'Bybit Demo Integration', () => {
     });
 
     test('fetchPosition() returns position data', async () => {
-      const position = await connector.fetchPosition(FUTURES_TEST_SYMBOL);
+      const position = await connector.fetchPosition(BYBIT_FUTURES_TEST_SYMBOL);
       logger.info({ position }, 'fetchPosition test result');
 
       if (position !== null) {
@@ -222,9 +207,9 @@ describeIfCredentials('bybit', 'Bybit Demo Integration', () => {
       exchangeConnectorByName = new Map([[exchangeName, connector]]);
     });
 
-    test('resolveSymbolsForExchanges() creates correct mapping', () => {
+    test('resolveSymbolsForExchanges() creates correct mapping with resolved symbols', () => {
       const mapping = OrderCalculator.resolveSymbolsForExchanges(
-        TEST_SYMBOLS,
+        BYBIT_FUTURES_TEST_SYMBOL_LIST,
         exchangeConnectorByName
       );
 
@@ -235,28 +220,32 @@ describeIfCredentials('bybit', 'Bybit Demo Integration', () => {
       expect(mapping.size).toBe(1);
 
       const bybitMap = mapping.get(exchangeName)!;
-      for (const symbol of TEST_SYMBOLS) {
-        expect(bybitMap.has(symbol)).toBe(true);
-      }
+      expect(bybitMap.size).toBe(BYBIT_FUTURES_TEST_SYMBOL_LIST.length);
+
+      // Unprefixed symbols should resolve to prefixed
+      expect(bybitMap.get('FLOKIUSDT')).toBe('1000FLOKIUSDT');
+      expect(bybitMap.get('MOGUSDT')).toBe('1000000MOGUSDT');
+      expect(bybitMap.get('BTCUSDT')).toBe('BTCUSDT');
+      expect(bybitMap.get('10000QUBICUSDT')).toBe('10000QUBICUSDT');
     });
 
     test('getUniqueSymbolCountFromMapping() returns correct count', () => {
       const mapping = OrderCalculator.resolveSymbolsForExchanges(
-        TEST_SYMBOLS,
+        BYBIT_FUTURES_TEST_SYMBOL_LIST,
         exchangeConnectorByName
       );
 
       const count = OrderCalculator.getUniqueSymbolCountFromMapping(mapping);
       logger.info(
-        { count, symbols: TEST_SYMBOLS },
+        { count, symbols: BYBIT_FUTURES_TEST_SYMBOL_LIST },
         'getUniqueSymbolCountFromMapping test result'
       );
-      expect(count).toBe(TEST_SYMBOLS.length);
+      expect(count).toBe(BYBIT_FUTURES_TEST_SYMBOL_LIST.length);
     });
 
     test('createOrderAttributesForSymbol() returns attributes with price', () => {
       const mapping = OrderCalculator.resolveSymbolsForExchanges(
-        [FUTURES_TEST_SYMBOL],
+        [BYBIT_FUTURES_TEST_SYMBOL],
         exchangeConnectorByName
       );
 
@@ -282,7 +271,7 @@ describeIfCredentials('bybit', 'Bybit Demo Integration', () => {
     test('enrichWithSpotFallback() falls back to spot for CFGUSDT', () => {
       // CFGUSDT exists on spot but not on futures
       const mapping = OrderCalculator.resolveSymbolsForExchanges(
-        ['CFGUSDT'],
+        [BYBIT_SPOT_FALLBACK_SYMBOL],
         exchangeConnectorByName
       );
 
@@ -315,15 +304,15 @@ describeIfCredentials('bybit', 'Bybit Demo Integration', () => {
 
     test(`calculateLimitOrderWithPriceAdjustment() adjusts price +${LIMIT_PRICE_ADJUSTMENT_PERCENT}%`, () => {
       const ticker = connector.getTicker(
-        FUTURES_TEST_SYMBOL,
+        BYBIT_FUTURES_TEST_SYMBOL,
         MarketType.Futures
       )!;
 
       const limitOrder = OrderCalculator.calculateLimitOrderWithPriceAdjustment(
         {
-          symbol: FUTURES_TEST_SYMBOL,
+          symbol: BYBIT_FUTURES_TEST_SYMBOL,
           side: OrderDirection.Buy,
-          amount: MIN_BTC_ORDER_QTY,
+          amount: calculateTestAmount(connector, BYBIT_FUTURES_TEST_SYMBOL, ticker.close!),
           price: ticker.close!,
           type: OrderType.Market,
           marketType: MarketType.Futures,
@@ -343,14 +332,14 @@ describeIfCredentials('bybit', 'Bybit Demo Integration', () => {
 
     test('calculateCloseOrder() creates correct TP and SL orders', () => {
       const ticker = connector.getTicker(
-        FUTURES_TEST_SYMBOL,
+        BYBIT_FUTURES_TEST_SYMBOL,
         MarketType.Futures
       )!;
 
       const baseParams = {
-        symbol: FUTURES_TEST_SYMBOL,
+        symbol: BYBIT_FUTURES_TEST_SYMBOL,
         side: OrderDirection.Buy,
-        amount: MIN_BTC_ORDER_QTY,
+        amount: calculateTestAmount(connector, BYBIT_FUTURES_TEST_SYMBOL, ticker.close!),
         price: ticker.close!,
         type: OrderType.Market as OrderType,
         marketType: MarketType.Futures,
@@ -383,7 +372,7 @@ describeIfCredentials('bybit', 'Bybit Demo Integration', () => {
 
     test('setupLeverageAndMarginMode() completes without error', async () => {
       const mapping = OrderCalculator.resolveSymbolsForExchanges(
-        [FUTURES_TEST_SYMBOL],
+        [BYBIT_FUTURES_TEST_SYMBOL],
         exchangeConnectorByName
       );
 

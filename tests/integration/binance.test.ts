@@ -1,6 +1,11 @@
 import {
   BINANCE_DEMO_CONFIG,
+  BINANCE_FUTURES_TEST_SYMBOL,
+  BINANCE_FUTURES_TEST_SYMBOL_LIST,
+  BINANCE_SPOT_FALLBACK_SYMBOL,
+  calculateTestAmount,
   describeIfCredentials,
+  serializeMapping,
   waitForTickers,
 } from './helpers/testnet.helpers';
 
@@ -13,31 +18,10 @@ import {
   MarketType,
   OrderDirection,
   OrderType,
-  SymbolMappingByExchange,
 } from '../../src/types';
 import { isOrderSuccessful } from '../../src/utils/order.utils';
 
-const BINANCE_TEST_SYMBOL = 'ETHUSDT';
-const MIN_ORDER_QTY = 0.1;
 const LIMIT_PRICE_ADJUSTMENT_PERCENT = 5;
-
-const TEST_SYMBOLS = [
-  BINANCE_TEST_SYMBOL,
-  '1000FLOKIUSDT',
-  '1000SHIBUSDT',
-];
-
-const serializeMapping = (
-  mapping: SymbolMappingByExchange
-): Record<string, Record<string, string>> => {
-  const result: Record<string, Record<string, string>> = {};
-
-  for (const [exchange, symbolMap] of mapping) {
-    result[exchange] = Object.fromEntries(symbolMap);
-  }
-
-  return result;
-};
 
 describeIfCredentials('binance', 'Binance Demo Integration', () => {
   let connector: ExchangeConnector;
@@ -46,7 +30,7 @@ describeIfCredentials('binance', 'Binance Demo Integration', () => {
   beforeAll(async () => {
     connector = new ExchangeConnector(exchangeName, BINANCE_DEMO_CONFIG);
     await connector.initialize();
-    await waitForTickers(connector, BINANCE_TEST_SYMBOL);
+    await waitForTickers(connector, BINANCE_FUTURES_TEST_SYMBOL);
   }, 60000);
 
   afterAll(async () => {
@@ -89,7 +73,7 @@ describeIfCredentials('binance', 'Binance Demo Integration', () => {
 
     test('getTicker() returns price data for futures', () => {
       const ticker = connector.getTicker(
-        BINANCE_TEST_SYMBOL,
+        BINANCE_FUTURES_TEST_SYMBOL,
         MarketType.Futures
       );
       logger.info({ ticker }, 'getTicker test result');
@@ -97,24 +81,24 @@ describeIfCredentials('binance', 'Binance Demo Integration', () => {
       expect(ticker!.close).toBeGreaterThan(0);
     });
 
-    test('resolveSymbolWithPrefix() resolves all test symbols', () => {
+    test('resolveSymbolWithPrefix() resolves FLOKIUSDT → 1000FLOKIUSDT, SHIBUSDT → 1000SHIBUSDT', () => {
       const resolved: Record<string, string> = {};
 
-      for (const symbol of TEST_SYMBOLS) {
+      for (const symbol of BINANCE_FUTURES_TEST_SYMBOL_LIST) {
         resolved[symbol] = connector.resolveSymbolWithPrefix(symbol);
       }
 
       logger.info({ resolved }, 'resolveSymbolWithPrefix test result');
 
-      for (const symbol of TEST_SYMBOLS) {
-        expect(resolved[symbol]).toBe(symbol);
-      }
+      expect(resolved['ETHUSDT']).toBe('ETHUSDT');
+      expect(resolved['FLOKIUSDT']).toBe('1000FLOKIUSDT');
+      expect(resolved['SHIBUSDT']).toBe('1000SHIBUSDT');
     });
 
     test('setLeverage() completes without throwing', async () => {
-      const isSuccess = await connector.setLeverage(BINANCE_TEST_SYMBOL, 5);
+      const isSuccess = await connector.setLeverage(BINANCE_FUTURES_TEST_SYMBOL, 5);
       logger.info(
-        { symbol: BINANCE_TEST_SYMBOL, leverage: 5, isSuccess },
+        { symbol: BINANCE_FUTURES_TEST_SYMBOL, leverage: 5, isSuccess },
         'setLeverage test result'
       );
       expect(typeof isSuccess).toBe('boolean');
@@ -122,11 +106,11 @@ describeIfCredentials('binance', 'Binance Demo Integration', () => {
 
     test('setMarginMode() completes without throwing', async () => {
       const isSuccess = await connector.setMarginMode(
-        BINANCE_TEST_SYMBOL,
+        BINANCE_FUTURES_TEST_SYMBOL,
         'isolated'
       );
       logger.info(
-        { symbol: BINANCE_TEST_SYMBOL, marginMode: 'isolated', isSuccess },
+        { symbol: BINANCE_FUTURES_TEST_SYMBOL, marginMode: 'isolated', isSuccess },
         'setMarginMode test result'
       );
       expect(typeof isSuccess).toBe('boolean');
@@ -134,15 +118,17 @@ describeIfCredentials('binance', 'Binance Demo Integration', () => {
 
     test('createOrder() market: opens and closes a position', async () => {
       const ticker = connector.getTicker(
-        BINANCE_TEST_SYMBOL,
+        BINANCE_FUTURES_TEST_SYMBOL,
         MarketType.Futures
       );
       expect(ticker).toBeDefined();
 
+      const amount = calculateTestAmount(connector, BINANCE_FUTURES_TEST_SYMBOL, ticker!.close!);
+
       const openResult = await connector.createOrder({
-        symbol: BINANCE_TEST_SYMBOL,
+        symbol: BINANCE_FUTURES_TEST_SYMBOL,
         side: OrderDirection.Buy,
-        amount: MIN_ORDER_QTY,
+        amount,
         price: ticker!.close!,
         type: OrderType.Market,
         marketType: MarketType.Futures,
@@ -153,9 +139,9 @@ describeIfCredentials('binance', 'Binance Demo Integration', () => {
       expect(openResult.orderId).toBeDefined();
 
       const closeResult = await connector.createOrder({
-        symbol: BINANCE_TEST_SYMBOL,
+        symbol: BINANCE_FUTURES_TEST_SYMBOL,
         side: OrderDirection.Sell,
-        amount: MIN_ORDER_QTY,
+        amount,
         price: ticker!.close!,
         type: OrderType.Market,
         marketType: MarketType.Futures,
@@ -167,16 +153,17 @@ describeIfCredentials('binance', 'Binance Demo Integration', () => {
 
     test('createOrder() limit: opens and closes a position', async () => {
       const ticker = connector.getTicker(
-        BINANCE_TEST_SYMBOL,
+        BINANCE_FUTURES_TEST_SYMBOL,
         MarketType.Futures
       );
       expect(ticker).toBeDefined();
       const currentPrice = ticker!.close!;
+      const amount = calculateTestAmount(connector, BINANCE_FUTURES_TEST_SYMBOL, currentPrice);
 
       const openResult = await connector.createOrder({
-        symbol: BINANCE_TEST_SYMBOL,
+        symbol: BINANCE_FUTURES_TEST_SYMBOL,
         side: OrderDirection.Buy,
-        amount: MIN_ORDER_QTY,
+        amount,
         price: currentPrice * 1.03,
         type: OrderType.Limit,
         marketType: MarketType.Futures,
@@ -187,9 +174,9 @@ describeIfCredentials('binance', 'Binance Demo Integration', () => {
       expect(openResult.orderId).toBeDefined();
 
       const closeResult = await connector.createOrder({
-        symbol: BINANCE_TEST_SYMBOL,
+        symbol: BINANCE_FUTURES_TEST_SYMBOL,
         side: OrderDirection.Sell,
-        amount: MIN_ORDER_QTY,
+        amount,
         price: currentPrice * 0.97,
         type: OrderType.Limit,
         marketType: MarketType.Futures,
@@ -201,7 +188,7 @@ describeIfCredentials('binance', 'Binance Demo Integration', () => {
     });
 
     test('fetchPosition() returns position data', async () => {
-      const position = await connector.fetchPosition(BINANCE_TEST_SYMBOL);
+      const position = await connector.fetchPosition(BINANCE_FUTURES_TEST_SYMBOL);
       logger.info({ position }, 'fetchPosition test result');
 
       if (position !== null) {
@@ -218,9 +205,9 @@ describeIfCredentials('binance', 'Binance Demo Integration', () => {
       exchangeConnectorByName = new Map([[exchangeName, connector]]);
     });
 
-    test('resolveSymbolsForExchanges() creates correct mapping', () => {
+    test('resolveSymbolsForExchanges() creates correct mapping with resolved symbols', () => {
       const mapping = OrderCalculator.resolveSymbolsForExchanges(
-        TEST_SYMBOLS,
+        BINANCE_FUTURES_TEST_SYMBOL_LIST,
         exchangeConnectorByName
       );
 
@@ -231,29 +218,31 @@ describeIfCredentials('binance', 'Binance Demo Integration', () => {
       expect(mapping.size).toBe(1);
 
       const binanceMap = mapping.get(exchangeName)!;
+      expect(binanceMap.size).toBe(BINANCE_FUTURES_TEST_SYMBOL_LIST.length);
 
-      for (const symbol of TEST_SYMBOLS) {
-        expect(binanceMap.has(symbol)).toBe(true);
-      }
+      // Unprefixed symbols should resolve to prefixed
+      expect(binanceMap.get('FLOKIUSDT')).toBe('1000FLOKIUSDT');
+      expect(binanceMap.get('SHIBUSDT')).toBe('1000SHIBUSDT');
+      expect(binanceMap.get('ETHUSDT')).toBe('ETHUSDT');
     });
 
     test('getUniqueSymbolCountFromMapping() returns correct count', () => {
       const mapping = OrderCalculator.resolveSymbolsForExchanges(
-        TEST_SYMBOLS,
+        BINANCE_FUTURES_TEST_SYMBOL_LIST,
         exchangeConnectorByName
       );
 
       const count = OrderCalculator.getUniqueSymbolCountFromMapping(mapping);
       logger.info(
-        { count, symbols: TEST_SYMBOLS },
+        { count, symbols: BINANCE_FUTURES_TEST_SYMBOL_LIST },
         'getUniqueSymbolCountFromMapping test result'
       );
-      expect(count).toBe(TEST_SYMBOLS.length);
+      expect(count).toBe(BINANCE_FUTURES_TEST_SYMBOL_LIST.length);
     });
 
     test('createOrderAttributesForSymbol() returns attributes with price', () => {
       const mapping = OrderCalculator.resolveSymbolsForExchanges(
-        [BINANCE_TEST_SYMBOL],
+        [BINANCE_FUTURES_TEST_SYMBOL],
         exchangeConnectorByName
       );
 
@@ -278,7 +267,7 @@ describeIfCredentials('binance', 'Binance Demo Integration', () => {
 
     test('enrichWithSpotFallback() attempts spot fallback for missing symbol', () => {
       const mapping = OrderCalculator.resolveSymbolsForExchanges(
-        ['NONEXISTENT_SYMBOL_XYZ'],
+        [BINANCE_SPOT_FALLBACK_SYMBOL],
         exchangeConnectorByName
       );
 
@@ -309,15 +298,15 @@ describeIfCredentials('binance', 'Binance Demo Integration', () => {
 
     test(`calculateLimitOrderWithPriceAdjustment() adjusts price +${LIMIT_PRICE_ADJUSTMENT_PERCENT}%`, () => {
       const ticker = connector.getTicker(
-        BINANCE_TEST_SYMBOL,
+        BINANCE_FUTURES_TEST_SYMBOL,
         MarketType.Futures
       )!;
 
       const limitOrder = OrderCalculator.calculateLimitOrderWithPriceAdjustment(
         {
-          symbol: BINANCE_TEST_SYMBOL,
+          symbol: BINANCE_FUTURES_TEST_SYMBOL,
           side: OrderDirection.Buy,
-          amount: MIN_ORDER_QTY,
+          amount: calculateTestAmount(connector, BINANCE_FUTURES_TEST_SYMBOL, ticker.close!),
           price: ticker.close!,
           type: OrderType.Market,
           marketType: MarketType.Futures,
@@ -337,14 +326,14 @@ describeIfCredentials('binance', 'Binance Demo Integration', () => {
 
     test('calculateCloseOrder() creates correct TP and SL orders', () => {
       const ticker = connector.getTicker(
-        BINANCE_TEST_SYMBOL,
+        BINANCE_FUTURES_TEST_SYMBOL,
         MarketType.Futures
       )!;
 
       const baseParams = {
-        symbol: BINANCE_TEST_SYMBOL,
+        symbol: BINANCE_FUTURES_TEST_SYMBOL,
         side: OrderDirection.Buy,
-        amount: MIN_ORDER_QTY,
+        amount: calculateTestAmount(connector, BINANCE_FUTURES_TEST_SYMBOL, ticker.close!),
         price: ticker.close!,
         type: OrderType.Market as OrderType,
         marketType: MarketType.Futures,
@@ -377,7 +366,7 @@ describeIfCredentials('binance', 'Binance Demo Integration', () => {
 
     test('setupLeverageAndMarginMode() completes without error', async () => {
       const mapping = OrderCalculator.resolveSymbolsForExchanges(
-        [BINANCE_TEST_SYMBOL],
+        [BINANCE_FUTURES_TEST_SYMBOL],
         exchangeConnectorByName
       );
 

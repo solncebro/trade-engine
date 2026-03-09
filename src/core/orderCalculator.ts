@@ -46,8 +46,7 @@ interface CreateOrderAttributesForSymbolArgs extends BaseOrderCalculationArgs {
   symbolMappingByExchange: SymbolMappingByExchange;
 }
 
-interface CreateOrderAttributesForMarketTypeArgs
-  extends BaseOrderCalculationArgs {
+interface CreateOrderAttributesForMarketTypeArgs extends BaseOrderCalculationArgs {
   exchangeConnector: ExchangeConnector;
   exchangeName: ExchangeName;
   symbol: string;
@@ -78,7 +77,7 @@ export class OrderCalculator {
   ): number {
     const volumeUsdtPerSymbol = orderVolumeUsdt / symbolCount;
 
-    return Math.floor(volumeUsdtPerSymbol / price);
+    return volumeUsdtPerSymbol / price;
   }
 
   private static getOrderSide(isLong: boolean): OrderDirection {
@@ -210,13 +209,17 @@ export class OrderCalculator {
       };
     }
 
-    const amount = OrderCalculator.calculateAmountForMarketType({
+    const rawAmount = OrderCalculator.calculateAmountForMarketType({
       price,
       orderVolumeUsdt,
       uniqueSymbolCount,
       leverage,
       marketType,
     });
+
+    const amount = parseFloat(
+      exchangeConnector.getClient(marketType).amountToPrecision(symbol, rawAmount)
+    );
 
     logger.info(
       {
@@ -401,20 +404,18 @@ export class OrderCalculator {
       orderParams.price,
       priceAdjustmentPercent
     );
-    const isSpotMarket = orderParams.marketType === MarketType.Spot;
-    const rawAmount = isSpotMarket
-      ? OrderCalculator.calculateOrderAmount(
-          adjustedPrice,
-          1,
-          orderVolumeUsdt / leverage
-        )
-      : OrderCalculator.calculateOrderAmount(adjustedPrice, 1, orderVolumeUsdt);
-    const adjustedAmount = isSpotMarket ? Math.round(rawAmount) : rawAmount;
+    const rawAmount = OrderCalculator.calculateOrderAmount(
+      adjustedPrice,
+      1,
+      orderParams.marketType === MarketType.Spot
+        ? orderVolumeUsdt / leverage
+        : orderVolumeUsdt
+    );
 
     return {
       ...orderParams,
       type: OrderType.Limit,
-      amount: adjustedAmount,
+      amount: rawAmount,
       price: adjustedPrice,
     };
   }
@@ -425,7 +426,6 @@ export class OrderCalculator {
     isTakeProfit: boolean
   ): OrderParams {
     const isIncrease = priceShiftPercent > 0;
-
     const shiftedPrice = OrderCalculator.addPercent(
       orderParams.price,
       Math.abs(priceShiftPercent),

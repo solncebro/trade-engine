@@ -1,9 +1,8 @@
-import { Position } from 'ccxt';
+import type { Position } from '@solncebro/exchange-engine';
 
 import { ExtensibleRecord } from './common';
 import { OrderParams } from './orders';
 
-import { BybitResponseData } from '../services/bybitNativeTradeWebSocket';
 import { ExchangeConnector } from '../services/exchangeConnector';
 
 export type ExchangeName = 'binance' | 'bybit';
@@ -47,32 +46,6 @@ export interface ExchangeResponseData extends ExtensibleRecord {
   };
 }
 
-export interface TickerData {
-  symbol: string;
-  close: number;
-  timestamp: number;
-  percentage?: number;
-}
-
-export interface TickerInfo extends ExtensibleRecord {
-  close?: number;
-  timestamp?: number;
-  symbol?: string;
-}
-
-export interface MarketInfo extends ExtensibleRecord {
-  symbol: string;
-  type: string;
-  id?: string;
-  active?: boolean;
-}
-
-export interface BybitResponse {
-  retCode?: number;
-  retMsg?: string;
-  data?: BybitResponseData;
-}
-
 export interface ErrorResultBase {
   exchangeName: ExchangeName;
   orderParams: OrderParams;
@@ -85,13 +58,6 @@ export interface ExchangeErrorInfo {
   response?: unknown;
   status?: number;
   statusText?: string;
-}
-
-export interface CreateBybitErrorResultArgs {
-  resultBase: ErrorResultBase;
-  response: BybitResponse;
-  actualExchangeParams: ExchangeOrderParams;
-  prefix?: string;
 }
 
 export interface PositionInfo {
@@ -133,6 +99,4 @@ export interface PositionInfo {
   sessionAvgPrice: string;
 }
 
-export interface PositionWithTypedInfo<T> extends Position {
-  info: T;
-}
+export type PositionWithTypedInfo<T> = Omit<Position, 'info'> & { info: T };

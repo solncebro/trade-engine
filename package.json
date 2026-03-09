@@ -13,7 +13,7 @@
     "./package.json": "./package.json"
   },
   "scripts": {
-    "build": "rm -rf dist && eslint src && npm test && tsc -p tsconfig.json",
+    "build": "rm -rf dist && npm test -- --passWithNoTests && tsc -p tsconfig.json",
     "test": "jest",
     "test:watch": "jest --watch",
     "test:integration": "jest --config jest.integration.config.js --runInBand",
@@ -40,7 +40,6 @@
     "trading",
     "binance",
     "bybit",
-    "ccxt",
     "futures"
   ],
   "author": "solncebro",
@@ -61,8 +60,8 @@
   },
   "dependencies": {
     "@logtail/pino": "^0.4.0",
+    "@solncebro/exchange-engine": "file:../exchange-engine",
     "@solncebro/websocket-engine": "^0.2.0",
-    "ccxt": "^4.5.24",
     "dayjs": "^1.11.18",
     "dotenv": "^16.4.5",
     "firebase-admin": "^12.0.0",

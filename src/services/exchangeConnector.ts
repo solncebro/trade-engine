@@ -1,171 +1,46 @@
 import * as crypto from 'crypto';
 import { EventEmitter } from 'events';
 
-import ccxt, { Exchange, Ticker, Tickers } from 'ccxt';
+import { Exchange as ExchangeInstance, MarginMode, TradeSymbolType } from '@solncebro/exchange-engine';
+import type { ExchangeClient, ExchangeName as ExchangeEngineName, OrderSide, Position, Ticker, TickerBySymbol } from '@solncebro/exchange-engine';
 
-import {
-  BybitNativeTradeWebSocket,
-  BybitOrderParams,
-} from './bybitNativeTradeWebSocket';
-import { TelegramNotifier } from './telegramNotifier';
-
-import { BYBIT_RECV_WINDOW } from '../constants/bybit';
 import { logger } from '../core/logger';
 import {
-  CreateBybitErrorResultArgs,
   ExchangeConfig,
-  ExchangeErrorInfo,
   ExchangeName,
-  MarketInfo,
   MarketType,
   OrderParams,
   OrderResult,
   OrderType,
-  PositionInfo,
-  PositionWithTypedInfo,
-  TimeInForce,
 } from '../types';
+import { formatErrorMessage } from '../utils/errorFormatter.utils';
 import { isSpot } from '../utils/order.utils';
 import { normalizeSymbol } from '../utils/symbol.utils';
 
 export class ExchangeConnector extends EventEmitter {
-  private exchange: Exchange;
-  private spotExchange: Exchange | null = null;
+  private exchange: ExchangeInstance;
   private exchangeName: ExchangeName;
-  private config: ExchangeConfig;
-  private isDemoMode: boolean;
   private tickerDataMap: Map<string, Ticker> = new Map();
   private isWatchingTickers: boolean = false;
   private tickerUpdateIntervalId: NodeJS.Timeout | null = null;
-  private bybitNativeTradeWebSocket: BybitNativeTradeWebSocket | null = null;
 
   constructor(
     exchangeName: ExchangeName,
-    config: ExchangeConfig,
-    telegramNotifier?: TelegramNotifier
+    config: ExchangeConfig
   ) {
     super();
     this.exchangeName = exchangeName;
-    this.config = config;
-    this.isDemoMode = config.demo ?? false;
 
-    const ExchangeClass = this.getExchangeClass(exchangeName);
-
-    const baseOptions: Record<string, unknown> = {
-      defaultType: exchangeName === 'bybit' ? 'swap' : 'future',
-    };
-
-    if (exchangeName === 'bybit') {
-      baseOptions.recvWindow = BYBIT_RECV_WINDOW;
-    }
-
-    this.exchange = new ExchangeClass({
-      apiKey: config.apiKey,
-      secret: config.secret,
-      options: baseOptions,
+    this.exchange = new ExchangeInstance(exchangeName as ExchangeEngineName, {
+      config: { apiKey: config.apiKey, secret: config.secret, isDemoMode: config.demo },
+      logger,
     });
-
-    if (this.isDemoMode) {
-      this.exchange.enableDemoTrading(true);
-    }
-
-    if (exchangeName === 'bybit' && !this.isDemoMode) {
-      this.bybitNativeTradeWebSocket = new BybitNativeTradeWebSocket(
-        config,
-        telegramNotifier
-      );
-    }
-  }
-
-  private getSpotExchange(): Exchange {
-    if (!this.spotExchange) {
-      const ExchangeClass = this.getExchangeClass(this.exchangeName);
-
-      const spotOptions: Record<string, unknown> = {
-        defaultType: 'spot',
-      };
-
-      if (this.exchangeName === 'bybit') {
-        spotOptions.recvWindow = BYBIT_RECV_WINDOW;
-      }
-
-      this.spotExchange = new ExchangeClass({
-        apiKey: this.config.apiKey,
-        secret: this.config.secret,
-        options: spotOptions,
-      });
-
-      if (this.isDemoMode) {
-        this.spotExchange.enableDemoTrading(true);
-      }
-    }
-
-    return this.spotExchange;
-  }
-
-  private getExchangeClass(exchangeName: ExchangeName): typeof Exchange {
-    switch (exchangeName) {
-      case 'binance':
-        return ccxt.binance;
-      case 'bybit':
-        return ccxt.bybit;
-      default:
-        throw new Error(`Unsupported exchange: ${exchangeName}`);
-    }
-  }
-
-  private getDetailedErrorInfo(error: unknown): ExchangeErrorInfo {
-    if (error && typeof error === 'object') {
-      const err = error as Record<string, unknown>;
-      const errorInfo: ExchangeErrorInfo = {
-        name: typeof err.name === 'string' ? err.name : 'Unknown',
-        message: typeof err.message === 'string' ? err.message : 'No message',
-      };
-
-      if (err.code) {
-        errorInfo.code = err.code as string | number;
-      }
-
-      if (err.response) {
-        errorInfo.response = err.response;
-      }
-
-      if (typeof err.status === 'number') {
-        errorInfo.status = err.status;
-      }
-
-      if (typeof err.statusText === 'string') {
-        errorInfo.statusText = err.statusText;
-      }
-
-      return errorInfo;
-    }
-
-    return {
-      name: 'Unknown',
-      message: String(error),
-    };
   }
 
   public async initialize(): Promise<void> {
     try {
-      await this.exchange.loadMarkets();
-
-      if (this.bybitNativeTradeWebSocket) {
-        try {
-          await this.bybitNativeTradeWebSocket.connect();
-        } catch (error) {
-          logger.error(
-            {
-              error: this.getDetailedErrorInfo(error),
-              exchange: this.exchangeName,
-            },
-            'Failed to connect Bybit native WebSocket'
-          );
-          throw error;
-        }
-      }
-
+      await this.exchange.futures.loadTradeSymbols();
+      await this.exchange.spot.loadTradeSymbols();
       this.startWatchingTickers();
     } catch (error) {
       logger.error(
@@ -182,122 +57,45 @@ export class ExchangeConnector extends EventEmitter {
     }
 
     this.isWatchingTickers = true;
+    await this.updateTickers();
 
-    if (this.exchangeName === 'binance') {
-      this.startBinanceTickerUpdates();
-      logger.info('Started Binance watching tickers via REST API');
-    } else if (this.exchangeName === 'bybit') {
-      this.startBybitTickerUpdates();
-      logger.info('Started Bybit watching tickers via REST API');
+    this.tickerUpdateIntervalId = setInterval(async () => {
+      if (!this.isWatchingTickers) {
+        clearInterval(this.tickerUpdateIntervalId!);
+        this.tickerUpdateIntervalId = null;
+        return;
+      }
+      await this.updateTickers();
+    }, 30000);
+  }
+
+  private async updateTickers(): Promise<void> {
+    try {
+      const [futuresTickers, spotTickers] = await Promise.all([
+        this.exchange.futures.fetchTickers(),
+        this.exchange.spot.fetchTickers(),
+      ]);
+      this.processTickerList(futuresTickers, MarketType.Futures);
+      this.processTickerList(spotTickers, MarketType.Spot);
+    } catch (error) {
+      logger.warn({ error }, 'Failed to update tickers');
     }
   }
 
-  private isDeliveryContract(symbol: string): boolean {
-    const contractPart = symbol.split(':')[1];
-
-    return contractPart !== undefined && contractPart.includes('-');
-  }
-
   private processTickerList(
-    tickers: Tickers,
+    tickers: TickerBySymbol,
     marketType: MarketType = MarketType.Futures
   ): void {
-    const tickerEntries = Object.entries(tickers);
-
-    tickerEntries.forEach(([symbol, ticker]) => {
-      if (this.isDeliveryContract(symbol)) {
-        return;
-      }
-
+    for (const [symbol, ticker] of tickers) {
       const normalizedSymbol = normalizeSymbol(symbol);
       const tickerKey = this.getTickerKey(normalizedSymbol, marketType);
-
-      if (ticker.close !== undefined) {
-        this.tickerDataMap.set(tickerKey, ticker);
-      }
-    });
+      this.tickerDataMap.set(tickerKey, ticker);
+    }
   }
 
   private getTickerKey(symbol: string, marketType?: MarketType): string {
     const type = marketType ?? MarketType.Futures;
-
     return `${type}:${symbol}`;
-  }
-
-  private async startBinanceTickerUpdates(): Promise<void> {
-    const updateInterval = 30000;
-
-    const updateTickers = async () => {
-      if (!this.isWatchingTickers) {
-        return;
-      }
-
-      try {
-        const futuresTickers = await this.exchange.fetchTickers();
-        this.processTickerList(futuresTickers, MarketType.Futures);
-
-        const spotExchange = this.getSpotExchange();
-        await spotExchange.loadMarkets();
-        const spotTickers = await spotExchange.fetchTickers();
-        this.processTickerList(spotTickers, MarketType.Spot);
-      } catch (error) {
-        logger.warn(
-          { error, exchange: this.exchangeName },
-          'Failed to update Binance tickers'
-        );
-      }
-    };
-
-    await updateTickers();
-
-    this.tickerUpdateIntervalId = setInterval(async () => {
-      if (this.isWatchingTickers) {
-        await updateTickers();
-      } else {
-        if (this.tickerUpdateIntervalId) {
-          clearInterval(this.tickerUpdateIntervalId);
-          this.tickerUpdateIntervalId = null;
-        }
-      }
-    }, updateInterval);
-  }
-
-  private async startBybitTickerUpdates(): Promise<void> {
-    const updateInterval = 30000;
-
-    const updateTickers = async () => {
-      if (!this.isWatchingTickers) {
-        return;
-      }
-
-      try {
-        const futuresTickers = await this.exchange.fetchTickers();
-        this.processTickerList(futuresTickers, MarketType.Futures);
-
-        const spotExchange = this.getSpotExchange();
-        await spotExchange.loadMarkets();
-        const spotTickers = await spotExchange.fetchTickers();
-        this.processTickerList(spotTickers, MarketType.Spot);
-      } catch (error) {
-        logger.warn(
-          { error, exchange: this.exchangeName },
-          'Failed to update Bybit tickers'
-        );
-      }
-    };
-
-    await updateTickers();
-
-    this.tickerUpdateIntervalId = setInterval(async () => {
-      if (this.isWatchingTickers) {
-        await updateTickers();
-      } else {
-        if (this.tickerUpdateIntervalId) {
-          clearInterval(this.tickerUpdateIntervalId);
-          this.tickerUpdateIntervalId = null;
-        }
-      }
-    }, updateInterval);
   }
 
   private readonly SYMBOL_PREFIX_LIST = [10, 100, 1000, 10000, 100000, 1000000];
@@ -353,7 +151,6 @@ export class ExchangeConnector extends EventEmitter {
     marketType?: MarketType
   ): Ticker | undefined {
     const tickerKey = this.getTickerKey(symbol, marketType);
-
     return this.tickerDataMap.get(tickerKey);
   }
 
@@ -363,197 +160,74 @@ export class ExchangeConnector extends EventEmitter {
       orderParams,
     };
 
+    const client = isSpot(orderParams.marketType)
+      ? this.exchange.spot
+      : this.exchange.futures;
+
     try {
-      if (
-        this.exchangeName === 'bybit' &&
-        this.bybitNativeTradeWebSocket?.isConnected()
-      ) {
-        return await this.createBybitNativeOrder(orderParams);
-      }
-
-      const fullOrderParams = {
-        ...orderParams,
-        params: {
-          ...this.getOrderParams(orderParams.type, orderParams.marketType),
-          ...orderParams.params,
-        },
-      };
-
-      const createOrderFn = this.isDemoMode
-        ? this.exchange.createOrder.bind(this.exchange)
-        : this.exchange.createOrderWs.bind(this.exchange);
-
-      const order = await createOrderFn(
-        fullOrderParams.symbol,
-        fullOrderParams.type,
-        fullOrderParams.side,
-        fullOrderParams.amount,
-        fullOrderParams.price,
-        fullOrderParams.params
-      );
+      const params = this.buildOrderParams(orderParams, client);
+      const order = await client.createOrderWebSocket({
+        symbol: orderParams.symbol,
+        type: orderParams.type,
+        side: orderParams.side as string as OrderSide,
+        amount: orderParams.amount,
+        price: orderParams.price ?? 0,
+        params,
+      });
 
       return {
         ...resultBase,
         orderId: order.id,
-        actualExchangeParams: fullOrderParams,
-        responseData: {
-          ...order,
-          orderId: order.id,
-        },
+        actualExchangeParams: { symbol: orderParams.symbol, side: orderParams.side, ...params },
+        responseData: { id: order.id, orderId: order.id, symbol: order.symbol },
       };
     } catch (error) {
+      const errorMessage = formatErrorMessage({
+        customMessage: 'Failed to create order',
+        error,
+      });
       logger.error(
         { error, orderParams, exchange: this.exchangeName },
-        'Failed to create order'
+        errorMessage
       );
 
       return {
         ...resultBase,
-        errorText: error instanceof Error ? error.message : 'Unknown error',
+        errorText: errorMessage,
         actualExchangeParams: undefined,
       };
     }
   }
 
-  public async cancelOrder(
-    orderId: string,
-    symbol: string
-  ): Promise<boolean> {
-    try {
-      await this.exchange.cancelOrder(orderId, symbol);
-
-      return true;
-    } catch (error) {
-      logger.error(
-        { error, orderId, symbol, exchange: this.exchangeName },
-        'Failed to cancel order'
-      );
-
-      return false;
-    }
-  }
-
-  private getOrderParams(
-    orderType: OrderType,
-    marketType?: MarketType
+  private buildOrderParams(
+    orderParams: OrderParams,
+    client: ExchangeClient
   ): Record<string, unknown> {
-    if (isSpot(marketType)) {
-      return {};
+    const params: Record<string, unknown> = { ...orderParams.params };
+
+    if (!isSpot(orderParams.marketType)) {
+      params.hedgeMode = true;
     }
 
-    return { hedgeMode: true };
+    if (this.exchangeName === 'bybit') {
+      params.timeInForce =
+        orderParams.type === OrderType.Market ? 'IOC' : 'GTC';
+      if (orderParams.triggerPrice !== undefined) {
+        params.triggerPrice = client.priceToPrecision(
+          orderParams.symbol,
+          orderParams.triggerPrice
+        );
+        params.triggerDirection = orderParams.triggerDirection;
+      }
+    }
+
+    return params;
   }
 
-  private capitalizeOrderType(type: OrderType): 'Market' | 'Limit' {
-    return (type.charAt(0).toUpperCase() + type.slice(1)) as 'Market' | 'Limit';
-  }
-
-  private createBybitErrorResult(
-    args: CreateBybitErrorResultArgs
-  ): OrderResult {
-    const dataErrorText = args.response.data?.errorText;
-    const errorText = dataErrorText
-      ? dataErrorText
-      : `${args.prefix ? `${args.prefix}: ` : ''}${args.response.retCode ?? 'Unknown'}: ${args.response.retMsg ?? 'Unknown error'}`;
-
-    return {
-      ...args.resultBase,
-      errorText,
-      actualExchangeParams: args.actualExchangeParams,
-    };
-  }
-
-  private async createBybitNativeOrder(
-    orderParams: OrderParams
-  ): Promise<OrderResult> {
-    if (!this.bybitNativeTradeWebSocket) {
-      throw new Error('Bybit native WebSocket not initialized');
-    }
-
-    const {
-      symbol,
-      amount,
-      side,
-      type,
-      price,
-      triggerPrice,
-      triggerDirection,
-      params,
-      marketType,
-    } = orderParams;
-
-    const normalizedQty = this.exchange.amountToPrecision(symbol, amount);
-    const category = isSpot(marketType) ? 'spot' : 'linear';
-
-    const bybitOrderParams: BybitOrderParams = {
-      symbol,
-      side: side === 'buy' ? 'Buy' : 'Sell',
-      orderType: this.capitalizeOrderType(type),
-      qty: normalizedQty,
-      category,
-      timeInForce:
-        type === OrderType.Market ? TimeInForce.IOC : TimeInForce.GTC,
-    };
-
-    logger.info(
-      {
-        originalParams: orderParams,
-        bybitOrderParams,
-        normalizedQty,
-      },
-      'Creating Bybit native order'
-    );
-
-    if (type === OrderType.Limit) {
-      bybitOrderParams.price = this.exchange.priceToPrecision(symbol, price);
-    }
-
-    if (triggerPrice !== undefined) {
-      bybitOrderParams.triggerPrice = this.exchange.priceToPrecision(
-        symbol,
-        triggerPrice
-      );
-    }
-
-    if (triggerDirection !== undefined) {
-      bybitOrderParams.triggerDirection = triggerDirection;
-    }
-
-    if (!isSpot(marketType) && params?.reduceOnly) {
-      bybitOrderParams.reduceOnly = true;
-    }
-
-    const response =
-      await this.bybitNativeTradeWebSocket.createOrder(bybitOrderParams);
-
-    const resultBase = {
-      exchangeName: this.exchangeName,
-      orderParams,
-      actualExchangeParams: bybitOrderParams,
-    };
-
-    if (response.retCode === 0 && response.data && !response.data.errorText) {
-      return {
-        ...resultBase,
-        orderId: response.data.orderId as string,
-        responseData: response.data,
-      };
-    }
-
-    return this.createBybitErrorResult({
-      resultBase,
-      response,
-      actualExchangeParams: bybitOrderParams,
-    });
-  }
-
-  public async fetchPosition(
-    symbol: string
-  ): Promise<PositionWithTypedInfo<PositionInfo> | null> {
+  public async fetchPosition(symbol: string): Promise<Position | null> {
     try {
-      const position = await this.exchange.fetchPosition(symbol);
-
-      return position as PositionWithTypedInfo<PositionInfo>;
+      const position = await this.exchange.futures.fetchPosition(symbol);
+      return position;
     } catch (error) {
       logger.error(
         { error, symbol, exchange: this.exchangeName },
@@ -566,8 +240,7 @@ export class ExchangeConnector extends EventEmitter {
 
   public async setLeverage(symbol: string, leverage: number): Promise<boolean> {
     try {
-      await this.exchange.setLeverage(leverage, symbol);
-
+      await this.exchange.futures.setLeverage(leverage, symbol);
       return true;
     } catch {
       return false;
@@ -579,99 +252,75 @@ export class ExchangeConnector extends EventEmitter {
     marginMode: 'isolated' | 'cross'
   ): Promise<boolean> {
     try {
-      await this.exchange.setMarginMode(marginMode, symbol);
-
+      await this.exchange.futures.setMarginMode(marginMode as MarginMode, symbol);
       return true;
     } catch {
       return false;
     }
   }
 
-  private async getSymbolsByFilter(
-    filterFn: (market: MarketInfo) => boolean,
-    logData: {
-      countKey: string;
-      logMessage: string;
-      errorMessage: string;
-    },
-    exchangeInstance?: Exchange
-  ): Promise<string[]> {
+  public async getFuturesSymbols(): Promise<string[]> {
     try {
-      const exchange = exchangeInstance ?? this.exchange;
+      const tradeSymbols = this.exchange.futures.tradeSymbols;
 
-      if (!exchange.markets || Object.keys(exchange.markets).length === 0) {
-        await exchange.loadMarkets(true);
-      }
-
-      const marketList = Object.values(exchange.markets) as MarketInfo[];
-      const filteredMarketList = marketList.filter(filterFn);
+      const filteredSymbols = [...tradeSymbols.values()]
+        .filter(m => m.isActive && (m.type === TradeSymbolType.Swap || m.type === TradeSymbolType.Future) && m.isLinear)
+        .map(m =>
+          this.exchangeName === 'bybit' ? normalizeSymbol(m.symbol) : m.symbol
+        );
 
       logger.info(
         {
           exchange: this.exchangeName,
-          [logData.countKey]: filteredMarketList.length,
-          sampleSymbols: filteredMarketList
-            .slice(0, 5)
-            .map(market => market.symbol),
+          futuresCount: filteredSymbols.length,
+          sampleSymbols: filteredSymbols.slice(0, 5),
         },
-        logData.logMessage
+        'Futures symbols filtered'
       );
 
-      return filteredMarketList.map(market =>
-        this.exchangeName === 'bybit'
-          ? normalizeSymbol(market.symbol)
-          : market.symbol
-      );
+      return filteredSymbols;
     } catch (error) {
       logger.error(
         { error, exchange: this.exchangeName },
-        logData.errorMessage
+        'Failed to get futures symbols'
       );
 
       return [];
     }
   }
 
-  public async getFuturesSymbols(): Promise<string[]> {
-    return this.getSymbolsByFilter(
-      (market: MarketInfo): boolean => {
-        const isFuture = market.type === 'future' || market.type === 'swap';
-        const isActive = market.active ?? false;
-        const hasLinear =
-          this.exchangeName === 'bybit'
-            ? Boolean(
-                ('linear' in market && market.linear === true) ||
-                  ('settle' in market && market.settle === 'USDT')
-              )
-            : true;
+  public async getSpotSymbols(): Promise<string[]> {
+    try {
+      const tradeSymbols = this.exchange.spot.tradeSymbols;
 
-        return isFuture && isActive && hasLinear;
-      },
-      {
-        countKey: 'futuresCount',
-        logMessage: 'Futures symbols filtered',
-        errorMessage: 'Failed to get futures symbols',
-      }
-    );
+      const filteredSymbols = [...tradeSymbols.values()]
+        .filter(m => m.isActive && m.type === TradeSymbolType.Spot)
+        .map(m =>
+          this.exchangeName === 'bybit' ? normalizeSymbol(m.symbol) : m.symbol
+        );
+
+      logger.info(
+        {
+          exchange: this.exchangeName,
+          spotCount: filteredSymbols.length,
+          sampleSymbols: filteredSymbols.slice(0, 5),
+        },
+        'Spot symbols filtered'
+      );
+
+      return filteredSymbols;
+    } catch (error) {
+      logger.error(
+        { error, exchange: this.exchangeName },
+        'Failed to get spot symbols'
+      );
+
+      return [];
+    }
   }
 
-  public async getSpotSymbols(): Promise<string[]> {
-    const spotExchange = this.getSpotExchange();
-
-    return this.getSymbolsByFilter(
-      (market: MarketInfo): boolean => {
-        const isSpot = market.type === 'spot';
-        const isActive = market.active ?? false;
-
-        return isSpot && isActive;
-      },
-      {
-        countKey: 'spotCount',
-        logMessage: 'Spot symbols filtered',
-        errorMessage: 'Failed to get spot symbols',
-      },
-      spotExchange
-    );
+  public getClient(marketType?: MarketType): ExchangeClient {
+    return isSpot(marketType) ? this.exchange.spot : this.exchange.futures;
   }
 
   public getExchangeName(): ExchangeName {
@@ -679,22 +328,22 @@ export class ExchangeConnector extends EventEmitter {
   }
 
   public getAccountId(): string {
-    if (!this.exchange.apiKey) {
+    const apiKey = this.exchange.futures.apiKey;
+    if (!apiKey) {
       logger.warn('No API key available to generate account ID');
-
       return 'default';
     }
 
     const hash = crypto
       .createHash('sha256')
-      .update(this.exchange.apiKey)
+      .update(apiKey)
       .digest('hex');
 
     return hash.substring(0, 16);
   }
 
   public isTradeWebSocketConnected(): boolean {
-    return this.bybitNativeTradeWebSocket?.isConnected() ?? false;
+    return this.exchangeName === 'bybit';
   }
 
   public async disconnect(): Promise<void> {
@@ -709,42 +358,17 @@ export class ExchangeConnector extends EventEmitter {
       );
     }
 
-    if (this.bybitNativeTradeWebSocket) {
-      this.bybitNativeTradeWebSocket.disconnect();
+    try {
+      await this.exchange.close();
       logger.info(
         { exchange: this.exchangeName },
-        'Bybit native WebSocket disconnected'
+        'Exchange connection closed'
       );
-    }
-
-    if (this.spotExchange) {
-      try {
-        await this.spotExchange.close();
-        logger.info(
-          { exchange: this.exchangeName },
-          'Spot exchange connection closed'
-        );
-      } catch (error) {
-        logger.error(
-          { error, exchange: this.exchangeName },
-          'Error closing spot exchange connection'
-        );
-      }
-    }
-
-    if (this.exchange) {
-      try {
-        await this.exchange.close();
-        logger.info(
-          { exchange: this.exchangeName },
-          'Exchange connection closed'
-        );
-      } catch (error) {
-        logger.error(
-          { error, exchange: this.exchangeName },
-          'Error closing exchange connection'
-        );
-      }
+    } catch (error) {
+      logger.error(
+        { error, exchange: this.exchangeName },
+        'Error closing exchange connection'
+      );
     }
   }
 }

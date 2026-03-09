@@ -1,4 +1,3 @@
-export { BybitNativeTradeWebSocket } from './services/bybitNativeTradeWebSocket';
 export { ExchangeConnector } from './services/exchangeConnector';
 export { FirebaseService } from './services/firebaseService';
 export { TelegramCommandHandler } from './services/telegramCommandHandler';
