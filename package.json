@@ -23,6 +23,7 @@
     "test:integration:limit-orders": "jest --config jest.integration.config.js --runInBand --testPathPatterns=limit-orders",
     "test:integration:multiple-symbols": "jest --config jest.integration.config.js --runInBand --testPathPatterns=multiple-symbols",
     "test:integration:error-handling": "jest --config jest.integration.config.js --runInBand --testPathPatterns=error-handling",
+    "test:integration:e2e-signal": "jest --config jest.integration.config.js --runInBand --testPathPatterns=e2e-signal",
     "test:integration:mvp": "jest --config jest.integration.config.js --runInBand --testPathPatterns='(spot-fallback|limit-orders|multiple-symbols|error-handling)'",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
