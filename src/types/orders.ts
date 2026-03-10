@@ -1,29 +1,11 @@
+import { ExchangeName, OrderSide, OrderType } from '@solncebro/exchange-engine';
+
 import {
-  ExchangeName,
   ExchangeOrderParams,
   ExchangeResponseData,
 } from './exchange';
 
 import { ExchangeConnector } from '../services/exchangeConnector';
-
-export enum TimeInForce {
-  GTC = 'GTC',
-  IOC = 'IOC',
-  FOK = 'FOK',
-  PostOnly = 'PostOnly',
-}
-
-export enum OrderType {
-  Market = 'market',
-  Limit = 'limit',
-}
-
-export type OrderSide = 'long' | 'short';
-
-export enum OrderDirection {
-  Buy = 'buy',
-  Sell = 'sell',
-}
 
 export enum MarketType {
   Futures = 'futures',
@@ -32,7 +14,7 @@ export enum MarketType {
 
 export interface OrderParams {
   symbol: string;
-  side: OrderDirection;
+  side: OrderSide;
   amount: number;
   price: number;
   type: OrderType;

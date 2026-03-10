@@ -4,7 +4,7 @@ import {
   ExchangeConnectorByName,
   ExchangeName,
   MarketType,
-  OrderDirection,
+  OrderSide,
   OrderType,
 } from '../../src/types';
 import { isOrderSuccessful } from '../../src/utils/order.utils';
@@ -19,9 +19,9 @@ import {
   waitForTickers,
 } from './helpers/testnet.helpers';
 
-describeIfCredentials('bybit', 'Bybit Multiple Symbols Integration', () => {
+describeIfCredentials(ExchangeName.Bybit, 'Bybit Multiple Symbols Integration', () => {
   let connector: ExchangeConnector;
-  const exchangeName: ExchangeName = 'bybit';
+  const exchangeName = ExchangeName.Bybit;
 
   beforeAll(async () => {
     connector = new ExchangeConnector(exchangeName, BYBIT_DEMO_CONFIG);
@@ -138,7 +138,7 @@ describeIfCredentials('bybit', 'Bybit Multiple Symbols Integration', () => {
 
         return connector.createOrder({
           symbol,
-          side: OrderDirection.Buy,
+          side: OrderSide.Buy,
           amount: calculateTestAmount(connector, symbol, ticker.close),
           price: ticker.close,
           type: OrderType.Market,
@@ -161,7 +161,7 @@ describeIfCredentials('bybit', 'Bybit Multiple Symbols Integration', () => {
 
         return connector.createOrder({
           symbol,
-          side: OrderDirection.Sell,
+          side: OrderSide.Sell,
           amount: calculateTestAmount(connector, symbol, ticker.close),
           price: ticker.close,
           type: OrderType.Market,
@@ -189,7 +189,7 @@ describeIfCredentials('bybit', 'Bybit Multiple Symbols Integration', () => {
 
       const openResult = await connector.createOrder({
         symbol: firstSymbol,
-        side: OrderDirection.Buy,
+        side: OrderSide.Buy,
         amount: qty,
         price: ticker.close,
         type: OrderType.Market,
@@ -202,7 +202,7 @@ describeIfCredentials('bybit', 'Bybit Multiple Symbols Integration', () => {
 
       const closeResult = await connector.createOrder({
         symbol: firstSymbol,
-        side: OrderDirection.Sell,
+        side: OrderSide.Sell,
         amount: qty,
         price: ticker.close,
         type: OrderType.Market,
@@ -248,9 +248,9 @@ describeIfCredentials('bybit', 'Bybit Multiple Symbols Integration', () => {
   });
 });
 
-describeIfCredentials('binance', 'Binance Multiple Symbols Integration', () => {
+describeIfCredentials(ExchangeName.Binance, 'Binance Multiple Symbols Integration', () => {
   let connector: ExchangeConnector;
-  const exchangeName: ExchangeName = 'binance';
+  const exchangeName = ExchangeName.Binance;
 
   beforeAll(async () => {
     connector = new ExchangeConnector(exchangeName, BINANCE_DEMO_CONFIG);
@@ -300,7 +300,7 @@ describeIfCredentials('binance', 'Binance Multiple Symbols Integration', () => {
 
         return connector.createOrder({
           symbol: resolvedSymbol,
-          side: OrderDirection.Buy,
+          side: OrderSide.Buy,
           amount: calculateTestAmount(connector, resolvedSymbol, ticker.close),
           price: ticker.close,
           type: OrderType.Market,
@@ -323,7 +323,7 @@ describeIfCredentials('binance', 'Binance Multiple Symbols Integration', () => {
 
         return connector.createOrder({
           symbol: resolvedSymbol,
-          side: OrderDirection.Sell,
+          side: OrderSide.Sell,
           amount: calculateTestAmount(connector, resolvedSymbol, ticker.close),
           price: ticker.close,
           type: OrderType.Market,

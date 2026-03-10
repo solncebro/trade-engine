@@ -60,15 +60,13 @@
   },
   "dependencies": {
     "@logtail/pino": "^0.4.0",
-    "@solncebro/exchange-engine": "file:../exchange-engine",
-    "@solncebro/websocket-engine": "^0.2.0",
+    "@solncebro/exchange-engine": "^0.2.0",
     "dayjs": "^1.11.18",
     "dotenv": "^16.4.5",
     "firebase-admin": "^12.0.0",
     "pino": "^9.6.0",
     "telegraf": "^4.16.3",
-    "telegram": "^2.26.22",
-    "ws": "^8.18.0"
+    "telegram": "^2.26.22"
   },
   "devDependencies": {
     "@eslint/js": "^9.34.0",
@@ -76,6 +74,7 @@
     "@types/jest": "^30.0.0",
     "@types/node": "^22.10.1",
     "@types/ws": "^8.5.13",
+    "ws": "^8.18.0",
     "@typescript-eslint/eslint-plugin": "^8.41.0",
     "@typescript-eslint/parser": "^8.41.0",
     "eslint": "^9.34.0",

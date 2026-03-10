@@ -16,16 +16,16 @@ import {
   ExchangeConnectorByName,
   ExchangeName,
   MarketType,
-  OrderDirection,
+  OrderSide,
   OrderType,
 } from '../../src/types';
 import { isOrderSuccessful } from '../../src/utils/order.utils';
 
 const LIMIT_PRICE_ADJUSTMENT_PERCENT = 5;
 
-describeIfCredentials('binance', 'Binance Demo Integration', () => {
+describeIfCredentials(ExchangeName.Binance, 'Binance Demo Integration', () => {
   let connector: ExchangeConnector;
-  const exchangeName: ExchangeName = 'binance';
+  const exchangeName = ExchangeName.Binance;
 
   beforeAll(async () => {
     connector = new ExchangeConnector(exchangeName, BINANCE_DEMO_CONFIG);
@@ -41,7 +41,7 @@ describeIfCredentials('binance', 'Binance Demo Integration', () => {
     test('getExchangeName() returns binance', () => {
       const result = connector.getExchangeName();
       logger.info({ result }, 'getExchangeName test result');
-      expect(result).toBe('binance');
+      expect(result).toBe(ExchangeName.Binance);
     });
 
     test('getAccountId() returns a 16-char hash string', () => {
@@ -127,7 +127,7 @@ describeIfCredentials('binance', 'Binance Demo Integration', () => {
 
       const openResult = await connector.createOrder({
         symbol: BINANCE_FUTURES_TEST_SYMBOL,
-        side: OrderDirection.Buy,
+        side: OrderSide.Buy,
         amount,
         price: ticker!.close!,
         type: OrderType.Market,
@@ -140,7 +140,7 @@ describeIfCredentials('binance', 'Binance Demo Integration', () => {
 
       const closeResult = await connector.createOrder({
         symbol: BINANCE_FUTURES_TEST_SYMBOL,
-        side: OrderDirection.Sell,
+        side: OrderSide.Sell,
         amount,
         price: ticker!.close!,
         type: OrderType.Market,
@@ -162,7 +162,7 @@ describeIfCredentials('binance', 'Binance Demo Integration', () => {
 
       const openResult = await connector.createOrder({
         symbol: BINANCE_FUTURES_TEST_SYMBOL,
-        side: OrderDirection.Buy,
+        side: OrderSide.Buy,
         amount,
         price: currentPrice * 1.03,
         type: OrderType.Limit,
@@ -175,7 +175,7 @@ describeIfCredentials('binance', 'Binance Demo Integration', () => {
 
       const closeResult = await connector.createOrder({
         symbol: BINANCE_FUTURES_TEST_SYMBOL,
-        side: OrderDirection.Sell,
+        side: OrderSide.Sell,
         amount,
         price: currentPrice * 0.97,
         type: OrderType.Limit,
@@ -305,7 +305,7 @@ describeIfCredentials('binance', 'Binance Demo Integration', () => {
       const limitOrder = OrderCalculator.calculateLimitOrderWithPriceAdjustment(
         {
           symbol: BINANCE_FUTURES_TEST_SYMBOL,
-          side: OrderDirection.Buy,
+          side: OrderSide.Buy,
           amount: calculateTestAmount(connector, BINANCE_FUTURES_TEST_SYMBOL, ticker.close!),
           price: ticker.close!,
           type: OrderType.Market,
@@ -332,7 +332,7 @@ describeIfCredentials('binance', 'Binance Demo Integration', () => {
 
       const baseParams = {
         symbol: BINANCE_FUTURES_TEST_SYMBOL,
-        side: OrderDirection.Buy,
+        side: OrderSide.Buy,
         amount: calculateTestAmount(connector, BINANCE_FUTURES_TEST_SYMBOL, ticker.close!),
         price: ticker.close!,
         type: OrderType.Market as OrderType,
@@ -354,12 +354,12 @@ describeIfCredentials('binance', 'Binance Demo Integration', () => {
         'calculateCloseOrder test result'
       );
 
-      expect(takeProfit.side).toBe(OrderDirection.Sell);
+      expect(takeProfit.side).toBe(OrderSide.Sell);
       expect(takeProfit.type).toBe(OrderType.Limit);
       expect(takeProfit.price).toBeGreaterThan(ticker.close!);
       expect(takeProfit.triggerPrice).toBeUndefined();
 
-      expect(stopLoss.side).toBe(OrderDirection.Sell);
+      expect(stopLoss.side).toBe(OrderSide.Sell);
       expect(stopLoss.triggerPrice).toBeDefined();
       expect(stopLoss.triggerPrice).toBeLessThan(ticker.close!);
     });

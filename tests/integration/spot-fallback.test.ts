@@ -4,7 +4,7 @@ import {
   ExchangeConnectorByName,
   ExchangeName,
   MarketType,
-  OrderDirection,
+  OrderSide,
   OrderType,
 } from '../../src/types';
 import { isOrderSuccessful } from '../../src/utils/order.utils';
@@ -21,9 +21,9 @@ import {
 } from './helpers/testnet.helpers';
 
 // Test spot fallback on both exchanges
-describeIfCredentials('bybit', 'Bybit Spot Fallback Integration', () => {
+describeIfCredentials(ExchangeName.Bybit, 'Bybit Spot Fallback Integration', () => {
   let connector: ExchangeConnector;
-  const exchangeName: ExchangeName = 'bybit';
+  const exchangeName = ExchangeName.Bybit;
 
   beforeAll(async () => {
     connector = new ExchangeConnector(exchangeName, BYBIT_DEMO_CONFIG);
@@ -116,7 +116,7 @@ describeIfCredentials('bybit', 'Bybit Spot Fallback Integration', () => {
 
       const spotOrderResult = await connector.createOrder({
         symbol: BYBIT_FUTURES_TEST_SYMBOL,
-        side: OrderDirection.Buy,
+        side: OrderSide.Buy,
         amount: spotQty,
         price: spotTicker.close,
         type: OrderType.Market,
@@ -128,7 +128,7 @@ describeIfCredentials('bybit', 'Bybit Spot Fallback Integration', () => {
 
       const closeResult = await connector.createOrder({
         symbol: BYBIT_FUTURES_TEST_SYMBOL,
-        side: OrderDirection.Sell,
+        side: OrderSide.Sell,
         amount: spotQty,
         price: spotTicker.close,
         type: OrderType.Market,
@@ -185,9 +185,9 @@ describeIfCredentials('bybit', 'Bybit Spot Fallback Integration', () => {
   });
 });
 
-describeIfCredentials('binance', 'Binance Spot Fallback Integration', () => {
+describeIfCredentials(ExchangeName.Binance, 'Binance Spot Fallback Integration', () => {
   let connector: ExchangeConnector;
-  const exchangeName: ExchangeName = 'binance';
+  const exchangeName = ExchangeName.Binance;
 
   beforeAll(async () => {
     connector = new ExchangeConnector(exchangeName, BINANCE_DEMO_CONFIG);
@@ -242,7 +242,7 @@ describeIfCredentials('binance', 'Binance Spot Fallback Integration', () => {
 
       const openResult = await connector.createOrder({
         symbol: BINANCE_FUTURES_TEST_SYMBOL,
-        side: OrderDirection.Buy,
+        side: OrderSide.Buy,
         amount: binanceSpotQty,
         price: spotTicker.close,
         type: OrderType.Market,
@@ -253,7 +253,7 @@ describeIfCredentials('binance', 'Binance Spot Fallback Integration', () => {
 
       const closeResult = await connector.createOrder({
         symbol: BINANCE_FUTURES_TEST_SYMBOL,
-        side: OrderDirection.Sell,
+        side: OrderSide.Sell,
         amount: binanceSpotQty,
         price: spotTicker.close,
         type: OrderType.Market,

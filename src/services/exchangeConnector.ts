@@ -1,13 +1,11 @@
 import * as crypto from 'crypto';
-import { EventEmitter } from 'events';
 
-import { Exchange as ExchangeInstance, MarginMode, TradeSymbolType } from '@solncebro/exchange-engine';
-import type { ExchangeClient, ExchangeName as ExchangeEngineName, OrderSide, Position, Ticker, TickerBySymbol } from '@solncebro/exchange-engine';
+import { Exchange as ExchangeInstance, ExchangeName, MarginMode, TradeSymbolType } from '@solncebro/exchange-engine';
+import type { ExchangeClient, Position, Ticker, TickerBySymbol } from '@solncebro/exchange-engine';
 
 import { logger } from '../core/logger';
 import {
   ExchangeConfig,
-  ExchangeName,
   MarketType,
   OrderParams,
   OrderResult,
@@ -17,7 +15,7 @@ import { formatErrorMessage } from '../utils/errorFormatter.utils';
 import { isSpot } from '../utils/order.utils';
 import { normalizeSymbol } from '../utils/symbol.utils';
 
-export class ExchangeConnector extends EventEmitter {
+export class ExchangeConnector {
   private exchange: ExchangeInstance;
   private exchangeName: ExchangeName;
   private tickerDataMap: Map<string, Ticker> = new Map();
@@ -28,10 +26,9 @@ export class ExchangeConnector extends EventEmitter {
     exchangeName: ExchangeName,
     config: ExchangeConfig
   ) {
-    super();
     this.exchangeName = exchangeName;
 
-    this.exchange = new ExchangeInstance(exchangeName as ExchangeEngineName, {
+    this.exchange = new ExchangeInstance(exchangeName, {
       config: { apiKey: config.apiKey, secret: config.secret, isDemoMode: config.demo },
       logger,
     });
@@ -169,7 +166,7 @@ export class ExchangeConnector extends EventEmitter {
       const order = await client.createOrderWebSocket({
         symbol: orderParams.symbol,
         type: orderParams.type,
-        side: orderParams.side as string as OrderSide,
+        side: orderParams.side,
         amount: orderParams.amount,
         price: orderParams.price ?? 0,
         params,
@@ -209,7 +206,7 @@ export class ExchangeConnector extends EventEmitter {
       params.hedgeMode = true;
     }
 
-    if (this.exchangeName === 'bybit') {
+    if (this.exchangeName === ExchangeName.Bybit) {
       params.timeInForce =
         orderParams.type === OrderType.Market ? 'IOC' : 'GTC';
       if (orderParams.triggerPrice !== undefined) {
@@ -249,10 +246,10 @@ export class ExchangeConnector extends EventEmitter {
 
   public async setMarginMode(
     symbol: string,
-    marginMode: 'isolated' | 'cross'
+    marginMode: MarginMode
   ): Promise<boolean> {
     try {
-      await this.exchange.futures.setMarginMode(marginMode as MarginMode, symbol);
+      await this.exchange.futures.setMarginMode(marginMode, symbol);
       return true;
     } catch {
       return false;
@@ -266,7 +263,7 @@ export class ExchangeConnector extends EventEmitter {
       const filteredSymbols = [...tradeSymbols.values()]
         .filter(m => m.isActive && (m.type === TradeSymbolType.Swap || m.type === TradeSymbolType.Future) && m.isLinear)
         .map(m =>
-          this.exchangeName === 'bybit' ? normalizeSymbol(m.symbol) : m.symbol
+          this.exchangeName === ExchangeName.Bybit ? normalizeSymbol(m.symbol) : m.symbol
         );
 
       logger.info(
@@ -296,7 +293,7 @@ export class ExchangeConnector extends EventEmitter {
       const filteredSymbols = [...tradeSymbols.values()]
         .filter(m => m.isActive && m.type === TradeSymbolType.Spot)
         .map(m =>
-          this.exchangeName === 'bybit' ? normalizeSymbol(m.symbol) : m.symbol
+          this.exchangeName === ExchangeName.Bybit ? normalizeSymbol(m.symbol) : m.symbol
         );
 
       logger.info(
@@ -340,10 +337,6 @@ export class ExchangeConnector extends EventEmitter {
       .digest('hex');
 
     return hash.substring(0, 16);
-  }
-
-  public isTradeWebSocketConnected(): boolean {
-    return this.exchangeName === 'bybit';
   }
 
   public async disconnect(): Promise<void> {

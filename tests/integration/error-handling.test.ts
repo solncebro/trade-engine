@@ -4,7 +4,7 @@ import {
   ExchangeConnectorByName,
   ExchangeName,
   MarketType,
-  OrderDirection,
+  OrderSide,
   OrderType,
 } from '../../src/types';
 import { isOrderSuccessful } from '../../src/utils/order.utils';
@@ -18,9 +18,9 @@ import {
   waitForTickers,
 } from './helpers/testnet.helpers';
 
-describeIfCredentials('bybit', 'Bybit Error Handling Integration', () => {
+describeIfCredentials(ExchangeName.Bybit, 'Bybit Error Handling Integration', () => {
   let connector: ExchangeConnector;
-  const exchangeName: ExchangeName = 'bybit';
+  const exchangeName = ExchangeName.Bybit;
 
   beforeAll(async () => {
     connector = new ExchangeConnector(exchangeName, BYBIT_DEMO_CONFIG);
@@ -74,7 +74,7 @@ describeIfCredentials('bybit', 'Bybit Error Handling Integration', () => {
     test('createOrder returns errorText instead of throwing on invalid amount', async () => {
       const result = await connector.createOrder({
         symbol: BYBIT_FUTURES_TEST_SYMBOL,
-        side: OrderDirection.Buy,
+        side: OrderSide.Buy,
         amount: 0, // Invalid amount
         price: 50000,
         type: OrderType.Market,
@@ -152,7 +152,7 @@ describeIfCredentials('bybit', 'Bybit Error Handling Integration', () => {
     test('createOrder with negative price returns errorText', async () => {
       const result = await connector.createOrder({
         symbol: BYBIT_FUTURES_TEST_SYMBOL,
-        side: OrderDirection.Buy,
+        side: OrderSide.Buy,
         amount: 0.001,
         price: -100, // Negative price
         type: OrderType.Market,
@@ -167,7 +167,7 @@ describeIfCredentials('bybit', 'Bybit Error Handling Integration', () => {
     test('createOrder with very large amount returns graceful error or success', async () => {
       const result = await connector.createOrder({
         symbol: BYBIT_FUTURES_TEST_SYMBOL,
-        side: OrderDirection.Buy,
+        side: OrderSide.Buy,
         amount: 1000000, // Unreasonably large
         price: 50000,
         type: OrderType.Market,
@@ -205,7 +205,7 @@ describeIfCredentials('bybit', 'Bybit Error Handling Integration', () => {
     test('price adjustment handles zero price gracefully', () => {
       const baseOrderParams = {
         symbol: BYBIT_FUTURES_TEST_SYMBOL,
-        side: OrderDirection.Buy,
+        side: OrderSide.Buy,
         amount: 0.001,
         price: 0, // Zero price
         type: OrderType.Market,
@@ -246,7 +246,7 @@ describeIfCredentials('bybit', 'Bybit Error Handling Integration', () => {
       for (const testCase of testCases) {
         const result = await connector.createOrder({
           symbol: testCase.symbol,
-          side: OrderDirection.Buy,
+          side: OrderSide.Buy,
           amount: testCase.amount,
           price: testCase.price,
           type: OrderType.Market,
@@ -261,9 +261,9 @@ describeIfCredentials('bybit', 'Bybit Error Handling Integration', () => {
   });
 });
 
-describeIfCredentials('binance', 'Binance Error Handling Integration', () => {
+describeIfCredentials(ExchangeName.Binance, 'Binance Error Handling Integration', () => {
   let connector: ExchangeConnector;
-  const exchangeName: ExchangeName = 'binance';
+  const exchangeName = ExchangeName.Binance;
 
   beforeAll(async () => {
     connector = new ExchangeConnector(exchangeName, BINANCE_DEMO_CONFIG);
@@ -348,7 +348,7 @@ describeIfCredentials('binance', 'Binance Error Handling Integration', () => {
     test('createOrder never throws, always returns OrderResult', async () => {
       const result = await connector.createOrder({
         symbol: 'FAKE_PAIR_XYZ',
-        side: OrderDirection.Buy,
+        side: OrderSide.Buy,
         amount: 0.001,
         price: 50000,
         type: OrderType.Market,
@@ -385,7 +385,7 @@ describeIfCredentials('binance', 'Binance Error Handling Integration', () => {
       for (const testCase of testCases) {
         const result = await connector.createOrder({
           symbol: testCase.symbol,
-          side: OrderDirection.Buy,
+          side: OrderSide.Buy,
           amount: testCase.amount,
           price: testCase.price,
           type: OrderType.Market,

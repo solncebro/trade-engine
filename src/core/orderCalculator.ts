@@ -4,10 +4,10 @@ import { ExchangeConnector } from '../services/exchangeConnector';
 import {
   ExchangeConnectorByName,
   ExchangeName,
-  MarginType,
+  MarginMode,
   MarketType,
   OrderAttributes,
-  OrderDirection,
+  OrderSide,
   OrderParams,
   OrderType,
   SymbolMappingByExchange,
@@ -80,8 +80,8 @@ export class OrderCalculator {
     return volumeUsdtPerSymbol / price;
   }
 
-  private static getOrderSide(isLong: boolean): OrderDirection {
-    return isLong ? OrderDirection.Buy : OrderDirection.Sell;
+  private static resolveOrderSide(isLong: boolean): OrderSide {
+    return isLong ? OrderSide.Buy : OrderSide.Sell;
   }
 
   private static iterateSymbolMappingByExchange(
@@ -159,7 +159,7 @@ export class OrderCalculator {
 
     const baseOrderParams: OrderParams = {
       symbol,
-      side: OrderCalculator.getOrderSide(isLong),
+      side: OrderCalculator.resolveOrderSide(isLong),
       amount: 0,
       price: price ?? 0,
       type: OrderType.Market,
@@ -284,7 +284,7 @@ export class OrderCalculator {
               exchangeConnector.setLeverage(resolvedSymbol, leverage),
               exchangeConnector.setMarginMode(
                 resolvedSymbol,
-                MarginType.ISOLATED
+                MarginMode.Isolated
               ),
             ]);
           } catch (error) {
@@ -384,7 +384,7 @@ export class OrderCalculator {
         exchangeConnector,
         exchangeName,
         symbol: orderParams.symbol,
-        isLong: orderParams.side === OrderDirection.Buy,
+        isLong: orderParams.side === OrderSide.Buy,
         stopBuyAfterPercent,
         orderVolumeUsdt,
         uniqueSymbolCount,
@@ -432,9 +432,9 @@ export class OrderCalculator {
       isIncrease
     );
     const oppositeSide =
-      orderParams.side === OrderDirection.Buy
-        ? OrderDirection.Sell
-        : OrderDirection.Buy;
+      orderParams.side === OrderSide.Buy
+        ? OrderSide.Sell
+        : OrderSide.Buy;
 
     const baseCloseOrderParams: OrderParams = {
       symbol: orderParams.symbol,
@@ -452,7 +452,7 @@ export class OrderCalculator {
     if (!isTakeProfit) {
       baseCloseOrderParams.triggerPrice = shiftedPrice;
       baseCloseOrderParams.triggerDirection =
-        orderParams.side === OrderDirection.Buy ? 2 : 1;
+        orderParams.side === OrderSide.Buy ? 2 : 1;
     }
 
     return baseCloseOrderParams;

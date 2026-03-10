@@ -36,7 +36,7 @@ export const describeIfCredentials = (
   fn: () => void
 ): void => {
   const hasCredentials =
-    exchangeName === 'binance'
+    exchangeName === ExchangeName.Binance
       ? hasBinanceCredentials()
       : hasBybitCredentials();
 

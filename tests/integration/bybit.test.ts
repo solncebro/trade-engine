@@ -16,16 +16,16 @@ import {
   ExchangeConnectorByName,
   ExchangeName,
   MarketType,
-  OrderDirection,
+  OrderSide,
   OrderType,
 } from '../../src/types';
 import { isOrderSuccessful } from '../../src/utils/order.utils';
 
 const LIMIT_PRICE_ADJUSTMENT_PERCENT = 5;
 
-describeIfCredentials('bybit', 'Bybit Demo Integration', () => {
+describeIfCredentials(ExchangeName.Bybit, 'Bybit Demo Integration', () => {
   let connector: ExchangeConnector;
-  const exchangeName: ExchangeName = 'bybit';
+  const exchangeName = ExchangeName.Bybit;
 
   beforeAll(async () => {
     connector = new ExchangeConnector(exchangeName, BYBIT_DEMO_CONFIG);
@@ -41,7 +41,7 @@ describeIfCredentials('bybit', 'Bybit Demo Integration', () => {
     test('getExchangeName() returns bybit', () => {
       const result = connector.getExchangeName();
       logger.info({ result }, 'getExchangeName test result');
-      expect(result).toBe('bybit');
+      expect(result).toBe(ExchangeName.Bybit);
     });
 
     test('getAccountId() returns a 16-char hash string', () => {
@@ -128,7 +128,7 @@ describeIfCredentials('bybit', 'Bybit Demo Integration', () => {
 
       const openResult = await connector.createOrder({
         symbol: BYBIT_FUTURES_TEST_SYMBOL,
-        side: OrderDirection.Buy,
+        side: OrderSide.Buy,
         amount,
         price: ticker!.close!,
         type: OrderType.Market,
@@ -141,7 +141,7 @@ describeIfCredentials('bybit', 'Bybit Demo Integration', () => {
 
       const closeResult = await connector.createOrder({
         symbol: BYBIT_FUTURES_TEST_SYMBOL,
-        side: OrderDirection.Sell,
+        side: OrderSide.Sell,
         amount,
         price: ticker!.close!,
         type: OrderType.Market,
@@ -164,7 +164,7 @@ describeIfCredentials('bybit', 'Bybit Demo Integration', () => {
 
       const openResult = await connector.createOrder({
         symbol: BYBIT_FUTURES_TEST_SYMBOL,
-        side: OrderDirection.Buy,
+        side: OrderSide.Buy,
         amount,
         price: currentPrice * 1.05,
         type: OrderType.Limit,
@@ -177,7 +177,7 @@ describeIfCredentials('bybit', 'Bybit Demo Integration', () => {
 
       const closeResult = await connector.createOrder({
         symbol: BYBIT_FUTURES_TEST_SYMBOL,
-        side: OrderDirection.Sell,
+        side: OrderSide.Sell,
         amount,
         price: currentPrice * 0.95,
         type: OrderType.Limit,
@@ -311,7 +311,7 @@ describeIfCredentials('bybit', 'Bybit Demo Integration', () => {
       const limitOrder = OrderCalculator.calculateLimitOrderWithPriceAdjustment(
         {
           symbol: BYBIT_FUTURES_TEST_SYMBOL,
-          side: OrderDirection.Buy,
+          side: OrderSide.Buy,
           amount: calculateTestAmount(connector, BYBIT_FUTURES_TEST_SYMBOL, ticker.close!),
           price: ticker.close!,
           type: OrderType.Market,
@@ -338,7 +338,7 @@ describeIfCredentials('bybit', 'Bybit Demo Integration', () => {
 
       const baseParams = {
         symbol: BYBIT_FUTURES_TEST_SYMBOL,
-        side: OrderDirection.Buy,
+        side: OrderSide.Buy,
         amount: calculateTestAmount(connector, BYBIT_FUTURES_TEST_SYMBOL, ticker.close!),
         price: ticker.close!,
         type: OrderType.Market as OrderType,
@@ -360,12 +360,12 @@ describeIfCredentials('bybit', 'Bybit Demo Integration', () => {
         'calculateCloseOrder test result'
       );
 
-      expect(takeProfit.side).toBe(OrderDirection.Sell);
+      expect(takeProfit.side).toBe(OrderSide.Sell);
       expect(takeProfit.type).toBe(OrderType.Limit);
       expect(takeProfit.price).toBeGreaterThan(ticker.close!);
       expect(takeProfit.triggerPrice).toBeUndefined();
 
-      expect(stopLoss.side).toBe(OrderDirection.Sell);
+      expect(stopLoss.side).toBe(OrderSide.Sell);
       expect(stopLoss.triggerPrice).toBeDefined();
       expect(stopLoss.triggerPrice).toBeLessThan(ticker.close!);
     });
