@@ -5,7 +5,7 @@ import dotenv from 'dotenv';
 import { ExchangeConnector } from '../../../src/services/exchangeConnector';
 import {
   ExchangeConfig,
-  ExchangeName,
+  ExchangeNameEnum,
   MarketType,
   SymbolMappingByExchange,
 } from '../../../src/types';
@@ -31,12 +31,12 @@ export const hasBybitCredentials = (): boolean =>
   !!BYBIT_DEMO_CONFIG.apiKey && !!BYBIT_DEMO_CONFIG.secret;
 
 export const describeIfCredentials = (
-  exchangeName: ExchangeName,
+  exchangeName: ExchangeNameEnum,
   name: string,
   fn: () => void
 ): void => {
   const hasCredentials =
-    exchangeName === ExchangeName.Binance
+    exchangeName === ExchangeNameEnum.Binance
       ? hasBinanceCredentials()
       : hasBybitCredentials();
 
@@ -99,7 +99,7 @@ export const waitForTickers = async (
     const resolvedSymbol = connector.resolveSymbolWithPrefix(symbol);
     const ticker = connector.getTicker(resolvedSymbol, MarketType.Futures);
 
-    if (ticker?.close !== undefined && ticker.close > 0) {
+    if (ticker?.lastPrice !== undefined && ticker.lastPrice > 0) {
       return;
     }
 

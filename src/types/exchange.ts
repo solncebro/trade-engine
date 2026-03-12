@@ -1,11 +1,11 @@
-import type { ExchangeName } from '@solncebro/exchange-engine';
+import type { ExchangeNameEnum } from '@solncebro/exchange-engine';
 
 import { ExtensibleRecord } from './common';
 import { OrderParams } from './orders';
 
 import { ExchangeConnector } from '../services/exchangeConnector';
 
-export type ExchangeConnectorByName = Map<ExchangeName, ExchangeConnector>;
+export type ExchangeConnectorByName = Map<ExchangeNameEnum, ExchangeConnector>;
 
 export interface ExchangeOrderParams extends ExtensibleRecord {
   symbol: string;
@@ -41,6 +41,6 @@ export interface ExchangeResponseData extends ExtensibleRecord {
 }
 
 export interface ErrorResultBase {
-  exchangeName: ExchangeName;
+  exchangeName: ExchangeNameEnum;
   orderParams: OrderParams;
 }

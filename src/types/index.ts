@@ -1,10 +1,10 @@
 export {
-  ExchangeName,
-  MarginMode,
-  OrderSide,
-  OrderType,
-  TimeInForce,
-  TradeSymbolType,
+  ExchangeNameEnum,
+  MarginModeEnum,
+  OrderSideEnum,
+  OrderTypeEnum,
+  TimeInForceEnum,
+  TradeSymbolTypeEnum,
 } from '@solncebro/exchange-engine';
 export type {
   ExchangeClient,

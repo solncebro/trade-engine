@@ -4,10 +4,14 @@ tests/
 .env.*
 .vscode/
 .claude/
+CLAUDE.md
 eslint.config.js
 jest.config.js
+jest.integration.config.js
 .prettierrc.json
 tsconfig.json
 *.log
 .DS_Store
 logs/
+.git/
+.gitignore

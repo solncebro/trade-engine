@@ -1,14 +1,3 @@
-import { ExchangeConnector } from '../../src/services/exchangeConnector';
-import { OrderCalculator } from '../../src/core/orderCalculator';
-import {
-  ExchangeConnectorByName,
-  ExchangeName,
-  MarketType,
-  OrderSide,
-  OrderType,
-} from '../../src/types';
-import { isOrderSuccessful } from '../../src/utils/order.utils';
-
 import {
   BINANCE_DEMO_CONFIG,
   BINANCE_FUTURES_TEST_SYMBOL,
@@ -19,9 +8,20 @@ import {
   waitForTickers,
 } from './helpers/testnet.helpers';
 
-describeIfCredentials(ExchangeName.Bybit, 'Bybit Limit Orders Integration', () => {
+import { OrderCalculator } from '../../src/core/orderCalculator';
+import { ExchangeConnector } from '../../src/services/exchangeConnector';
+import {
+  ExchangeNameEnum,
+  MarketType,
+  OrderSideEnum,
+  OrderTypeEnum,
+} from '../../src/types';
+import { isOrderSuccessful } from '../../src/utils/order.utils';
+
+
+describeIfCredentials(ExchangeNameEnum.Bybit, 'Bybit Limit Orders Integration', () => {
   let connector: ExchangeConnector;
-  const exchangeName = ExchangeName.Bybit;
+  const exchangeName = ExchangeNameEnum.Bybit;
   const PRICE_ADJUSTMENT_PERCENT = 40; // +40% for realistic coin-listing scenario
 
   beforeAll(async () => {
@@ -38,14 +38,14 @@ describeIfCredentials(ExchangeName.Bybit, 'Bybit Limit Orders Integration', () =
     test('calculateLimitOrderWithPriceAdjustment increases buy limit price by 40%', () => {
       const ticker = connector.getTicker(BYBIT_FUTURES_TEST_SYMBOL, MarketType.Futures);
       expect(ticker).toBeDefined();
-      expect(ticker!.close).toBeGreaterThan(0);
+      expect(ticker!.lastPrice).toBeGreaterThan(0);
 
       const baseOrderParams = {
         symbol: BYBIT_FUTURES_TEST_SYMBOL,
-        side: OrderSide.Buy,
-        amount: calculateTestAmount(connector, BYBIT_FUTURES_TEST_SYMBOL, ticker!.close!),
-        price: ticker!.close!,
-        type: OrderType.Market,
+        side: OrderSideEnum.Buy,
+        amount: calculateTestAmount(connector, BYBIT_FUTURES_TEST_SYMBOL, ticker!.lastPrice!),
+        price: ticker!.lastPrice!,
+        type: OrderTypeEnum.Market,
         marketType: MarketType.Futures,
       };
 
@@ -56,10 +56,10 @@ describeIfCredentials(ExchangeName.Bybit, 'Bybit Limit Orders Integration', () =
         5 // leverage
       );
 
-      expect(limitOrder.type).toBe(OrderType.Limit);
+      expect(limitOrder.type).toBe(OrderTypeEnum.Limit);
       // Price should increase by 40%
-      expect(limitOrder.price).toBeGreaterThan(ticker!.close! * 1.39);
-      expect(limitOrder.price).toBeLessThan(ticker!.close! * 1.41);
+      expect(limitOrder.price).toBeGreaterThan(ticker!.lastPrice! * 1.39);
+      expect(limitOrder.price).toBeLessThan(ticker!.lastPrice! * 1.41);
       const amountAtOriginalPrice = 100 / baseOrderParams.price;
       expect(limitOrder.amount).toBeLessThan(amountAtOriginalPrice);
     });
@@ -70,10 +70,10 @@ describeIfCredentials(ExchangeName.Bybit, 'Bybit Limit Orders Integration', () =
 
       const baseOrderParams = {
         symbol: BYBIT_FUTURES_TEST_SYMBOL,
-        side: OrderSide.Sell,
-        amount: calculateTestAmount(connector, BYBIT_FUTURES_TEST_SYMBOL, ticker!.close!),
-        price: ticker!.close!,
-        type: OrderType.Market,
+        side: OrderSideEnum.Sell,
+        amount: calculateTestAmount(connector, BYBIT_FUTURES_TEST_SYMBOL, ticker!.lastPrice!),
+        price: ticker!.lastPrice!,
+        type: OrderTypeEnum.Market,
         marketType: MarketType.Futures,
       };
 
@@ -84,10 +84,10 @@ describeIfCredentials(ExchangeName.Bybit, 'Bybit Limit Orders Integration', () =
         5
       );
 
-      expect(limitOrder.type).toBe(OrderType.Limit);
+      expect(limitOrder.type).toBe(OrderTypeEnum.Limit);
       // Price should decrease by 40%
-      expect(limitOrder.price).toBeLessThan(ticker!.close! * 0.61);
-      expect(limitOrder.price).toBeGreaterThan(ticker!.close! * 0.59);
+      expect(limitOrder.price).toBeLessThan(ticker!.lastPrice! * 0.61);
+      expect(limitOrder.price).toBeGreaterThan(ticker!.lastPrice! * 0.59);
     });
 
     test('creates actual buy limit order on demo', async () => {
@@ -96,10 +96,10 @@ describeIfCredentials(ExchangeName.Bybit, 'Bybit Limit Orders Integration', () =
 
       const baseOrderParams = {
         symbol: BYBIT_FUTURES_TEST_SYMBOL,
-        side: OrderSide.Buy,
-        amount: calculateTestAmount(connector, BYBIT_FUTURES_TEST_SYMBOL, ticker!.close!),
-        price: ticker!.close!,
-        type: OrderType.Market,
+        side: OrderSideEnum.Buy,
+        amount: calculateTestAmount(connector, BYBIT_FUTURES_TEST_SYMBOL, ticker!.lastPrice!),
+        price: ticker!.lastPrice!,
+        type: OrderTypeEnum.Market,
         marketType: MarketType.Futures,
       };
 
@@ -129,16 +129,16 @@ describeIfCredentials(ExchangeName.Bybit, 'Bybit Limit Orders Integration', () =
         expect(typeof result.orderId).toBe('string');
 
         // Try to fetch the order details via position
-        const position = await connector.fetchPosition(BYBIT_FUTURES_TEST_SYMBOL);
+        await connector.fetchPosition(BYBIT_FUTURES_TEST_SYMBOL);
 
         // Cleanup: cancel or close via market order
         // Market sell to close any potential position
         const closeResult = await connector.createOrder({
           symbol: BYBIT_FUTURES_TEST_SYMBOL,
-          side: OrderSide.Sell,
-          amount: calculateTestAmount(connector, BYBIT_FUTURES_TEST_SYMBOL, ticker!.close!),
-          price: ticker!.close!,
-          type: OrderType.Market,
+          side: OrderSideEnum.Sell,
+          amount: calculateTestAmount(connector, BYBIT_FUTURES_TEST_SYMBOL, ticker!.lastPrice!),
+          price: ticker!.lastPrice!,
+          type: OrderTypeEnum.Market,
           marketType: MarketType.Futures,
         });
 
@@ -152,10 +152,10 @@ describeIfCredentials(ExchangeName.Bybit, 'Bybit Limit Orders Integration', () =
 
       const baseOrderParams = {
         symbol: BYBIT_FUTURES_TEST_SYMBOL,
-        side: OrderSide.Sell,
-        amount: calculateTestAmount(connector, BYBIT_FUTURES_TEST_SYMBOL, ticker!.close!),
-        price: ticker!.close!,
-        type: OrderType.Market,
+        side: OrderSideEnum.Sell,
+        amount: calculateTestAmount(connector, BYBIT_FUTURES_TEST_SYMBOL, ticker!.lastPrice!),
+        price: ticker!.lastPrice!,
+        type: OrderTypeEnum.Market,
         marketType: MarketType.Futures,
       };
 
@@ -166,21 +166,21 @@ describeIfCredentials(ExchangeName.Bybit, 'Bybit Limit Orders Integration', () =
         false // Not take profit, so will have triggerPrice
       );
 
-      expect(sellLimit.price).toBeLessThan(ticker!.close!);
+      expect(sellLimit.price).toBeLessThan(ticker!.lastPrice!);
       expect(sellLimit.triggerPrice).toBeDefined();
-      expect(sellLimit.triggerPrice).toBeLessThan(ticker!.close!);
+      expect(sellLimit.triggerPrice).toBeLessThan(ticker!.lastPrice!);
     });
 
     test('limit order amount is recalculated based on adjusted price', () => {
       const ticker = connector.getTicker(BYBIT_FUTURES_TEST_SYMBOL, MarketType.Futures);
-      const marketPrice = ticker!.close!;
+      const marketPrice = ticker!.lastPrice!;
 
       const baseOrderParams = {
         symbol: BYBIT_FUTURES_TEST_SYMBOL,
-        side: OrderSide.Buy,
-        amount: calculateTestAmount(connector, BYBIT_FUTURES_TEST_SYMBOL, ticker!.close!),
+        side: OrderSideEnum.Buy,
+        amount: calculateTestAmount(connector, BYBIT_FUTURES_TEST_SYMBOL, ticker!.lastPrice!),
         price: marketPrice,
-        type: OrderType.Market,
+        type: OrderTypeEnum.Market,
         marketType: MarketType.Futures,
       };
 
@@ -202,28 +202,28 @@ describeIfCredentials(ExchangeName.Bybit, 'Bybit Limit Orders Integration', () =
 
     test('createCloseOrder generates TP/SL with correct prices', () => {
       const ticker = connector.getTicker(BYBIT_FUTURES_TEST_SYMBOL, MarketType.Futures);
-      const entryPrice = ticker!.close!;
+      const entryPrice = ticker!.lastPrice!;
 
       const entryOrder = {
         symbol: BYBIT_FUTURES_TEST_SYMBOL,
-        side: OrderSide.Buy,
-        amount: calculateTestAmount(connector, BYBIT_FUTURES_TEST_SYMBOL, ticker!.close!),
+        side: OrderSideEnum.Buy,
+        amount: calculateTestAmount(connector, BYBIT_FUTURES_TEST_SYMBOL, ticker!.lastPrice!),
         price: entryPrice,
-        type: OrderType.Market as OrderType,
+        type: OrderTypeEnum.Market as OrderTypeEnum,
         marketType: MarketType.Futures,
       };
 
       // Take Profit: 40% above entry
       const takeProfit = OrderCalculator.calculateCloseOrder(entryOrder, PRICE_ADJUSTMENT_PERCENT, true);
-      expect(takeProfit.side).toBe(OrderSide.Sell);
-      expect(takeProfit.type).toBe(OrderType.Limit);
+      expect(takeProfit.side).toBe(OrderSideEnum.Sell);
+      expect(takeProfit.type).toBe(OrderTypeEnum.Limit);
       expect(takeProfit.price).toBeGreaterThan(entryPrice * 1.39);
       expect(takeProfit.triggerPrice).toBeUndefined(); // TP doesn't use trigger price
 
       // Stop Loss: 40% below entry
       const stopLoss = OrderCalculator.calculateCloseOrder(entryOrder, -PRICE_ADJUSTMENT_PERCENT, false);
-      expect(stopLoss.side).toBe(OrderSide.Sell);
-      expect(stopLoss.type).toBe(OrderType.Limit);
+      expect(stopLoss.side).toBe(OrderSideEnum.Sell);
+      expect(stopLoss.type).toBe(OrderTypeEnum.Limit);
       expect(stopLoss.price).toBeGreaterThan(entryPrice / 1.41);
       expect(stopLoss.price).toBeLessThan(entryPrice / 1.39);
       expect(stopLoss.triggerPrice).toBeDefined();
@@ -235,10 +235,10 @@ describeIfCredentials(ExchangeName.Bybit, 'Bybit Limit Orders Integration', () =
 
       const baseOrderParams = {
         symbol: BYBIT_FUTURES_TEST_SYMBOL,
-        side: OrderSide.Buy,
-        amount: calculateTestAmount(connector, BYBIT_FUTURES_TEST_SYMBOL, ticker!.close!),
-        price: ticker!.close!,
-        type: OrderType.Market,
+        side: OrderSideEnum.Buy,
+        amount: calculateTestAmount(connector, BYBIT_FUTURES_TEST_SYMBOL, ticker!.lastPrice!),
+        price: ticker!.lastPrice!,
+        type: OrderTypeEnum.Market,
         marketType: MarketType.Futures,
       };
 
@@ -263,9 +263,9 @@ describeIfCredentials(ExchangeName.Bybit, 'Bybit Limit Orders Integration', () =
   });
 });
 
-describeIfCredentials(ExchangeName.Binance, 'Binance Limit Orders Integration', () => {
+describeIfCredentials(ExchangeNameEnum.Binance, 'Binance Limit Orders Integration', () => {
   let connector: ExchangeConnector;
-  const exchangeName = ExchangeName.Binance;
+  const exchangeName = ExchangeNameEnum.Binance;
   const PRICE_ADJUSTMENT_PERCENT = 40;
 
   beforeAll(async () => {
@@ -285,10 +285,10 @@ describeIfCredentials(ExchangeName.Binance, 'Binance Limit Orders Integration', 
 
       const baseOrderParams = {
         symbol: BINANCE_FUTURES_TEST_SYMBOL,
-        side: OrderSide.Buy,
-        amount: calculateTestAmount(connector, BINANCE_FUTURES_TEST_SYMBOL, ticker!.close!),
-        price: ticker!.close!,
-        type: OrderType.Market,
+        side: OrderSideEnum.Buy,
+        amount: calculateTestAmount(connector, BINANCE_FUTURES_TEST_SYMBOL, ticker!.lastPrice!),
+        price: ticker!.lastPrice!,
+        type: OrderTypeEnum.Market,
         marketType: MarketType.Futures,
       };
 
@@ -316,10 +316,10 @@ describeIfCredentials(ExchangeName.Binance, 'Binance Limit Orders Integration', 
         // Cleanup
         const closeResult = await connector.createOrder({
           symbol: BINANCE_FUTURES_TEST_SYMBOL,
-          side: OrderSide.Sell,
-          amount: calculateTestAmount(connector, BINANCE_FUTURES_TEST_SYMBOL, ticker!.close!),
-          price: ticker!.close!,
-          type: OrderType.Market,
+          side: OrderSideEnum.Sell,
+          amount: calculateTestAmount(connector, BINANCE_FUTURES_TEST_SYMBOL, ticker!.lastPrice!),
+          price: ticker!.lastPrice!,
+          type: OrderTypeEnum.Market,
           marketType: MarketType.Futures,
         });
 
@@ -332,10 +332,10 @@ describeIfCredentials(ExchangeName.Binance, 'Binance Limit Orders Integration', 
 
       const baseOrderParams = {
         symbol: BINANCE_FUTURES_TEST_SYMBOL,
-        side: OrderSide.Buy,
-        amount: calculateTestAmount(connector, BINANCE_FUTURES_TEST_SYMBOL, ticker!.close!),
-        price: ticker!.close!,
-        type: OrderType.Market,
+        side: OrderSideEnum.Buy,
+        amount: calculateTestAmount(connector, BINANCE_FUTURES_TEST_SYMBOL, ticker!.lastPrice!),
+        price: ticker!.lastPrice!,
+        type: OrderTypeEnum.Market,
         marketType: MarketType.Futures,
       };
 
@@ -347,7 +347,7 @@ describeIfCredentials(ExchangeName.Binance, 'Binance Limit Orders Integration', 
       );
 
       // Should follow same formula regardless of exchange
-      expect(limitOrder.price).toBeCloseTo(ticker!.close! * 1.4, 1);
+      expect(limitOrder.price).toBeCloseTo(ticker!.lastPrice! * 1.4, 1);
     });
   });
 });

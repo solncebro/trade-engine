@@ -1,12 +1,12 @@
+import { logger } from '../src/core/logger';
 import { MarketType } from '../src/types';
-import { isOrderSuccessful, isSpot } from '../src/utils/order.utils';
-import { normalizeSymbol } from '../src/utils/symbol.utils';
 import {
   createDate,
-  formatTimestamp,
   createHumanTimestamp,
+  formatTimestamp,
 } from '../src/utils/date.utils';
-import { logger } from '../src/core/logger';
+import { isOrderSuccessful, isSpot } from '../src/utils/order.utils';
+import { normalizeSymbol } from '../src/utils/symbol.utils';
 
 describe('order.utils', () => {
   test('isOrderSuccessful() returns true when orderId is present', () => {

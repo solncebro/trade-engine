@@ -1,13 +1,9 @@
-import { ExchangeConnector } from '../../src/services/exchangeConnector';
-import { OrderCalculator } from '../../src/core/orderCalculator';
 import {
-  ExchangeName,
-  MarketType,
-  OrderSide,
-  OrderType,
-} from '../../src/types';
-import { isOrderSuccessful } from '../../src/utils/order.utils';
-
+  connectClient,
+  parseSymbolFromSignalTitle,
+  SignalEmulatorServer,
+  waitForMessage,
+} from './helpers/signalEmulator.helper';
 import {
   BINANCE_DEMO_CONFIG,
   BINANCE_FUTURES_TEST_SYMBOL,
@@ -17,12 +13,17 @@ import {
   describeIfCredentials,
   waitForTickers,
 } from './helpers/testnet.helpers';
+
+import { OrderCalculator } from '../../src/core/orderCalculator';
+import { ExchangeConnector } from '../../src/services/exchangeConnector';
 import {
-  SignalEmulatorServer,
-  connectClient,
-  parseSymbolFromSignalTitle,
-  waitForMessage,
-} from './helpers/signalEmulator.helper';
+  ExchangeNameEnum,
+  MarketType,
+  OrderSideEnum,
+  OrderTypeEnum,
+} from '../../src/types';
+import { isOrderSuccessful } from '../../src/utils/order.utils';
+
 
 const BINANCE_LISTING_SIGNAL = `Binance Futures Will Launch USDⓈ-Margined ${BINANCE_FUTURES_TEST_SYMBOL} Perpetual Contract`;
 const BYBIT_LISTING_SIGNAL =
@@ -31,13 +32,13 @@ const FALLBACK_SIGNAL =
   'Binance Futures Will Launch USDⓈ-Margined CFGUSDT Perpetual Contract';
 
 describeIfCredentials(
-  ExchangeName.Binance,
+  ExchangeNameEnum.Binance,
   'Binance E2E Signal → Order',
   () => {
     let connector: ExchangeConnector;
     let server: SignalEmulatorServer;
     let port: number;
-    const exchangeName = ExchangeName.Binance;
+    const exchangeName = ExchangeNameEnum.Binance;
 
     beforeAll(async () => {
       connector = new ExchangeConnector(exchangeName, BINANCE_DEMO_CONFIG);
@@ -93,16 +94,16 @@ describeIfCredentials(
       const resolvedSymbol = connector.resolveSymbolWithPrefix(symbol);
       const ticker = connector.getTicker(resolvedSymbol, MarketType.Futures);
 
-      expect(ticker?.close).toBeGreaterThan(0);
+      expect(ticker?.lastPrice).toBeGreaterThan(0);
 
-      const amount = calculateTestAmount(connector, symbol, ticker!.close);
+      const amount = calculateTestAmount(connector, symbol, ticker!.lastPrice);
 
       const orderResult = await connector.createOrder({
         symbol,
-        side: OrderSide.Buy,
+        side: OrderSideEnum.Buy,
         amount,
-        price: ticker!.close,
-        type: OrderType.Market,
+        price: ticker!.lastPrice,
+        type: OrderTypeEnum.Market,
         marketType: MarketType.Futures,
       });
 
@@ -110,10 +111,10 @@ describeIfCredentials(
 
       const closeResult = await connector.createOrder({
         symbol,
-        side: OrderSide.Sell,
+        side: OrderSideEnum.Sell,
         amount,
-        price: ticker!.close,
-        type: OrderType.Market,
+        price: ticker!.lastPrice,
+        type: OrderTypeEnum.Market,
         marketType: MarketType.Futures,
       });
 
@@ -170,11 +171,11 @@ describeIfCredentials(
   }
 );
 
-describeIfCredentials(ExchangeName.Bybit, 'Bybit E2E Signal → Order', () => {
+describeIfCredentials(ExchangeNameEnum.Bybit, 'Bybit E2E Signal → Order', () => {
   let connector: ExchangeConnector;
   let server: SignalEmulatorServer;
   let port: number;
-  const exchangeName = ExchangeName.Bybit;
+  const exchangeName = ExchangeNameEnum.Bybit;
 
   beforeAll(async () => {
     connector = new ExchangeConnector(exchangeName, BYBIT_DEMO_CONFIG);
@@ -230,16 +231,16 @@ describeIfCredentials(ExchangeName.Bybit, 'Bybit E2E Signal → Order', () => {
     const resolvedSymbol = connector.resolveSymbolWithPrefix(symbol);
     const ticker = connector.getTicker(resolvedSymbol, MarketType.Futures);
 
-    expect(ticker?.close).toBeGreaterThan(0);
+    expect(ticker?.lastPrice).toBeGreaterThan(0);
 
-    const amount = calculateTestAmount(connector, symbol, ticker!.close);
+    const amount = calculateTestAmount(connector, symbol, ticker!.lastPrice);
 
     const orderResult = await connector.createOrder({
       symbol,
-      side: OrderSide.Buy,
+      side: OrderSideEnum.Buy,
       amount,
-      price: ticker!.close,
-      type: OrderType.Market,
+      price: ticker!.lastPrice,
+      type: OrderTypeEnum.Market,
       marketType: MarketType.Futures,
     });
 
@@ -247,10 +248,10 @@ describeIfCredentials(ExchangeName.Bybit, 'Bybit E2E Signal → Order', () => {
 
     const closeResult = await connector.createOrder({
       symbol,
-      side: OrderSide.Sell,
+      side: OrderSideEnum.Sell,
       amount,
-      price: ticker!.close,
-      type: OrderType.Market,
+      price: ticker!.lastPrice,
+      type: OrderTypeEnum.Market,
       marketType: MarketType.Futures,
     });
 

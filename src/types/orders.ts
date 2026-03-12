@@ -1,4 +1,4 @@
-import { ExchangeName, OrderSide, OrderType } from '@solncebro/exchange-engine';
+import { ExchangeNameEnum, OrderSideEnum, OrderTypeEnum } from '@solncebro/exchange-engine';
 
 import {
   ExchangeOrderParams,
@@ -14,10 +14,10 @@ export enum MarketType {
 
 export interface OrderParams {
   symbol: string;
-  side: OrderSide;
+  side: OrderSideEnum;
   amount: number;
   price: number;
-  type: OrderType;
+  type: OrderTypeEnum;
   marketType?: MarketType;
   triggerPrice?: number;
   triggerDirection?: 1 | 2;
@@ -34,7 +34,7 @@ export interface EntityWithErrorText {
 
 export interface OrderAttributes extends EntityWithErrorText {
   orderParams: OrderParams;
-  exchangeName: ExchangeName;
+  exchangeName: ExchangeNameEnum;
 }
 
 export interface OrderResult extends OrderAttributes, EntityWithOrderId {
@@ -79,7 +79,7 @@ export interface SymbolMappingResult {
   resolvedSymbol: string;
 }
 
-export type SymbolMappingByExchange = Map<ExchangeName, Map<string, string>>;
+export type SymbolMappingByExchange = Map<ExchangeNameEnum, Map<string, string>>;
 
 export interface CreateOrderArgs {
   exchangeConnector: ExchangeConnector;

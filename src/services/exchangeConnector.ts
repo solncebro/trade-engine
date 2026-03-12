@@ -1,7 +1,7 @@
 import * as crypto from 'crypto';
 
-import { Exchange as ExchangeInstance, ExchangeName, MarginMode, TradeSymbolType } from '@solncebro/exchange-engine';
-import type { ExchangeClient, Position, Ticker, TickerBySymbol } from '@solncebro/exchange-engine';
+import { Exchange as ExchangeInstance, ExchangeNameEnum, MarginModeEnum, OrderSideEnum, PositionSideEnum, TimeInForceEnum, TradeSymbolTypeEnum } from '@solncebro/exchange-engine';
+import type { CreateOrderWebSocketArgs, ExchangeClient, Position, Ticker, TickerBySymbol } from '@solncebro/exchange-engine';
 
 import { logger } from '../core/logger';
 import {
@@ -9,7 +9,7 @@ import {
   MarketType,
   OrderParams,
   OrderResult,
-  OrderType,
+  OrderTypeEnum,
 } from '../types';
 import { formatErrorMessage } from '../utils/errorFormatter.utils';
 import { isSpot } from '../utils/order.utils';
@@ -17,13 +17,13 @@ import { normalizeSymbol } from '../utils/symbol.utils';
 
 export class ExchangeConnector {
   private exchange: ExchangeInstance;
-  private exchangeName: ExchangeName;
+  private exchangeName: ExchangeNameEnum;
   private tickerDataMap: Map<string, Ticker> = new Map();
   private isWatchingTickers: boolean = false;
   private tickerUpdateIntervalId: NodeJS.Timeout | null = null;
 
   constructor(
-    exchangeName: ExchangeName,
+    exchangeName: ExchangeNameEnum,
     config: ExchangeConfig
   ) {
     this.exchangeName = exchangeName;
@@ -162,20 +162,13 @@ export class ExchangeConnector {
       : this.exchange.futures;
 
     try {
-      const params = this.buildOrderParams(orderParams, client);
-      const order = await client.createOrderWebSocket({
-        symbol: orderParams.symbol,
-        type: orderParams.type,
-        side: orderParams.side,
-        amount: orderParams.amount,
-        price: orderParams.price ?? 0,
-        params,
-      });
+      const wsArgs = this.buildCreateOrderArgs(orderParams, client);
+      const order = await client.createOrderWebSocket(wsArgs);
 
       return {
         ...resultBase,
         orderId: order.id,
-        actualExchangeParams: { symbol: orderParams.symbol, side: orderParams.side, ...params },
+        actualExchangeParams: { ...wsArgs },
         responseData: { id: order.id, orderId: order.id, symbol: order.symbol },
       };
     } catch (error) {
@@ -196,29 +189,42 @@ export class ExchangeConnector {
     }
   }
 
-  private buildOrderParams(
+  private buildCreateOrderArgs(
     orderParams: OrderParams,
     client: ExchangeClient
-  ): Record<string, unknown> {
-    const params: Record<string, unknown> = { ...orderParams.params };
+  ): CreateOrderWebSocketArgs {
+    const args: CreateOrderWebSocketArgs = {
+      symbol: orderParams.symbol,
+      type: orderParams.type,
+      side: orderParams.side,
+      amount: orderParams.amount,
+      price: orderParams.price ?? 0,
+    };
 
     if (!isSpot(orderParams.marketType)) {
-      params.hedgeMode = true;
+      args.positionSide = orderParams.side === OrderSideEnum.Buy
+        ? PositionSideEnum.Long
+        : PositionSideEnum.Short;
     }
 
-    if (this.exchangeName === ExchangeName.Bybit) {
-      params.timeInForce =
-        orderParams.type === OrderType.Market ? 'IOC' : 'GTC';
-      if (orderParams.triggerPrice !== undefined) {
-        params.triggerPrice = client.priceToPrecision(
+    if (orderParams.params?.reduceOnly) {
+      args.reduceOnly = true;
+    }
+
+    args.timeInForce = orderParams.type === OrderTypeEnum.Market
+      ? TimeInForceEnum.Ioc
+      : TimeInForceEnum.Gtc;
+
+    if (orderParams.triggerPrice !== undefined) {
+      args.stopPrice = parseFloat(
+        client.priceToPrecision(
           orderParams.symbol,
           orderParams.triggerPrice
-        );
-        params.triggerDirection = orderParams.triggerDirection;
-      }
+        )
+      );
     }
 
-    return params;
+    return args;
   }
 
   public async fetchPosition(symbol: string): Promise<Position | null> {
@@ -246,7 +252,7 @@ export class ExchangeConnector {
 
   public async setMarginMode(
     symbol: string,
-    marginMode: MarginMode
+    marginMode: MarginModeEnum
   ): Promise<boolean> {
     try {
       await this.exchange.futures.setMarginMode(marginMode, symbol);
@@ -261,9 +267,9 @@ export class ExchangeConnector {
       const tradeSymbols = this.exchange.futures.tradeSymbols;
 
       const filteredSymbols = [...tradeSymbols.values()]
-        .filter(m => m.isActive && (m.type === TradeSymbolType.Swap || m.type === TradeSymbolType.Future) && m.isLinear)
+        .filter(m => m.isActive && (m.type === TradeSymbolTypeEnum.Swap || m.type === TradeSymbolTypeEnum.Future) && m.isLinear)
         .map(m =>
-          this.exchangeName === ExchangeName.Bybit ? normalizeSymbol(m.symbol) : m.symbol
+          this.exchangeName === ExchangeNameEnum.Bybit ? normalizeSymbol(m.symbol) : m.symbol
         );
 
       logger.info(
@@ -291,9 +297,9 @@ export class ExchangeConnector {
       const tradeSymbols = this.exchange.spot.tradeSymbols;
 
       const filteredSymbols = [...tradeSymbols.values()]
-        .filter(m => m.isActive && m.type === TradeSymbolType.Spot)
+        .filter(m => m.isActive && m.type === TradeSymbolTypeEnum.Spot)
         .map(m =>
-          this.exchangeName === ExchangeName.Bybit ? normalizeSymbol(m.symbol) : m.symbol
+          this.exchangeName === ExchangeNameEnum.Bybit ? normalizeSymbol(m.symbol) : m.symbol
         );
 
       logger.info(
@@ -320,7 +326,7 @@ export class ExchangeConnector {
     return isSpot(marketType) ? this.exchange.spot : this.exchange.futures;
   }
 
-  public getExchangeName(): ExchangeName {
+  public getExchangeName(): ExchangeNameEnum {
     return this.exchangeName;
   }
 

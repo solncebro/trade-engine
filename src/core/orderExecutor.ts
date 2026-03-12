@@ -6,7 +6,7 @@ import {
   CreateCloseOrderArgs,
   CreateOrderArgs,
   OrderResult,
-  OrderType,
+  OrderTypeEnum,
 } from '../types';
 import { formatErrorMessage } from '../utils/errorFormatter.utils';
 import { isOrderSuccessful, isSpot } from '../utils/order.utils';
@@ -61,7 +61,7 @@ export class OrderExecutor {
     if (isEmergencyExitPosition) {
       closeOrderParams = {
         ...closeOrderParams,
-        type: OrderType.Market,
+        type: OrderTypeEnum.Market,
         triggerPrice: undefined,
         triggerDirection: undefined,
       };

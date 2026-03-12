@@ -14,18 +14,18 @@ import { OrderCalculator } from '../../src/core/orderCalculator';
 import { ExchangeConnector } from '../../src/services/exchangeConnector';
 import {
   ExchangeConnectorByName,
-  ExchangeName,
+  ExchangeNameEnum,
   MarketType,
-  OrderSide,
-  OrderType,
+  OrderSideEnum,
+  OrderTypeEnum,
 } from '../../src/types';
 import { isOrderSuccessful } from '../../src/utils/order.utils';
 
 const LIMIT_PRICE_ADJUSTMENT_PERCENT = 5;
 
-describeIfCredentials(ExchangeName.Binance, 'Binance Demo Integration', () => {
+describeIfCredentials(ExchangeNameEnum.Binance, 'Binance Demo Integration', () => {
   let connector: ExchangeConnector;
-  const exchangeName = ExchangeName.Binance;
+  const exchangeName = ExchangeNameEnum.Binance;
 
   beforeAll(async () => {
     connector = new ExchangeConnector(exchangeName, BINANCE_DEMO_CONFIG);
@@ -41,7 +41,7 @@ describeIfCredentials(ExchangeName.Binance, 'Binance Demo Integration', () => {
     test('getExchangeName() returns binance', () => {
       const result = connector.getExchangeName();
       logger.info({ result }, 'getExchangeName test result');
-      expect(result).toBe(ExchangeName.Binance);
+      expect(result).toBe(ExchangeNameEnum.Binance);
     });
 
     test('getAccountId() returns a 16-char hash string', () => {
@@ -78,7 +78,7 @@ describeIfCredentials(ExchangeName.Binance, 'Binance Demo Integration', () => {
       );
       logger.info({ ticker }, 'getTicker test result');
       expect(ticker).toBeDefined();
-      expect(ticker!.close).toBeGreaterThan(0);
+      expect(ticker!.lastPrice).toBeGreaterThan(0);
     });
 
     test('resolveSymbolWithPrefix() resolves FLOKIUSDT → 1000FLOKIUSDT, SHIBUSDT → 1000SHIBUSDT', () => {
@@ -123,14 +123,14 @@ describeIfCredentials(ExchangeName.Binance, 'Binance Demo Integration', () => {
       );
       expect(ticker).toBeDefined();
 
-      const amount = calculateTestAmount(connector, BINANCE_FUTURES_TEST_SYMBOL, ticker!.close!);
+      const amount = calculateTestAmount(connector, BINANCE_FUTURES_TEST_SYMBOL, ticker!.lastPrice!);
 
       const openResult = await connector.createOrder({
         symbol: BINANCE_FUTURES_TEST_SYMBOL,
-        side: OrderSide.Buy,
+        side: OrderSideEnum.Buy,
         amount,
-        price: ticker!.close!,
-        type: OrderType.Market,
+        price: ticker!.lastPrice!,
+        type: OrderTypeEnum.Market,
         marketType: MarketType.Futures,
       });
 
@@ -140,10 +140,10 @@ describeIfCredentials(ExchangeName.Binance, 'Binance Demo Integration', () => {
 
       const closeResult = await connector.createOrder({
         symbol: BINANCE_FUTURES_TEST_SYMBOL,
-        side: OrderSide.Sell,
+        side: OrderSideEnum.Sell,
         amount,
-        price: ticker!.close!,
-        type: OrderType.Market,
+        price: ticker!.lastPrice!,
+        type: OrderTypeEnum.Market,
         marketType: MarketType.Futures,
       });
 
@@ -157,15 +157,15 @@ describeIfCredentials(ExchangeName.Binance, 'Binance Demo Integration', () => {
         MarketType.Futures
       );
       expect(ticker).toBeDefined();
-      const currentPrice = ticker!.close!;
+      const currentPrice = ticker!.lastPrice!;
       const amount = calculateTestAmount(connector, BINANCE_FUTURES_TEST_SYMBOL, currentPrice);
 
       const openResult = await connector.createOrder({
         symbol: BINANCE_FUTURES_TEST_SYMBOL,
-        side: OrderSide.Buy,
+        side: OrderSideEnum.Buy,
         amount,
         price: currentPrice * 1.03,
-        type: OrderType.Limit,
+        type: OrderTypeEnum.Limit,
         marketType: MarketType.Futures,
       });
 
@@ -175,10 +175,10 @@ describeIfCredentials(ExchangeName.Binance, 'Binance Demo Integration', () => {
 
       const closeResult = await connector.createOrder({
         symbol: BINANCE_FUTURES_TEST_SYMBOL,
-        side: OrderSide.Sell,
+        side: OrderSideEnum.Sell,
         amount,
         price: currentPrice * 0.97,
-        type: OrderType.Limit,
+        type: OrderTypeEnum.Limit,
         marketType: MarketType.Futures,
         params: { reduceOnly: true },
       });
@@ -305,10 +305,10 @@ describeIfCredentials(ExchangeName.Binance, 'Binance Demo Integration', () => {
       const limitOrder = OrderCalculator.calculateLimitOrderWithPriceAdjustment(
         {
           symbol: BINANCE_FUTURES_TEST_SYMBOL,
-          side: OrderSide.Buy,
-          amount: calculateTestAmount(connector, BINANCE_FUTURES_TEST_SYMBOL, ticker.close!),
-          price: ticker.close!,
-          type: OrderType.Market,
+          side: OrderSideEnum.Buy,
+          amount: calculateTestAmount(connector, BINANCE_FUTURES_TEST_SYMBOL, ticker.lastPrice!),
+          price: ticker.lastPrice!,
+          type: OrderTypeEnum.Market,
           marketType: MarketType.Futures,
         },
         LIMIT_PRICE_ADJUSTMENT_PERCENT,
@@ -317,11 +317,11 @@ describeIfCredentials(ExchangeName.Binance, 'Binance Demo Integration', () => {
       );
 
       logger.info(
-        { originalPrice: ticker.close, limitOrder },
+        { originalPrice: ticker.lastPrice, limitOrder },
         'calculateLimitOrderWithPriceAdjustment test result'
       );
-      expect(limitOrder.type).toBe(OrderType.Limit);
-      expect(limitOrder.price).toBeGreaterThan(ticker.close!);
+      expect(limitOrder.type).toBe(OrderTypeEnum.Limit);
+      expect(limitOrder.price).toBeGreaterThan(ticker.lastPrice!);
     });
 
     test('calculateCloseOrder() creates correct TP and SL orders', () => {
@@ -332,10 +332,10 @@ describeIfCredentials(ExchangeName.Binance, 'Binance Demo Integration', () => {
 
       const baseParams = {
         symbol: BINANCE_FUTURES_TEST_SYMBOL,
-        side: OrderSide.Buy,
-        amount: calculateTestAmount(connector, BINANCE_FUTURES_TEST_SYMBOL, ticker.close!),
-        price: ticker.close!,
-        type: OrderType.Market as OrderType,
+        side: OrderSideEnum.Buy,
+        amount: calculateTestAmount(connector, BINANCE_FUTURES_TEST_SYMBOL, ticker.lastPrice!),
+        price: ticker.lastPrice!,
+        type: OrderTypeEnum.Market as OrderTypeEnum,
         marketType: MarketType.Futures,
       };
 
@@ -354,14 +354,14 @@ describeIfCredentials(ExchangeName.Binance, 'Binance Demo Integration', () => {
         'calculateCloseOrder test result'
       );
 
-      expect(takeProfit.side).toBe(OrderSide.Sell);
-      expect(takeProfit.type).toBe(OrderType.Limit);
-      expect(takeProfit.price).toBeGreaterThan(ticker.close!);
+      expect(takeProfit.side).toBe(OrderSideEnum.Sell);
+      expect(takeProfit.type).toBe(OrderTypeEnum.Limit);
+      expect(takeProfit.price).toBeGreaterThan(ticker.lastPrice!);
       expect(takeProfit.triggerPrice).toBeUndefined();
 
-      expect(stopLoss.side).toBe(OrderSide.Sell);
+      expect(stopLoss.side).toBe(OrderSideEnum.Sell);
       expect(stopLoss.triggerPrice).toBeDefined();
-      expect(stopLoss.triggerPrice).toBeLessThan(ticker.close!);
+      expect(stopLoss.triggerPrice).toBeLessThan(ticker.lastPrice!);
     });
 
     test('setupLeverageAndMarginMode() completes without error', async () => {

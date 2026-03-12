@@ -3,13 +3,13 @@ import { logger } from './logger';
 import { ExchangeConnector } from '../services/exchangeConnector';
 import {
   ExchangeConnectorByName,
-  ExchangeName,
-  MarginMode,
+  ExchangeNameEnum,
+  MarginModeEnum,
   MarketType,
   OrderAttributes,
-  OrderSide,
   OrderParams,
-  OrderType,
+  OrderSideEnum,
+  OrderTypeEnum,
   SymbolMappingByExchange,
 } from '../types';
 import { isSpot } from '../utils/order.utils';
@@ -17,7 +17,7 @@ import { isSpot } from '../utils/order.utils';
 const NO_PRICE_DATA_AVAILABLE = 'No price data available';
 
 interface IterateSymbolMappingByExchangeCallbackArgs {
-  exchangeName: ExchangeName;
+  exchangeName: ExchangeNameEnum;
   originalSymbol: string;
   resolvedSymbol: string;
 }
@@ -27,7 +27,7 @@ interface IterateSymbolMappingByExchangeArgs {
   callback: (args: IterateSymbolMappingByExchangeCallbackArgs) => void;
 }
 
-interface SetupLeverageAndMarginModeArgs {
+interface SetupLeverageAndMarginModeEnumArgs {
   exchangeConnectorByName: ExchangeConnectorByName;
   symbolMappingByExchange: SymbolMappingByExchange;
   leverage: number;
@@ -48,7 +48,7 @@ interface CreateOrderAttributesForSymbolArgs extends BaseOrderCalculationArgs {
 
 interface CreateOrderAttributesForMarketTypeArgs extends BaseOrderCalculationArgs {
   exchangeConnector: ExchangeConnector;
-  exchangeName: ExchangeName;
+  exchangeName: ExchangeNameEnum;
   symbol: string;
   isLong: boolean;
   marketType: MarketType;
@@ -80,8 +80,8 @@ export class OrderCalculator {
     return volumeUsdtPerSymbol / price;
   }
 
-  private static resolveOrderSide(isLong: boolean): OrderSide {
-    return isLong ? OrderSide.Buy : OrderSide.Sell;
+  private static resolveOrderSideEnum(isLong: boolean): OrderSideEnum {
+    return isLong ? OrderSideEnum.Buy : OrderSideEnum.Sell;
   }
 
   private static iterateSymbolMappingByExchange(
@@ -155,14 +155,14 @@ export class OrderCalculator {
     } = args;
 
     const ticker = exchangeConnector.getTicker(symbol, marketType);
-    const price = ticker?.close;
+    const price = ticker?.lastPrice;
 
     const baseOrderParams: OrderParams = {
       symbol,
-      side: OrderCalculator.resolveOrderSide(isLong),
+      side: OrderCalculator.resolveOrderSideEnum(isLong),
       amount: 0,
       price: price ?? 0,
-      type: OrderType.Market,
+      type: OrderTypeEnum.Market,
       marketType,
     };
 
@@ -187,16 +187,16 @@ export class OrderCalculator {
 
     if (
       marketType !== MarketType.Spot &&
-      ticker.percentage !== undefined &&
-      ticker.percentage >= stopBuyAfterPercent
+      ticker.priceChangePercent !== undefined &&
+      ticker.priceChangePercent >= stopBuyAfterPercent
     ) {
-      const errorText = `📈 Symbol ${symbol} has grown ${ticker.percentage.toFixed(2)}% (≥${stopBuyAfterPercent}%) in 24 hours on ${marketLabel} - order creation blocked`;
+      const errorText = `📈 Symbol ${symbol} has grown ${ticker.priceChangePercent.toFixed(2)}% (≥${stopBuyAfterPercent}%) in 24 hours on ${marketLabel} - order creation blocked`;
 
       logger.warn(
         {
           symbol,
           exchange: exchangeName,
-          percentage: ticker.percentage,
+          percentage: ticker.priceChangePercent,
           stopBuyAfterPercent,
           marketType,
         },
@@ -263,8 +263,8 @@ export class OrderCalculator {
     return symbolMappingByExchange;
   }
 
-  public static async setupLeverageAndMarginMode(
-    args: SetupLeverageAndMarginModeArgs
+  public static async setupLeverageAndMarginModeEnum(
+    args: SetupLeverageAndMarginModeEnumArgs
   ): Promise<void> {
     const { exchangeConnectorByName, symbolMappingByExchange, leverage } = args;
     const setupPromiseList: Promise<void>[] = [];
@@ -284,7 +284,7 @@ export class OrderCalculator {
               exchangeConnector.setLeverage(resolvedSymbol, leverage),
               exchangeConnector.setMarginMode(
                 resolvedSymbol,
-                MarginMode.Isolated
+                MarginModeEnum.Isolated
               ),
             ]);
           } catch (error) {
@@ -384,7 +384,7 @@ export class OrderCalculator {
         exchangeConnector,
         exchangeName,
         symbol: orderParams.symbol,
-        isLong: orderParams.side === OrderSide.Buy,
+        isLong: orderParams.side === OrderSideEnum.Buy,
         stopBuyAfterPercent,
         orderVolumeUsdt,
         uniqueSymbolCount,
@@ -414,7 +414,7 @@ export class OrderCalculator {
 
     return {
       ...orderParams,
-      type: OrderType.Limit,
+      type: OrderTypeEnum.Limit,
       amount: rawAmount,
       price: adjustedPrice,
     };
@@ -432,16 +432,16 @@ export class OrderCalculator {
       isIncrease
     );
     const oppositeSide =
-      orderParams.side === OrderSide.Buy
-        ? OrderSide.Sell
-        : OrderSide.Buy;
+      orderParams.side === OrderSideEnum.Buy
+        ? OrderSideEnum.Sell
+        : OrderSideEnum.Buy;
 
     const baseCloseOrderParams: OrderParams = {
       symbol: orderParams.symbol,
       side: oppositeSide,
       amount: orderParams.amount,
       price: shiftedPrice,
-      type: OrderType.Limit,
+      type: OrderTypeEnum.Limit,
       marketType: orderParams.marketType,
     };
 
@@ -452,7 +452,7 @@ export class OrderCalculator {
     if (!isTakeProfit) {
       baseCloseOrderParams.triggerPrice = shiftedPrice;
       baseCloseOrderParams.triggerDirection =
-        orderParams.side === OrderSide.Buy ? 2 : 1;
+        orderParams.side === OrderSideEnum.Buy ? 2 : 1;
     }
 
     return baseCloseOrderParams;

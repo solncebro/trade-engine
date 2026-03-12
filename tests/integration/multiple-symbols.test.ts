@@ -1,14 +1,3 @@
-import { ExchangeConnector } from '../../src/services/exchangeConnector';
-import { OrderCalculator } from '../../src/core/orderCalculator';
-import {
-  ExchangeConnectorByName,
-  ExchangeName,
-  MarketType,
-  OrderSide,
-  OrderType,
-} from '../../src/types';
-import { isOrderSuccessful } from '../../src/utils/order.utils';
-
 import {
   BINANCE_DEMO_CONFIG,
   BINANCE_FUTURES_TEST_SYMBOL_LIST,
@@ -19,9 +8,20 @@ import {
   waitForTickers,
 } from './helpers/testnet.helpers';
 
-describeIfCredentials(ExchangeName.Bybit, 'Bybit Multiple Symbols Integration', () => {
+import { OrderCalculator } from '../../src/core/orderCalculator';
+import { ExchangeConnector } from '../../src/services/exchangeConnector';
+import {
+  ExchangeNameEnum,
+  MarketType,
+  OrderSideEnum,
+  OrderTypeEnum,
+} from '../../src/types';
+import { isOrderSuccessful } from '../../src/utils/order.utils';
+
+
+describeIfCredentials(ExchangeNameEnum.Bybit, 'Bybit Multiple Symbols Integration', () => {
   let connector: ExchangeConnector;
-  const exchangeName = ExchangeName.Bybit;
+  const exchangeName = ExchangeNameEnum.Bybit;
 
   beforeAll(async () => {
     connector = new ExchangeConnector(exchangeName, BYBIT_DEMO_CONFIG);
@@ -83,7 +83,7 @@ describeIfCredentials(ExchangeName.Bybit, 'Bybit Multiple Symbols Integration', 
 
       expect(attributes.length).toBe(BYBIT_FUTURES_TEST_SYMBOL_LIST.length);
 
-      attributes.forEach((attr, index) => {
+      attributes.forEach(attr => {
         expect(attr.exchangeName).toBe(exchangeName);
         expect(attr.orderParams.price).toBeGreaterThan(0);
         expect(attr.errorText).toBeUndefined();
@@ -95,7 +95,7 @@ describeIfCredentials(ExchangeName.Bybit, 'Bybit Multiple Symbols Integration', 
         const resolvedSymbol = connector.resolveSymbolWithPrefix(symbol);
         const ticker = connector.getTicker(resolvedSymbol, MarketType.Futures);
         expect(ticker).toBeDefined();
-        expect(ticker!.close).toBeGreaterThan(0);
+        expect(ticker!.lastPrice).toBeGreaterThan(0);
       });
     });
 
@@ -132,39 +132,39 @@ describeIfCredentials(ExchangeName.Bybit, 'Bybit Multiple Symbols Integration', 
       const symbolsToTrade = BYBIT_FUTURES_TEST_SYMBOL_LIST.slice(0, 2);
       const orderPromises = symbolsToTrade.map(symbol => {
         const ticker = connector.getTicker(symbol, MarketType.Futures);
-        if (!ticker?.close) {
+        if (!ticker?.lastPrice) {
           throw new Error(`No ticker for ${symbol}`);
         }
 
         return connector.createOrder({
           symbol,
-          side: OrderSide.Buy,
-          amount: calculateTestAmount(connector, symbol, ticker.close),
-          price: ticker.close,
-          type: OrderType.Market,
+          side: OrderSideEnum.Buy,
+          amount: calculateTestAmount(connector, symbol, ticker.lastPrice),
+          price: ticker.lastPrice,
+          type: OrderTypeEnum.Market,
           marketType: MarketType.Futures,
         });
       });
 
       const results = await Promise.all(orderPromises);
 
-      results.forEach((result, index) => {
+      results.forEach(result => {
         expect(isOrderSuccessful(result)).toBe(true);
         expect(result.orderId).toBeDefined();
       });
 
       const closePromises = symbolsToTrade.map(symbol => {
         const ticker = connector.getTicker(symbol, MarketType.Futures);
-        if (!ticker?.close) {
+        if (!ticker?.lastPrice) {
           throw new Error(`No ticker for closing ${symbol}`);
         }
 
         return connector.createOrder({
           symbol,
-          side: OrderSide.Sell,
-          amount: calculateTestAmount(connector, symbol, ticker.close),
-          price: ticker.close,
-          type: OrderType.Market,
+          side: OrderSideEnum.Sell,
+          amount: calculateTestAmount(connector, symbol, ticker.lastPrice),
+          price: ticker.lastPrice,
+          type: OrderTypeEnum.Market,
           marketType: MarketType.Futures,
         });
       });
@@ -177,22 +177,22 @@ describeIfCredentials(ExchangeName.Bybit, 'Bybit Multiple Symbols Integration', 
 
     test('can fetch positions for multiple symbols after trading', async () => {
       const firstSymbol = BYBIT_FUTURES_TEST_SYMBOL_LIST[0];
-      const mapping = OrderCalculator.resolveSymbolsForExchanges(
+      OrderCalculator.resolveSymbolsForExchanges(
         [firstSymbol],
         new Map([[exchangeName, connector]])
       );
 
       const ticker = connector.getTicker(firstSymbol, MarketType.Futures);
-      if (!ticker?.close) return;
+      if (!ticker?.lastPrice) return;
 
-      const qty = calculateTestAmount(connector, firstSymbol, ticker.close);
+      const qty = calculateTestAmount(connector, firstSymbol, ticker.lastPrice);
 
       const openResult = await connector.createOrder({
         symbol: firstSymbol,
-        side: OrderSide.Buy,
+        side: OrderSideEnum.Buy,
         amount: qty,
-        price: ticker.close,
-        type: OrderType.Market,
+        price: ticker.lastPrice,
+        type: OrderTypeEnum.Market,
         marketType: MarketType.Futures,
       });
 
@@ -202,10 +202,10 @@ describeIfCredentials(ExchangeName.Bybit, 'Bybit Multiple Symbols Integration', 
 
       const closeResult = await connector.createOrder({
         symbol: firstSymbol,
-        side: OrderSide.Sell,
+        side: OrderSideEnum.Sell,
         amount: qty,
-        price: ticker.close,
-        type: OrderType.Market,
+        price: ticker.lastPrice,
+        type: OrderTypeEnum.Market,
         marketType: MarketType.Futures,
       });
 
@@ -220,8 +220,6 @@ describeIfCredentials(ExchangeName.Bybit, 'Bybit Multiple Symbols Integration', 
 
     test('volume calculation distributes correctly across multiple symbols', () => {
       const totalVolume = 300; // USDT
-      const symbolCount = BYBIT_FUTURES_TEST_SYMBOL_LIST.length;
-      const volumePerSymbol = totalVolume / symbolCount;
 
       const mapping = OrderCalculator.resolveSymbolsForExchanges(
         BYBIT_FUTURES_TEST_SYMBOL_LIST,
@@ -240,7 +238,6 @@ describeIfCredentials(ExchangeName.Bybit, 'Bybit Multiple Symbols Integration', 
 
       // Each symbol should have amount calculated from divided volume
       attributes.forEach(attr => {
-        const expectedAmount = volumePerSymbol / attr.orderParams.price;
         // Amount should be roughly in the right range (allowing for rounding)
         expect(attr.orderParams.amount).toBeGreaterThan(0);
       });
@@ -248,9 +245,9 @@ describeIfCredentials(ExchangeName.Bybit, 'Bybit Multiple Symbols Integration', 
   });
 });
 
-describeIfCredentials(ExchangeName.Binance, 'Binance Multiple Symbols Integration', () => {
+describeIfCredentials(ExchangeNameEnum.Binance, 'Binance Multiple Symbols Integration', () => {
   let connector: ExchangeConnector;
-  const exchangeName = ExchangeName.Binance;
+  const exchangeName = ExchangeNameEnum.Binance;
 
   beforeAll(async () => {
     connector = new ExchangeConnector(exchangeName, BINANCE_DEMO_CONFIG);
@@ -294,16 +291,16 @@ describeIfCredentials(ExchangeName.Binance, 'Binance Multiple Symbols Integratio
       const orderPromises = symbolsToTrade.map(symbol => {
         const resolvedSymbol = connector.resolveSymbolWithPrefix(symbol);
         const ticker = connector.getTicker(resolvedSymbol, MarketType.Futures);
-        if (!ticker?.close) {
+        if (!ticker?.lastPrice) {
           throw new Error(`No ticker for ${symbol}`);
         }
 
         return connector.createOrder({
           symbol: resolvedSymbol,
-          side: OrderSide.Buy,
-          amount: calculateTestAmount(connector, resolvedSymbol, ticker.close),
-          price: ticker.close,
-          type: OrderType.Market,
+          side: OrderSideEnum.Buy,
+          amount: calculateTestAmount(connector, resolvedSymbol, ticker.lastPrice),
+          price: ticker.lastPrice,
+          type: OrderTypeEnum.Market,
           marketType: MarketType.Futures,
         });
       });
@@ -317,16 +314,16 @@ describeIfCredentials(ExchangeName.Binance, 'Binance Multiple Symbols Integratio
       const closePromises = symbolsToTrade.map(symbol => {
         const resolvedSymbol = connector.resolveSymbolWithPrefix(symbol);
         const ticker = connector.getTicker(resolvedSymbol, MarketType.Futures);
-        if (!ticker?.close) {
+        if (!ticker?.lastPrice) {
           throw new Error(`No ticker for closing ${symbol}`);
         }
 
         return connector.createOrder({
           symbol: resolvedSymbol,
-          side: OrderSide.Sell,
-          amount: calculateTestAmount(connector, resolvedSymbol, ticker.close),
-          price: ticker.close,
-          type: OrderType.Market,
+          side: OrderSideEnum.Sell,
+          amount: calculateTestAmount(connector, resolvedSymbol, ticker.lastPrice),
+          price: ticker.lastPrice,
+          type: OrderTypeEnum.Market,
           marketType: MarketType.Futures,
         });
       });

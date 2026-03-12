@@ -1,51 +1,183 @@
 # @solncebro/trade-engine
 
-Universal trading engine library for cryptocurrency exchanges with Telegram integration and Firebase support.
+Universal trading engine library for Binance and Bybit with Telegram integration and Firebase support.
+
+Built on top of [`@solncebro/exchange-engine`](https://github.com/solncebro/exchange-engine).
 
 ## Installation
 
 ```bash
 npm install @solncebro/trade-engine
+# or
+yarn add @solncebro/trade-engine
 ```
 
-## Usage
+## Quick Start
 
-### ExchangeConnector
-
-Connect to an exchange via CCXT:
+### Connect to an exchange
 
 ```typescript
-import { ExchangeConnector } from '@solncebro/trade-engine';
+import { ExchangeConnector, ExchangeNameEnum } from '@solncebro/trade-engine';
 
-const connector = new ExchangeConnector({
-  exchangeId: 'bybit',
+const connector = new ExchangeConnector(ExchangeNameEnum.Bybit, {
   apiKey: process.env.API_KEY!,
   secret: process.env.API_SECRET!,
+  demo: true, // demo trading mode
 });
 
-await connector.init();
-const ticker = await connector.fetchTicker('BTC/USDT');
+await connector.initialize();
 ```
 
-### OrderExecutor
-
-Execute orders with built-in error handling:
+### Resolve symbols and create orders
 
 ```typescript
-import { OrderExecutor, OrderCalculator, ExchangeConnector } from '@solncebro/trade-engine';
+import {
+  ExchangeNameEnum,
+  MarketType,
+  OrderCalculator,
+  OrderSideEnum,
+  OrderTypeEnum,
+  isOrderSuccessful,
+} from '@solncebro/trade-engine';
 
-const connector = new ExchangeConnector({ /* ... */ });
-await connector.init();
+// Map symbols across exchanges (handles prefixed symbols like 1000FLOKIUSDT)
+const connectorByName = new Map([[ExchangeNameEnum.Bybit, connector]]);
+const symbolMapping = OrderCalculator.resolveSymbolsForExchanges(
+  ['ETHUSDT'],
+  connectorByName
+);
 
-const calculator = new OrderCalculator(connector);
-const executor = new OrderExecutor(connector);
+// Calculate order attributes
+const orderAttributes = OrderCalculator.createOrderAttributesForSymbol({
+  isLong: true,
+  exchangeConnectorByName: connectorByName,
+  symbolMappingByExchange: symbolMapping,
+  stopBuyAfterPercent: 30,
+  orderVolumeUsdt: 100,
+  leverage: 5,
+  uniqueSymbolCount: 1,
+});
 
-const result = await executor.executeMarketOrder({
-  symbol: 'BTC/USDT',
-  side: 'buy',
-  amount: 0.001,
+// Execute order
+for (const attr of orderAttributes) {
+  if (attr.errorText) {
+    console.warn(attr.errorText);
+    continue;
+  }
+
+  const result = await connector.createOrder(attr.orderParams);
+
+  if (isOrderSuccessful(result)) {
+    console.log('Order placed:', result.orderId);
+  } else {
+    console.warn('Order failed:', result.errorText);
+  }
+}
+```
+
+### Spot fallback
+
+If a symbol is not available on futures, the engine can automatically fall back to spot:
+
+```typescript
+const enriched = OrderCalculator.enrichWithSpotFallback({
+  orderAttributesList: orderAttributes,
+  exchangeConnectorByName: connectorByName,
+  stopBuyAfterPercent: 30,
+  orderVolumeUsdt: 100,
+  leverage: 5,
+  uniqueSymbolCount: 1,
 });
 ```
+
+### Take Profit / Stop Loss
+
+```typescript
+const tpParams = OrderCalculator.calculateCloseOrder(
+  orderParams,
+  10,   // +10% for take profit
+  true  // isTakeProfit
+);
+
+const slParams = OrderCalculator.calculateCloseOrder(
+  orderParams,
+  -5,   // -5% for stop loss
+  false // isTakeProfit
+);
+```
+
+### Limit orders with price adjustment
+
+```typescript
+const limitParams = OrderCalculator.calculateLimitOrderWithPriceAdjustment(
+  orderParams,
+  40,   // +40% price adjustment
+  100,  // volume USDT
+  5     // leverage
+);
+```
+
+## Exports
+
+### Classes
+
+| Class | Description |
+|-------|------------|
+| `ExchangeConnector` | Exchange connection, tickers, symbol resolution, order execution |
+| `OrderCalculator` | Static methods for order calculation, symbol mapping, leverage setup |
+| `OrderExecutor` | Base class for order execution with TP/SL and emergency exit |
+| `TelegramNotifier` | Telegraf bot for sending notifications and registering commands |
+| `TelegramCommandHandler<T>` | Command handler with typed settings (boolean/numeric) |
+| `TelegramMessageListener` | MTProto client for listening to Telegram channel messages |
+| `FirebaseService<T>` | Firestore CRUD with real-time subscription |
+| `ConfigManager` | Environment variable validation |
+
+### Enums (re-exported from `@solncebro/exchange-engine`)
+
+| Enum | Values |
+|------|--------|
+| `ExchangeNameEnum` | `Binance`, `Bybit` |
+| `OrderSideEnum` | `Buy`, `Sell` |
+| `OrderTypeEnum` | `Market`, `Limit`, `StopMarket`, `TakeProfitMarket`, `Stop`, `TakeProfit`, `TrailingStop` |
+| `MarginModeEnum` | `Isolated`, `Cross` |
+| `MarketType` | `Futures`, `Spot` |
+| `TimeInForceEnum` | `Gtc`, `Ioc`, `Fok`, `PostOnly` |
+| `TradeSymbolTypeEnum` | `Spot`, `Swap`, `Future` |
+
+### Types
+
+| Type | Description |
+|------|------------|
+| `OrderParams` | Order parameters (symbol, side, amount, price, type, marketType) |
+| `OrderAttributes` | Calculated order with exchange name and optional error |
+| `OrderResult` | Execution result with orderId and response data |
+| `CloseOrderResult` | TP/SL order result |
+| `SignalExecutionDetails` | Full signal execution with TP/SL/emergency results and timings |
+| `SymbolMappingByExchange` | `Map<ExchangeNameEnum, Map<string, string>>` |
+| `ExchangeConnectorByName` | `Map<ExchangeNameEnum, ExchangeConnector>` |
+| `ExchangeConfig` | `{ apiKey, secret, demo? }` |
+
+### Utilities
+
+| Function | Description |
+|----------|------------|
+| `isOrderSuccessful(result)` | Check if order has orderId |
+| `isSpot(marketType)` | Check if market type is spot |
+| `normalizeSymbol(symbol)` | Remove exchange suffixes (`:`, `/`, `.`, `-`) |
+| `formatTimestamp(ts)` | Format timestamp to `HH:mm:ss.SSS` |
+| `createLogger(args?)` | Create pino logger with optional BetterStack transport |
+
+## Key Principles
+
+- **Errors are not exceptions**: trading operations return `errorText` in the result instead of throwing. Check via `isOrderSuccessful(result)`.
+- **Demo trading**: set `ExchangeConfig.demo = true`. No manual URL overrides.
+- **Symbol prefixes**: `resolveSymbolWithPrefix()` automatically handles exchange-specific prefixes (e.g. `1000FLOKIUSDT` on Bybit).
+- **Map collections**: `SymbolMappingByExchange` and `ExchangeConnectorByName` are `Map`, not plain objects.
+
+## Requirements
+
+- Node.js >= 18
+- `@solncebro/exchange-engine` >= 0.3.0
 
 ## License
 
