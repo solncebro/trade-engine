@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.1.0] - 2026-03-13
+
+### Changed
+- `ExchangeConnector`: 5 методов получили опциональный `marketType?` для универсальной работы со spot и futures:
+  - `fetchPosition(symbol, marketType?)`
+  - `setLeverage(symbol, leverage, marketType?)`
+  - `setMarginMode(symbol, marginMode, marketType?)`
+  - `isTradeWebSocketConnected(marketType?)`
+  - `connectTradeWebSocket(marketType?)`
+- `OrderCalculator.setupLeverageAndMarginModeEnum()`: явный `MarketType.Futures` для самодокументируемости
+- Upgraded `@solncebro/exchange-engine` from 0.3.1 to 0.3.2
+
 ## [2.0.0] - 2026-03-12
 
 ### Breaking Changes
@@ -70,6 +82,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Utility functions: `isOrderSuccessful`, `isSpot`, `normalizeSymbol`, `formatTimestamp`, `createLogger`
 - Error-as-value pattern for all trading operations
 
+[2.1.0]: https://github.com/solncebro/trade-engine/releases/tag/v2.1.0
 [2.0.0]: https://github.com/solncebro/trade-engine/releases/tag/v2.0.0
 [1.2.0]: https://github.com/solncebro/trade-engine/releases/tag/v1.2.0
 [1.1.0]: https://github.com/solncebro/trade-engine/releases/tag/v1.1.0

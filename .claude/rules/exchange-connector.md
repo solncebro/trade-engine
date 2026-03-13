@@ -70,12 +70,14 @@ const result = await connector.createOrder({
 | `resolveSymbolWithPrefix(symbol, marketType?)` | `string` | Поиск символа с префиксом |
 | `getTicker(symbol, marketType?)` | `Ticker \| undefined` | Текущий тикер из кэша |
 | `createOrder(params)` | `Promise<OrderResult>` | Создание ордера |
-| `fetchPosition(symbol)` | `Promise<Position \| null>` | Текущая позиция |
-| `setLeverage(symbol, leverage)` | `Promise<boolean>` | Установка кредитного плеча |
-| `setMarginMode(symbol, mode)` | `Promise<boolean>` | Установка маржинального режима |
+| `fetchPosition(symbol, marketType?)` | `Promise<Position \| null>` | Текущая позиция |
+| `setLeverage(symbol, leverage, marketType?)` | `Promise<boolean>` | Установка кредитного плеча |
+| `setMarginMode(symbol, mode, marketType?)` | `Promise<boolean>` | Установка маржинального режима |
 | `getFuturesSymbols()` | `Promise<string[]>` | Список фьючерсных символов |
 | `getSpotSymbols()` | `Promise<string[]>` | Список спотовых символов |
 | `getClient(marketType?)` | `ExchangeClient` | Низкоуровневый клиент биржи |
+| `isTradeWebSocketConnected(marketType?)` | `boolean` | Статус Trade WebSocket |
+| `connectTradeWebSocket(marketType?)` | `Promise<void>` | Подключение Trade WebSocket |
 | `getExchangeName()` | `ExchangeName` | Имя биржи |
 | `getAccountId()` | `string` | SHA256 хеш API-ключа (16 символов) |
 | `disconnect()` | `Promise<void>` | Остановка тикеров, закрытие соединения |

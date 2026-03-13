@@ -281,10 +281,15 @@ export class OrderCalculator {
         const setupPromise = (async () => {
           try {
             await Promise.all([
-              exchangeConnector.setLeverage(resolvedSymbol, leverage),
+              exchangeConnector.setLeverage(
+                resolvedSymbol,
+                leverage,
+                MarketType.Futures
+              ),
               exchangeConnector.setMarginMode(
                 resolvedSymbol,
-                MarginModeEnum.Isolated
+                MarginModeEnum.Isolated,
+                MarketType.Futures
               ),
             ]);
           } catch (error) {

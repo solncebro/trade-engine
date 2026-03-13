@@ -227,9 +227,12 @@ export class ExchangeConnector {
     return args;
   }
 
-  public async fetchPosition(symbol: string): Promise<Position | null> {
+  public async fetchPosition(
+    symbol: string,
+    marketType?: MarketType
+  ): Promise<Position | null> {
     try {
-      const position = await this.exchange.futures.fetchPosition(symbol);
+      const position = await this.getClient(marketType).fetchPosition(symbol);
       return position;
     } catch (error) {
       logger.error(
@@ -241,9 +244,13 @@ export class ExchangeConnector {
     }
   }
 
-  public async setLeverage(symbol: string, leverage: number): Promise<boolean> {
+  public async setLeverage(
+    symbol: string,
+    leverage: number,
+    marketType?: MarketType
+  ): Promise<boolean> {
     try {
-      await this.exchange.futures.setLeverage(leverage, symbol);
+      await this.getClient(marketType).setLeverage(leverage, symbol);
       return true;
     } catch {
       return false;
@@ -252,10 +259,11 @@ export class ExchangeConnector {
 
   public async setMarginMode(
     symbol: string,
-    marginMode: MarginModeEnum
+    marginMode: MarginModeEnum,
+    marketType?: MarketType
   ): Promise<boolean> {
     try {
-      await this.exchange.futures.setMarginMode(marginMode, symbol);
+      await this.getClient(marketType).setMarginMode(marginMode, symbol);
       return true;
     } catch {
       return false;
@@ -328,6 +336,14 @@ export class ExchangeConnector {
 
   public getExchangeName(): ExchangeNameEnum {
     return this.exchangeName;
+  }
+
+  public isTradeWebSocketConnected(marketType?: MarketType): boolean {
+    return this.getClient(marketType).isTradeWebSocketConnected();
+  }
+
+  public async connectTradeWebSocket(marketType?: MarketType): Promise<void> {
+    await this.getClient(marketType).connectTradeWebSocket();
   }
 
   public getAccountId(): string {
