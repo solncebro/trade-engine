@@ -217,9 +217,7 @@ export class OrderCalculator {
       marketType,
     });
 
-    const amount = parseFloat(
-      exchangeConnector.getClient(marketType).amountToPrecision(symbol, rawAmount)
-    );
+    const amount = exchangeConnector.getClient(marketType).amountToPrecision(symbol, rawAmount);
 
     logger.info(
       {

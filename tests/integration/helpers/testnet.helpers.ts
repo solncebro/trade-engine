@@ -83,9 +83,7 @@ export const calculateTestAmount = (
   symbol: string,
   price: number
 ): number =>
-  parseFloat(
-    connector.getClient().amountToPrecision(symbol, MIN_TEST_USDT / price)
-  );
+  connector.getClient().amountToPrecision(symbol, MIN_TEST_USDT / price);
 
 export const waitForTickers = async (
   connector: ExchangeConnector,

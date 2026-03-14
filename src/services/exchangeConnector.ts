@@ -197,8 +197,8 @@ export class ExchangeConnector {
       symbol: orderParams.symbol,
       type: orderParams.type,
       side: orderParams.side,
-      amount: orderParams.amount,
-      price: orderParams.price ?? 0,
+      amount: client.amountToPrecision(orderParams.symbol, orderParams.amount),
+      price: orderParams.price ? client.priceToPrecision(orderParams.symbol, orderParams.price) : 0,
     };
 
     if (!isSpot(orderParams.marketType)) {
@@ -216,11 +216,9 @@ export class ExchangeConnector {
       : TimeInForceEnum.Gtc;
 
     if (orderParams.triggerPrice !== undefined) {
-      args.stopPrice = parseFloat(
-        client.priceToPrecision(
-          orderParams.symbol,
-          orderParams.triggerPrice
-        )
+      args.stopPrice = client.priceToPrecision(
+        orderParams.symbol,
+        orderParams.triggerPrice
       );
     }
 

@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.2.0] - 2026-03-14
+
+### Changed
+- `ExchangeConnector.buildCreateOrderArgs()`: applies `amountToPrecision` and `priceToPrecision` to `amount` and `price` before sending to exchange client
+- `OrderCalculator.createOrderAttributesForMarketType()`: removed `parseFloat()` wrapper around `amountToPrecision` (now returns `number`)
+- Removed redundant `parseFloat()` from `stopPrice` in `buildCreateOrderArgs`
+- Upgraded `@solncebro/exchange-engine` from 0.3.3 to 0.4.0
+
 ## [2.1.1] - 2026-03-14
 
 ### Changed

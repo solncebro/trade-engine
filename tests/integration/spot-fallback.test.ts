@@ -111,7 +111,7 @@ describeIfCredentials(ExchangeNameEnum.Bybit, 'Bybit Spot Fallback Integration',
         return;
       }
 
-      const spotQty = parseFloat(connector.getClient(MarketType.Spot).amountToPrecision(BYBIT_FUTURES_TEST_SYMBOL, MIN_TEST_USDT / spotTicker.lastPrice));
+      const spotQty = connector.getClient(MarketType.Spot).amountToPrecision(BYBIT_FUTURES_TEST_SYMBOL, MIN_TEST_USDT / spotTicker.lastPrice);
 
       const spotOrderResult = await connector.createOrder({
         symbol: BYBIT_FUTURES_TEST_SYMBOL,
@@ -237,7 +237,7 @@ describeIfCredentials(ExchangeNameEnum.Binance, 'Binance Spot Fallback Integrati
         return;
       }
 
-      const binanceSpotQty = parseFloat(connector.getClient(MarketType.Spot).amountToPrecision(BINANCE_FUTURES_TEST_SYMBOL, MIN_TEST_USDT / spotTicker.lastPrice));
+      const binanceSpotQty = connector.getClient(MarketType.Spot).amountToPrecision(BINANCE_FUTURES_TEST_SYMBOL, MIN_TEST_USDT / spotTicker.lastPrice);
 
       const openResult = await connector.createOrder({
         symbol: BINANCE_FUTURES_TEST_SYMBOL,
