@@ -116,6 +116,8 @@ const logger: Logger  // lazy singleton через Proxy
 
 Транспорты: console (pino-pretty), file (pino-pretty без цвета), BetterStack (@logtail/pino).
 
+Error serializer: `pino.stdSerializers.wrapErrorSerializer` расширяет стандартную сериализацию, сохраняя поля `code` и `exchange` из объекта ошибки.
+
 ## Утилиты (`src/utils/`)
 
 | Файл | Экспорты |

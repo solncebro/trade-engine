@@ -1,6 +1,6 @@
 {
   "name": "@solncebro/trade-engine",
-  "version": "2.1.0",
+  "version": "2.1.1",
   "description": "Universal trading engine library for cryptocurrency exchanges with Telegram integration and Firebase support",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -13,7 +13,7 @@
     "./package.json": "./package.json"
   },
   "scripts": {
-    "build": "rm -rf dist && npm test -- --passWithNoTests && tsc -p tsconfig.json",
+    "build": "rm -rf dist && yarn test --passWithNoTests && tsc -p tsconfig.json",
     "test": "jest",
     "test:watch": "jest --watch",
     "test:integration": "jest --config jest.integration.config.js --runInBand",
@@ -29,7 +29,7 @@
     "lint:fix": "eslint . --fix",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
-    "prepublishOnly": "npm run lint && npm run build"
+    "prepublishOnly": "yarn lint && yarn build"
   },
   "sideEffects": false,
   "files": [
@@ -63,7 +63,7 @@
   },
   "dependencies": {
     "@logtail/pino": "^0.4.0",
-    "@solncebro/exchange-engine": "^0.3.2",
+    "@solncebro/exchange-engine": "^0.3.3",
     "dayjs": "^1.11.18",
     "dotenv": "^16.4.5",
     "firebase-admin": "^12.0.0",

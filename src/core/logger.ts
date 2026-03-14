@@ -56,6 +56,13 @@ export function createLogger(args?: CreateLoggerArgs): Logger {
 
   return pino({
     level,
+    serializers: {
+      error: pino.stdSerializers.wrapErrorSerializer((error) => ({
+        ...error,
+        code: (error as Record<string, unknown>).code,
+        exchange: (error as Record<string, unknown>).exchange,
+      })),
+    },
     transport: {
       targets: transportTargetList,
     },
