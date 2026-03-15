@@ -1,6 +1,6 @@
 {
   "name": "@solncebro/trade-engine",
-  "version": "2.2.0",
+  "version": "2.2.1",
   "description": "Universal trading engine library for cryptocurrency exchanges with Telegram integration and Firebase support",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
