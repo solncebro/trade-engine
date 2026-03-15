@@ -18,7 +18,7 @@ import { normalizeSymbol } from '../utils/symbol.utils';
 export class ExchangeConnector {
   private exchange: ExchangeInstance;
   private exchangeName: ExchangeNameEnum;
-  private tickerDataMap: Map<string, Ticker> = new Map();
+  private tickersByMarketTypeAndSymbol: Map<string, Ticker> = new Map();
   private isWatchingTickers: boolean = false;
   private tickerUpdateIntervalId: NodeJS.Timeout | null = null;
 
@@ -86,7 +86,7 @@ export class ExchangeConnector {
     for (const [symbol, ticker] of tickers) {
       const normalizedSymbol = normalizeSymbol(symbol);
       const tickerKey = this.getTickerKey(normalizedSymbol, marketType);
-      this.tickerDataMap.set(tickerKey, ticker);
+      this.tickersByMarketTypeAndSymbol.set(tickerKey, ticker);
     }
   }
 
@@ -104,7 +104,7 @@ export class ExchangeConnector {
     const defaultMarketType = marketType ?? MarketType.Futures;
     const tickerKey = this.getTickerKey(symbol, defaultMarketType);
 
-    if (this.tickerDataMap.has(tickerKey)) {
+    if (this.tickersByMarketTypeAndSymbol.has(tickerKey)) {
       return symbol;
     }
 
@@ -115,7 +115,7 @@ export class ExchangeConnector {
         defaultMarketType
       );
 
-      if (this.tickerDataMap.has(prefixedTickerKey)) {
+      if (this.tickersByMarketTypeAndSymbol.has(prefixedTickerKey)) {
         logger.info(
           {
             originalSymbol: symbol,
@@ -148,7 +148,7 @@ export class ExchangeConnector {
     marketType?: MarketType
   ): Ticker | undefined {
     const tickerKey = this.getTickerKey(symbol, marketType);
-    return this.tickerDataMap.get(tickerKey);
+    return this.tickersByMarketTypeAndSymbol.get(tickerKey);
   }
 
   public async createOrder(orderParams: OrderParams): Promise<OrderResult> {
@@ -222,6 +222,10 @@ export class ExchangeConnector {
       );
     }
 
+    if (orderParams.triggerDirection !== undefined) {
+      args.triggerDirection = orderParams.triggerDirection;
+    }
+
     return args;
   }
 
@@ -272,7 +276,7 @@ export class ExchangeConnector {
     try {
       const tradeSymbols = this.exchange.futures.tradeSymbols;
 
-      const filteredSymbols = [...tradeSymbols.values()]
+      const filteredSymbolList = [...tradeSymbols.values()]
         .filter(m => m.isActive && (m.type === TradeSymbolTypeEnum.Swap || m.type === TradeSymbolTypeEnum.Future) && m.isLinear)
         .map(m =>
           this.exchangeName === ExchangeNameEnum.Bybit ? normalizeSymbol(m.symbol) : m.symbol
@@ -281,13 +285,13 @@ export class ExchangeConnector {
       logger.info(
         {
           exchange: this.exchangeName,
-          futuresCount: filteredSymbols.length,
-          sampleSymbols: filteredSymbols.slice(0, 5),
+          futuresCount: filteredSymbolList.length,
+          sampleSymbols: filteredSymbolList.slice(0, 5),
         },
         'Futures symbols filtered'
       );
 
-      return filteredSymbols;
+      return filteredSymbolList;
     } catch (error) {
       logger.error(
         { error, exchange: this.exchangeName },
@@ -302,7 +306,7 @@ export class ExchangeConnector {
     try {
       const tradeSymbols = this.exchange.spot.tradeSymbols;
 
-      const filteredSymbols = [...tradeSymbols.values()]
+      const filteredSymbolList = [...tradeSymbols.values()]
         .filter(m => m.isActive && m.type === TradeSymbolTypeEnum.Spot)
         .map(m =>
           this.exchangeName === ExchangeNameEnum.Bybit ? normalizeSymbol(m.symbol) : m.symbol
@@ -311,13 +315,13 @@ export class ExchangeConnector {
       logger.info(
         {
           exchange: this.exchangeName,
-          spotCount: filteredSymbols.length,
-          sampleSymbols: filteredSymbols.slice(0, 5),
+          spotCount: filteredSymbolList.length,
+          sampleSymbols: filteredSymbolList.slice(0, 5),
         },
         'Spot symbols filtered'
       );
 
-      return filteredSymbols;
+      return filteredSymbolList;
     } catch (error) {
       logger.error(
         { error, exchange: this.exchangeName },
@@ -346,6 +350,7 @@ export class ExchangeConnector {
 
   public getAccountId(): string {
     const apiKey = this.exchange.futures.apiKey;
+
     if (!apiKey) {
       logger.warn('No API key available to generate account ID');
       return 'default';
