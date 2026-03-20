@@ -1,5 +1,11 @@
+export { ExchangeError } from '@solncebro/exchange-engine';
+export {
+  normalizeBinanceKlineWebSocketMessage,
+  normalizeBybitKlineWebSocketMessage,
+} from '@solncebro/exchange-engine';
+
 export { ExchangeConnector } from './services/exchangeConnector';
-export { FirebaseService } from './services/firebaseService';
+export { FirebaseServiceBase } from './services/firebaseServiceBase';
 export { TelegramCommandHandler } from './services/telegramCommandHandler';
 export { TelegramMessageListener } from './services/telegramMessageListener';
 export { TelegramNotifier } from './services/telegramNotifier';

@@ -32,7 +32,7 @@
 | `enrichWithSpotFallback()` | Замена ошибок "No price data" на спот-ордера |
 | `calculateLimitOrderWithPriceAdjustment()` | Корректировка цены лимитного ордера на процент |
 | `calculateCloseOrder()` | Создание TP/SL ордеров с `reduceOnly` и `triggerPrice` |
-| `setupLeverageAndMarginMode()` | Установка кредитного плеча и маржинального режима |
+| `setupLeverageAndMarginModeEnum()` | Установка кредитного плеча и маржинального режима |
 | `getUniqueSymbolCountFromMapping()` | Подсчёт уникальных символов для распределения объёма |
 
 **OrderExecutor** — базовый класс для наследования:
@@ -48,15 +48,15 @@
 | Подключение | `initialize()` загружает символы futures + spot, запускает тикеры |
 | Тикеры | Кэш `Map<string, Ticker>`, ключ `"marketType:symbol"`, обновление каждые 30 сек |
 | Символы | `resolveSymbolWithPrefix()` проверяет префиксы [10, 100, 1000, 10000, 100000, 1000000] |
-| Ордера | `createOrder()` через WebSocket (Bybit) или REST |
+| Ордера | `createOrder()` через WebSocket (`createOrderWebSocket`) |
 | Позиции | `fetchPosition()`, `setLeverage()`, `setMarginMode()` |
-| Аккаунт | `getAccountId()` — SHA256 первых 16 символов API-ключа |
+| Аккаунт | `getAccountId()` — первые 16 символов SHA256-хеша API-ключа |
 
 ### 4. Интеграции
 
 - **TelegramNotifier** — Telegraf-бот для отправки уведомлений и регистрации команд
 - **TelegramCommandHandler<T>** — обработчик команд с типизированными настройками (boolean/numeric)
-- **FirebaseService<T>** — Firestore CRUD с real-time подпиской через `onSnapshot()`
+- **FirebaseServiceBase<T>** — базовый класс Firestore CRUD с real-time подпиской через `onSnapshot()`
 
 ## Потоки данных
 
@@ -88,9 +88,9 @@
 ## Ключевые типы данных
 
 ```
-SymbolMappingByExchange = Map<ExchangeName, Map<originalSymbol, resolvedSymbol>>
-ExchangeConnectorByName = Map<ExchangeName, ExchangeConnector>
-OrderAttributes = { orderParams, exchangeName, errorText? }
+SymbolMappingByExchange = Map<ExchangeNameEnum, Map<originalSymbol, resolvedSymbol>>
+ExchangeConnectorByName = Map<ExchangeNameEnum, ExchangeConnector>
+OrderAttributes = { orderParams, exchangeName, orderVolumeUsdt?, errorText? }
 OrderResult = OrderAttributes + { orderId, actualExchangeParams, responseData }
 SignalExecutionDetails = OrderResult + { TP, SL, emergencyExit, timings }
 ```

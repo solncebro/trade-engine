@@ -53,9 +53,8 @@ const orderAttributes = OrderCalculator.createOrderAttributesForSymbol({
   exchangeConnectorByName: connectorByName,
   symbolMappingByExchange: symbolMapping,
   stopBuyAfterPercent: 30,
-  orderVolumeUsdt: 100,
+  allowedVolumeByExchange: new Map([[ExchangeNameEnum.Bybit, 100]]),
   leverage: 5,
-  uniqueSymbolCount: 1,
 });
 
 // Execute order
@@ -84,9 +83,8 @@ const enriched = OrderCalculator.enrichWithSpotFallback({
   orderAttributesList: orderAttributes,
   exchangeConnectorByName: connectorByName,
   stopBuyAfterPercent: 30,
-  orderVolumeUsdt: 100,
+  allowedVolumeByExchange: new Map([[ExchangeNameEnum.Bybit, 100]]),
   leverage: 5,
-  uniqueSymbolCount: 1,
 });
 ```
 

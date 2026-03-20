@@ -1,5 +1,5 @@
 import { logger } from '../src/core/logger';
-import { MarketType } from '../src/types';
+import { MarketTypeEnum } from '../src/types';
 import {
   createDate,
   createHumanTimestamp,
@@ -17,12 +17,12 @@ describe('order.utils', () => {
     expect(isOrderSuccessful({})).toBe(false);
   });
 
-  test('isSpot() returns true for MarketType.Spot', () => {
-    expect(isSpot(MarketType.Spot)).toBe(true);
+  test('isSpot() returns true for MarketTypeEnum.Spot', () => {
+    expect(isSpot(MarketTypeEnum.Spot)).toBe(true);
   });
 
-  test('isSpot() returns false for MarketType.Futures', () => {
-    expect(isSpot(MarketType.Futures)).toBe(false);
+  test('isSpot() returns false for MarketTypeEnum.Futures', () => {
+    expect(isSpot(MarketTypeEnum.Futures)).toBe(false);
   });
 
   test('isSpot() returns false for undefined', () => {

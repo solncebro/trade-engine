@@ -1,3 +1,4 @@
+import { escapeMarkdownV2WithFormatting } from '@solncebro/telegram-engine';
 import { Context, Telegraf } from 'telegraf';
 
 import { logger } from '../core/logger';
@@ -64,6 +65,10 @@ export class TelegramNotifier {
   }
 
   private async setupMenuButton(): Promise<void> {
+    if (this.commandConfigList.length === 0) {
+      return;
+    }
+
     const commandList = this.commandConfigList.map(config => ({
       command: config.command,
       description: config.description,
@@ -89,6 +94,24 @@ export class TelegramNotifier {
     }
   }
 
+  public async sendFormattedMessage(
+    message: string,
+    isLogOnly: boolean = false
+  ): Promise<void> {
+    try {
+      if (!isLogOnly) {
+        const escapedMessage = escapeMarkdownV2WithFormatting(message);
+        await this.bot.telegram.sendMessage(this.chatId, escapedMessage, {
+          parse_mode: 'MarkdownV2',
+        });
+      }
+
+      logger.info(message);
+    } catch (error) {
+      logger.error({ error, message }, 'Failed to send Telegram message');
+    }
+  }
+
   public async sendError(customMessage: string, error: unknown): Promise<void> {
     logger.error({ error }, customMessage);
 
@@ -99,13 +122,17 @@ export class TelegramNotifier {
     const telegramMessage = `\u274c APPLICATION ERROR:\n${customMessage}\n\n${errorMessage}`;
 
     try {
-      await this.sendMessage(telegramMessage);
+      await this.sendFormattedMessage(telegramMessage);
     } catch (sendError) {
       logger.error(
         { error: sendError, message: telegramMessage },
         'Failed to send Telegram error message'
       );
     }
+  }
+
+  public getBot(): Telegraf {
+    return this.bot;
   }
 
   public stop(): void {

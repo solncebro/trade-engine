@@ -1,4 +1,4 @@
-import { ExchangeNameEnum, OrderSideEnum, OrderTypeEnum } from '@solncebro/exchange-engine';
+import { ExchangeNameEnum, MarketTypeEnum, OrderSideEnum, OrderTypeEnum } from '@solncebro/exchange-engine';
 
 import {
   ExchangeOrderParams,
@@ -7,18 +7,13 @@ import {
 
 import { ExchangeConnector } from '../services/exchangeConnector';
 
-export enum MarketType {
-  Futures = 'futures',
-  Spot = 'spot',
-}
-
 export interface OrderParams {
   symbol: string;
   side: OrderSideEnum;
   amount: number;
   price: number;
   type: OrderTypeEnum;
-  marketType?: MarketType;
+  marketType?: MarketTypeEnum;
   triggerPrice?: number;
   triggerDirection?: 1 | 2;
   params?: Record<string, unknown>;
@@ -35,6 +30,7 @@ export interface EntityWithErrorText {
 export interface OrderAttributes extends EntityWithErrorText {
   orderParams: OrderParams;
   exchangeName: ExchangeNameEnum;
+  orderVolumeUsdt?: number;
 }
 
 export interface OrderResult extends OrderAttributes, EntityWithOrderId {
@@ -92,4 +88,12 @@ export interface CreateCloseOrderArgs {
   priceShiftPercent: number;
   isTakeProfit: boolean;
   isEmergencyExitPosition?: boolean;
+}
+
+export interface CalculateAmountForMarketTypeArgs {
+  price: number;
+  allowedVolumeUsdt: number;
+  uniqueSymbolCount: number;
+  leverage: number;
+  marketType: MarketTypeEnum;
 }

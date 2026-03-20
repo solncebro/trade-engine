@@ -12,12 +12,11 @@ import { OrderCalculator } from '../../src/core/orderCalculator';
 import { ExchangeConnector } from '../../src/services/exchangeConnector';
 import {
   ExchangeNameEnum,
-  MarketType,
+  MarketTypeEnum,
   OrderSideEnum,
   OrderTypeEnum,
 } from '../../src/types';
 import { isOrderSuccessful } from '../../src/utils/order.utils';
-
 
 describeIfCredentials(ExchangeNameEnum.Bybit, 'Bybit Multiple Symbols Integration', () => {
   let connector: ExchangeConnector;
@@ -27,7 +26,6 @@ describeIfCredentials(ExchangeNameEnum.Bybit, 'Bybit Multiple Symbols Integratio
     connector = new ExchangeConnector(exchangeName, BYBIT_DEMO_CONFIG);
     await connector.initialize();
 
-    // Wait for all test symbols to load
     for (const symbol of BYBIT_FUTURES_TEST_SYMBOL_LIST) {
       await waitForTickers(connector, symbol);
     }
@@ -71,19 +69,18 @@ describeIfCredentials(ExchangeNameEnum.Bybit, 'Bybit Multiple Symbols Integratio
         new Map([[exchangeName, connector]])
       );
 
-      const attributes = OrderCalculator.createOrderAttributesForSymbol({
+      const attributeList = OrderCalculator.createOrderAttributesForSymbol({
         isLong: true,
         exchangeConnectorByName: new Map([[exchangeName, connector]]),
         symbolMappingByExchange: mapping,
         stopBuyAfterPercent: 50,
-        orderVolumeUsdt: 100,
+        allowedVolumeByExchange: new Map([[exchangeName, 100]]),
         leverage: 5,
-        uniqueSymbolCount: BYBIT_FUTURES_TEST_SYMBOL_LIST.length,
       });
 
-      expect(attributes.length).toBe(BYBIT_FUTURES_TEST_SYMBOL_LIST.length);
+      expect(attributeList.length).toBe(BYBIT_FUTURES_TEST_SYMBOL_LIST.length);
 
-      attributes.forEach(attr => {
+      attributeList.forEach(attr => {
         expect(attr.exchangeName).toBe(exchangeName);
         expect(attr.orderParams.price).toBeGreaterThan(0);
         expect(attr.errorText).toBeUndefined();
@@ -93,21 +90,20 @@ describeIfCredentials(ExchangeNameEnum.Bybit, 'Bybit Multiple Symbols Integratio
     test('all symbols have available tickers in market', () => {
       BYBIT_FUTURES_TEST_SYMBOL_LIST.forEach(symbol => {
         const resolvedSymbol = connector.resolveSymbolWithPrefix(symbol);
-        const ticker = connector.getTicker(resolvedSymbol, MarketType.Futures);
+        const ticker = connector.getTicker(resolvedSymbol, MarketTypeEnum.Futures);
         expect(ticker).toBeDefined();
         expect(ticker!.lastPrice).toBeGreaterThan(0);
       });
     });
 
-    test('setupLeverageAndMarginMode handles multiple symbols in parallel', async () => {
+    test('setupLeverageAndMarginModeEnum handles multiple symbols in parallel', async () => {
       const mapping = OrderCalculator.resolveSymbolsForExchanges(
         BYBIT_FUTURES_TEST_SYMBOL_LIST,
         new Map([[exchangeName, connector]])
       );
 
-      // Should complete without throwing, even if some symbols fail
       await expect(
-        OrderCalculator.setupLeverageAndMarginMode({
+        OrderCalculator.setupLeverageAndMarginModeEnum({
           exchangeConnectorByName: new Map([[exchangeName, connector]]),
           symbolMappingByExchange: mapping,
           leverage: 5,
@@ -121,17 +117,16 @@ describeIfCredentials(ExchangeNameEnum.Bybit, 'Bybit Multiple Symbols Integratio
         new Map([[exchangeName, connector]])
       );
 
-      // Setup leverage for all symbols
-      await OrderCalculator.setupLeverageAndMarginMode({
+      await OrderCalculator.setupLeverageAndMarginModeEnum({
         exchangeConnectorByName: new Map([[exchangeName, connector]]),
         symbolMappingByExchange: mapping,
         leverage: 5,
       });
 
-      // Create orders for first 2 symbols in parallel
-      const symbolsToTrade = BYBIT_FUTURES_TEST_SYMBOL_LIST.slice(0, 2);
-      const orderPromises = symbolsToTrade.map(symbol => {
-        const ticker = connector.getTicker(symbol, MarketType.Futures);
+      const symbolToTradeList = BYBIT_FUTURES_TEST_SYMBOL_LIST.slice(0, 2);
+      const orderPromiseList = symbolToTradeList.map(symbol => {
+        const ticker = connector.getTicker(symbol, MarketTypeEnum.Futures);
+
         if (!ticker?.lastPrice) {
           throw new Error(`No ticker for ${symbol}`);
         }
@@ -142,19 +137,20 @@ describeIfCredentials(ExchangeNameEnum.Bybit, 'Bybit Multiple Symbols Integratio
           amount: calculateTestAmount(connector, symbol, ticker.lastPrice),
           price: ticker.lastPrice,
           type: OrderTypeEnum.Market,
-          marketType: MarketType.Futures,
+          marketType: MarketTypeEnum.Futures,
         });
       });
 
-      const results = await Promise.all(orderPromises);
+      const resultList = await Promise.all(orderPromiseList);
 
-      results.forEach(result => {
+      resultList.forEach(result => {
         expect(isOrderSuccessful(result)).toBe(true);
         expect(result.orderId).toBeDefined();
       });
 
-      const closePromises = symbolsToTrade.map(symbol => {
-        const ticker = connector.getTicker(symbol, MarketType.Futures);
+      const closePromiseList = symbolToTradeList.map(symbol => {
+        const ticker = connector.getTicker(symbol, MarketTypeEnum.Futures);
+
         if (!ticker?.lastPrice) {
           throw new Error(`No ticker for closing ${symbol}`);
         }
@@ -165,12 +161,13 @@ describeIfCredentials(ExchangeNameEnum.Bybit, 'Bybit Multiple Symbols Integratio
           amount: calculateTestAmount(connector, symbol, ticker.lastPrice),
           price: ticker.lastPrice,
           type: OrderTypeEnum.Market,
-          marketType: MarketType.Futures,
+          marketType: MarketTypeEnum.Futures,
         });
       });
 
-      const closeResults = await Promise.all(closePromises);
-      closeResults.forEach(result => {
+      const closeResultList = await Promise.all(closePromiseList);
+
+      closeResultList.forEach(result => {
         expect(isOrderSuccessful(result)).toBe(true);
       });
     });
@@ -182,7 +179,7 @@ describeIfCredentials(ExchangeNameEnum.Bybit, 'Bybit Multiple Symbols Integratio
         new Map([[exchangeName, connector]])
       );
 
-      const ticker = connector.getTicker(firstSymbol, MarketType.Futures);
+      const ticker = connector.getTicker(firstSymbol, MarketTypeEnum.Futures);
       if (!ticker?.lastPrice) return;
 
       const qty = calculateTestAmount(connector, firstSymbol, ticker.lastPrice);
@@ -193,7 +190,7 @@ describeIfCredentials(ExchangeNameEnum.Bybit, 'Bybit Multiple Symbols Integratio
         amount: qty,
         price: ticker.lastPrice,
         type: OrderTypeEnum.Market,
-        marketType: MarketType.Futures,
+        marketType: MarketTypeEnum.Futures,
       });
 
       if (!isOrderSuccessful(openResult)) return;
@@ -206,40 +203,38 @@ describeIfCredentials(ExchangeNameEnum.Bybit, 'Bybit Multiple Symbols Integratio
         amount: qty,
         price: ticker.lastPrice,
         type: OrderTypeEnum.Market,
-        marketType: MarketType.Futures,
+        marketType: MarketTypeEnum.Futures,
       });
 
       expect(isOrderSuccessful(closeResult)).toBe(true);
 
-      // Fetch position after close
       const positionClosed = await connector.fetchPosition(firstSymbol);
 
-      // At least one should exist (open or closed state)
       expect(positionOpen !== null || positionClosed !== null).toBe(true);
     });
 
     test('volume calculation distributes correctly across multiple symbols', () => {
-      const totalVolume = 300; // USDT
+      const totalVolume = 300;
 
       const mapping = OrderCalculator.resolveSymbolsForExchanges(
         BYBIT_FUTURES_TEST_SYMBOL_LIST,
         new Map([[exchangeName, connector]])
       );
 
-      const attributes = OrderCalculator.createOrderAttributesForSymbol({
+      const attributeList = OrderCalculator.createOrderAttributesForSymbol({
         isLong: true,
         exchangeConnectorByName: new Map([[exchangeName, connector]]),
         symbolMappingByExchange: mapping,
         stopBuyAfterPercent: 50,
-        orderVolumeUsdt: totalVolume,
+        allowedVolumeByExchange: new Map([[exchangeName, totalVolume]]),
         leverage: 5,
-        uniqueSymbolCount: symbolCount,
       });
 
-      // Each symbol should have amount calculated from divided volume
-      attributes.forEach(attr => {
-        // Amount should be roughly in the right range (allowing for rounding)
+      const expectedVolumePerSymbol = totalVolume / BYBIT_FUTURES_TEST_SYMBOL_LIST.length;
+
+      attributeList.forEach(attr => {
         expect(attr.orderParams.amount).toBeGreaterThan(0);
+        expect(attr.orderVolumeUsdt).toBe(expectedVolumePerSymbol);
       });
     });
   });
@@ -253,7 +248,6 @@ describeIfCredentials(ExchangeNameEnum.Binance, 'Binance Multiple Symbols Integr
     connector = new ExchangeConnector(exchangeName, BINANCE_DEMO_CONFIG);
     await connector.initialize();
 
-    // Wait for all test symbols to load
     for (const symbol of BINANCE_FUTURES_TEST_SYMBOL_LIST) {
       await waitForTickers(connector, symbol);
     }
@@ -277,20 +271,21 @@ describeIfCredentials(ExchangeNameEnum.Binance, 'Binance Multiple Symbols Integr
     });
 
     test('creates orders for multiple symbols on Binance', async () => {
-      const symbolsToTrade = BINANCE_FUTURES_TEST_SYMBOL_LIST.slice(0, 2);
+      const symbolToTradeList = BINANCE_FUTURES_TEST_SYMBOL_LIST.slice(0, 2);
 
-      await OrderCalculator.setupLeverageAndMarginMode({
+      await OrderCalculator.setupLeverageAndMarginModeEnum({
         exchangeConnectorByName: new Map([[exchangeName, connector]]),
         symbolMappingByExchange: OrderCalculator.resolveSymbolsForExchanges(
-          symbolsToTrade,
+          symbolToTradeList,
           new Map([[exchangeName, connector]])
         ),
         leverage: 5,
       });
 
-      const orderPromises = symbolsToTrade.map(symbol => {
+      const orderPromiseList = symbolToTradeList.map(symbol => {
         const resolvedSymbol = connector.resolveSymbolWithPrefix(symbol);
-        const ticker = connector.getTicker(resolvedSymbol, MarketType.Futures);
+        const ticker = connector.getTicker(resolvedSymbol, MarketTypeEnum.Futures);
+
         if (!ticker?.lastPrice) {
           throw new Error(`No ticker for ${symbol}`);
         }
@@ -301,19 +296,20 @@ describeIfCredentials(ExchangeNameEnum.Binance, 'Binance Multiple Symbols Integr
           amount: calculateTestAmount(connector, resolvedSymbol, ticker.lastPrice),
           price: ticker.lastPrice,
           type: OrderTypeEnum.Market,
-          marketType: MarketType.Futures,
+          marketType: MarketTypeEnum.Futures,
         });
       });
 
-      const results = await Promise.all(orderPromises);
+      const resultList = await Promise.all(orderPromiseList);
 
-      results.forEach(result => {
+      resultList.forEach(result => {
         expect(isOrderSuccessful(result)).toBe(true);
       });
 
-      const closePromises = symbolsToTrade.map(symbol => {
+      const closePromiseList = symbolToTradeList.map(symbol => {
         const resolvedSymbol = connector.resolveSymbolWithPrefix(symbol);
-        const ticker = connector.getTicker(resolvedSymbol, MarketType.Futures);
+        const ticker = connector.getTicker(resolvedSymbol, MarketTypeEnum.Futures);
+
         if (!ticker?.lastPrice) {
           throw new Error(`No ticker for closing ${symbol}`);
         }
@@ -324,12 +320,13 @@ describeIfCredentials(ExchangeNameEnum.Binance, 'Binance Multiple Symbols Integr
           amount: calculateTestAmount(connector, resolvedSymbol, ticker.lastPrice),
           price: ticker.lastPrice,
           type: OrderTypeEnum.Market,
-          marketType: MarketType.Futures,
+          marketType: MarketTypeEnum.Futures,
         });
       });
 
-      const closeResults = await Promise.all(closePromises);
-      closeResults.forEach(result => {
+      const closeResultList = await Promise.all(closePromiseList);
+
+      closeResultList.forEach(result => {
         expect(isOrderSuccessful(result)).toBe(true);
       });
     });

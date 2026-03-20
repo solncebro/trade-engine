@@ -1,10 +1,10 @@
-export type FirebaseStrategySettingsValues = string[] | number | boolean;
-
 import {
   BooleanSettingConfig,
   NumericSettingConfig,
   SettingConfigBase,
 } from './telegramCommandHandler';
+
+export type FirebaseStrategySettingsValues = string[] | number | boolean;
 
 export interface SettingChange<V> {
   key: string;

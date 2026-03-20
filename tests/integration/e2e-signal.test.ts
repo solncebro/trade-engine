@@ -18,12 +18,11 @@ import { OrderCalculator } from '../../src/core/orderCalculator';
 import { ExchangeConnector } from '../../src/services/exchangeConnector';
 import {
   ExchangeNameEnum,
-  MarketType,
+  MarketTypeEnum,
   OrderSideEnum,
   OrderTypeEnum,
 } from '../../src/types';
 import { isOrderSuccessful } from '../../src/utils/order.utils';
-
 
 const BINANCE_LISTING_SIGNAL = `Binance Futures Will Launch USDⓈ-Margined ${BINANCE_FUTURES_TEST_SYMBOL} Perpetual Contract`;
 const BYBIT_LISTING_SIGNAL =
@@ -92,7 +91,7 @@ describeIfCredentials(
       expect(symbol).toBe(BINANCE_FUTURES_TEST_SYMBOL);
 
       const resolvedSymbol = connector.resolveSymbolWithPrefix(symbol);
-      const ticker = connector.getTicker(resolvedSymbol, MarketType.Futures);
+      const ticker = connector.getTicker(resolvedSymbol, MarketTypeEnum.Futures);
 
       expect(ticker?.lastPrice).toBeGreaterThan(0);
 
@@ -104,7 +103,7 @@ describeIfCredentials(
         amount,
         price: ticker!.lastPrice,
         type: OrderTypeEnum.Market,
-        marketType: MarketType.Futures,
+        marketType: MarketTypeEnum.Futures,
       });
 
       expect(isOrderSuccessful(orderResult)).toBe(true);
@@ -115,7 +114,7 @@ describeIfCredentials(
         amount,
         price: ticker!.lastPrice,
         type: OrderTypeEnum.Market,
-        marketType: MarketType.Futures,
+        marketType: MarketTypeEnum.Futures,
       });
 
       expect(isOrderSuccessful(closeResult)).toBe(true);
@@ -148,9 +147,8 @@ describeIfCredentials(
         exchangeConnectorByName: new Map([[exchangeName, connector]]),
         symbolMappingByExchange: mapping,
         stopBuyAfterPercent: 50,
-        orderVolumeUsdt: 100,
+        allowedVolumeByExchange: new Map([[exchangeName, 100]]),
         leverage: 5,
-        uniqueSymbolCount: 1,
       });
 
       expect(attributes[0].errorText).toContain('No price data available');
@@ -159,12 +157,11 @@ describeIfCredentials(
         orderAttributesList: attributes,
         exchangeConnectorByName: new Map([[exchangeName, connector]]),
         stopBuyAfterPercent: 50,
-        orderVolumeUsdt: 100,
+        allowedVolumeByExchange: new Map([[exchangeName, 100]]),
         leverage: 5,
-        uniqueSymbolCount: 1,
       });
 
-      expect(enriched[0].orderParams.marketType).toBe(MarketType.Spot);
+      expect(enriched[0].orderParams.marketType).toBe(MarketTypeEnum.Spot);
 
       client.close();
     });
@@ -229,7 +226,7 @@ describeIfCredentials(ExchangeNameEnum.Bybit, 'Bybit E2E Signal → Order', () =
     expect(symbol).toBe(BYBIT_FUTURES_TEST_SYMBOL);
 
     const resolvedSymbol = connector.resolveSymbolWithPrefix(symbol);
-    const ticker = connector.getTicker(resolvedSymbol, MarketType.Futures);
+    const ticker = connector.getTicker(resolvedSymbol, MarketTypeEnum.Futures);
 
     expect(ticker?.lastPrice).toBeGreaterThan(0);
 
@@ -241,7 +238,7 @@ describeIfCredentials(ExchangeNameEnum.Bybit, 'Bybit E2E Signal → Order', () =
       amount,
       price: ticker!.lastPrice,
       type: OrderTypeEnum.Market,
-      marketType: MarketType.Futures,
+      marketType: MarketTypeEnum.Futures,
     });
 
     expect(isOrderSuccessful(orderResult)).toBe(true);
@@ -252,7 +249,7 @@ describeIfCredentials(ExchangeNameEnum.Bybit, 'Bybit E2E Signal → Order', () =
       amount,
       price: ticker!.lastPrice,
       type: OrderTypeEnum.Market,
-      marketType: MarketType.Futures,
+      marketType: MarketTypeEnum.Futures,
     });
 
     expect(isOrderSuccessful(closeResult)).toBe(true);
@@ -285,9 +282,8 @@ describeIfCredentials(ExchangeNameEnum.Bybit, 'Bybit E2E Signal → Order', () =
       exchangeConnectorByName: new Map([[exchangeName, connector]]),
       symbolMappingByExchange: mapping,
       stopBuyAfterPercent: 50,
-      orderVolumeUsdt: 100,
+      allowedVolumeByExchange: new Map([[exchangeName, 100]]),
       leverage: 5,
-      uniqueSymbolCount: 1,
     });
 
     expect(attributes[0].errorText).toContain('No price data available');
@@ -296,12 +292,11 @@ describeIfCredentials(ExchangeNameEnum.Bybit, 'Bybit E2E Signal → Order', () =
       orderAttributesList: attributes,
       exchangeConnectorByName: new Map([[exchangeName, connector]]),
       stopBuyAfterPercent: 50,
-      orderVolumeUsdt: 100,
+      allowedVolumeByExchange: new Map([[exchangeName, 100]]),
       leverage: 5,
-      uniqueSymbolCount: 1,
     });
 
-    expect(enriched[0].orderParams.marketType).toBe(MarketType.Spot);
+    expect(enriched[0].orderParams.marketType).toBe(MarketTypeEnum.Spot);
 
     client.close();
   });

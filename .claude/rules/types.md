@@ -4,39 +4,42 @@
 
 ## Реэкспорты из exchange-engine
 
-Из `@solncebro/exchange-engine` реэкспортируются:
-- **Enums**: `ExchangeName`, `MarginMode`, `OrderSide`, `OrderType`, `TimeInForce`, `TradeSymbolType`
-- **Types**: `ExchangeClient`, `Position`, `Ticker`, `TickerBySymbol`
+Из `@solncebro/exchange-engine` (0.5.0+) реэкспортируются:
+- **Constants**: `MARKET_TYPE_LIST`
+- **Enums**: `ExchangeNameEnum`, `MarginModeEnum`, `MarketTypeEnum`, `OrderSideEnum`, `OrderTypeEnum`, `PositionModeEnum`, `PositionSideEnum`, `TimeInForceEnum`, `TradeSymbolTypeEnum`, `WebSocketConnectionTypeEnum`, `WorkingTypeEnum`
+- **Types**: `ExchangeClient`, `ExchangeConfig`, `Position`, `Ticker`, `TickerBySymbol`, `Order`, `Balance`, `BalanceByAsset`, `TradeSymbol`, `TradeSymbolBySymbol`, `TradeSymbolFilter`, `WebSocketConnectionInfo`, `FundingInfo`, `FundingRateHistory`, `Kline`, `KlineInterval`, `KlineHandler`, `FetchPageWithLimitArgs`, `SubscribeKlinesArgs`
+- **Bybit raw types**: `BybitWebSocketKlineRaw`, `BybitPublicTradeDataRaw`, `BybitWebSocketMessageRaw`, `BybitKlineMessageRaw`, `BybitTradeMessageRaw`
+- **Binance raw types**: `BinanceWebSocketKlineRaw`, `BinanceContinuousKlineMessageRaw`
+- **Classes**: `ExchangeError`
+- **Functions**: `normalizeBybitKlineWebSocketMessage()`, `normalizeBinanceKlineWebSocketMessage()`
 
 ## Основные типы
 
 ### Рынки и ордера (`orders.ts`)
 
 ```typescript
-enum MarketType {
-  Futures = 'futures',
-  Spot = 'spot',
-}
+// MarketTypeEnum — реэкспортируется из @solncebro/exchange-engine
 
 interface OrderParams {
   symbol: string;
-  side: OrderSide;       // Buy | Sell
+  side: OrderSideEnum;       // Buy | Sell
   amount: number;
   price: number;
-  type: OrderType;       // Market | Limit
-  marketType?: MarketType;
+  type: OrderTypeEnum;       // Market | Limit
+  marketType?: MarketTypeEnum;
   triggerPrice?: number;     // для SL ордеров
   triggerDirection?: 1 | 2;  // 1 = рост, 2 = падение
   params?: Record<string, unknown>; // доп. параметры биржи
 }
 
-interface OrderAttributes {
+interface OrderAttributes extends EntityWithErrorText {
   orderParams: OrderParams;
-  exchangeName: ExchangeName;
+  exchangeName: ExchangeNameEnum;
+  orderVolumeUsdt?: number; // расчётный объём в USDT для символа
   errorText?: string;     // ошибка вместо исключения
 }
 
-interface OrderResult extends OrderAttributes {
+interface OrderResult extends OrderAttributes, EntityWithOrderId {
   orderId?: string;
   actualExchangeParams?: ExchangeOrderParams;
   responseData?: ExchangeResponseData;
@@ -76,19 +79,22 @@ interface SignalExecutionDetails extends OrderResult {
 ### Маппинги
 
 ```typescript
-type SymbolMappingByExchange = Map<ExchangeName, Map<string, string>>;
+type SymbolMappingByExchange = Map<ExchangeNameEnum, Map<string, string>>;
 // Map<биржа, Map<оригинальный символ, резолвленный символ>>
 
-type ExchangeConnectorByName = Map<ExchangeName, ExchangeConnector>;
+type ExchangeConnectorByName = Map<ExchangeNameEnum, ExchangeConnector>;
 ```
 
-### Конфигурация (`config.ts`)
+### Конфигурация (реэкспорт из exchange-engine)
 
 ```typescript
+// ExchangeConfig — определён в @solncebro/exchange-engine, реэкспортируется
 interface ExchangeConfig {
   apiKey: string;
   secret: string;
-  demo?: boolean;  // включить demo trading
+  isDemoMode?: boolean;  // включить demo trading
+  recvWindow?: number;
+  httpsAgent?: unknown;
 }
 ```
 
@@ -146,6 +152,31 @@ interface TelegramCommandHandlerConfig<T> {
 }
 ```
 
+### Общие типы (`common.ts`)
+
+```typescript
+interface ExtensibleRecord {
+  [key: string]: unknown;
+}
+
+interface Notifiable {
+  onNotify: (message: string, isLogOnly?: boolean) => void | Promise<void>;
+  onError: (customMessage: string, error: unknown) => void | Promise<void>;
+}
+```
+
+### Расчёт ордеров (`orders.ts`)
+
+```typescript
+interface CalculateAmountForMarketTypeArgs {
+  price: number;
+  allowedVolumeUsdt: number;
+  uniqueSymbolCount: number;
+  leverage: number;
+  marketType: MarketTypeEnum;
+}
+```
+
 ### Firebase типы (`firebase.ts`)
 
 ```typescript
@@ -164,5 +195,5 @@ interface SettingChange<V> {
 ```typescript
 // Проверка успешности ордера — НЕ исключения, а проверка orderId
 isOrderSuccessful(result: EntityWithOrderId): boolean  // !!result.orderId
-isSpot(marketType?: MarketType): boolean               // marketType === Spot
+isSpot(marketType?: MarketTypeEnum): boolean               // marketType === Spot
 ```

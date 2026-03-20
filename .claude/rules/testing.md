@@ -57,7 +57,7 @@ BYBIT_DEMO_SECRET_KEY=...
 ### Условный запуск
 
 ```typescript
-describeIfCredentials(ExchangeName.Binance, 'Suite Name', () => {
+describeIfCredentials(ExchangeNameEnum.Binance, 'Suite Name', () => {
   // автоматически скипается если нет ключей в .env.test
 });
 ```
@@ -81,15 +81,15 @@ afterAll(async () => {
 ```typescript
 // Открытие
 const result = await connector.createOrder({
-  symbol, side: OrderSide.Buy, amount, price,
-  type: OrderType.Market, marketType: MarketType.Futures,
+  symbol, side: OrderSideEnum.Buy, amount, price,
+  type: OrderTypeEnum.Market, marketType: MarketTypeEnum.Futures,
 });
 expect(isOrderSuccessful(result)).toBe(true);
 
 // Закрытие обратным ордером
 const closeResult = await connector.createOrder({
-  symbol, side: OrderSide.Sell, amount, price,
-  type: OrderType.Market, marketType: MarketType.Futures,
+  symbol, side: OrderSideEnum.Sell, amount, price,
+  type: OrderTypeEnum.Market, marketType: MarketTypeEnum.Futures,
 });
 expect(isOrderSuccessful(closeResult)).toBe(true);
 ```
@@ -97,7 +97,7 @@ expect(isOrderSuccessful(closeResult)).toBe(true);
 ### Расчёт тестового объёма
 
 ```typescript
-const amount = calculateTestAmount(connector, symbol, ticker.close);
+const amount = calculateTestAmount(connector, symbol, ticker.lastPrice);
 // MIN_TEST_USDT (100) / price, с учётом precision биржи
 ```
 

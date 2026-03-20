@@ -6,7 +6,7 @@ import { ExchangeConnector } from '../../../src/services/exchangeConnector';
 import {
   ExchangeConfig,
   ExchangeNameEnum,
-  MarketType,
+  MarketTypeEnum,
   SymbolMappingByExchange,
 } from '../../../src/types';
 
@@ -15,13 +15,13 @@ dotenv.config({ path: path.resolve(__dirname, '../../../.env.test') });
 export const BINANCE_DEMO_CONFIG: ExchangeConfig = {
   apiKey: process.env.BINANCE_DEMO_API_KEY ?? '',
   secret: process.env.BINANCE_DEMO_SECRET_KEY ?? '',
-  demo: true,
+  isDemoMode: true,
 };
 
 export const BYBIT_DEMO_CONFIG: ExchangeConfig = {
   apiKey: process.env.BYBIT_DEMO_API_KEY ?? '',
   secret: process.env.BYBIT_DEMO_SECRET_KEY ?? '',
-  demo: true,
+  isDemoMode: true,
 };
 
 export const hasBinanceCredentials = (): boolean =>
@@ -95,7 +95,7 @@ export const waitForTickers = async (
 
   while (Date.now() - startTime < timeoutMs) {
     const resolvedSymbol = connector.resolveSymbolWithPrefix(symbol);
-    const ticker = connector.getTicker(resolvedSymbol, MarketType.Futures);
+    const ticker = connector.getTicker(resolvedSymbol, MarketTypeEnum.Futures);
 
     if (ticker?.lastPrice !== undefined && ticker.lastPrice > 0) {
       return;

@@ -10,14 +10,18 @@ class TelegramNotifier {
   registerCommand(config: SpecialCommandConfig): void
   start(): Promise<void>           // запуск с dropPendingUpdates
   sendMessage(message: string, isLogOnly?: boolean): Promise<void>
+  sendFormattedMessage(message: string, isLogOnly?: boolean): Promise<void>  // MarkdownV2 с escaping
   sendError(customMessage: string, error: unknown): Promise<void>
   stop(): void
   getChatId(): string
+  getBot(): Telegraf
 }
 ```
 
 - Авторизация по chatId (только авторизованный чат)
-- Markdown parse mode для сообщений
+- `sendMessage` — Markdown parse mode
+- `sendFormattedMessage` — MarkdownV2 с автоматическим экранированием через `@solncebro/telegram-engine`
+- `sendError` использует `sendFormattedMessage` для отправки ошибок
 - Автоматическая настройка menu button со списком команд
 - Обёртка обработчиков с try/catch
 
@@ -62,23 +66,26 @@ interface TelegramIncomingMessage { chatId: string; senderId: string; message: A
 - Events: `connected`, `disconnected`, `error`, `message`
 - Каждый обработчик изолирован — ошибка в одном не блокирует другие
 
-## FirebaseService<T> (`src/services/firebaseService.ts`)
+## FirebaseServiceBase<T> (`src/services/firebaseServiceBase.ts`)
 
-Firestore CRUD с real-time подпиской.
+Базовый класс Firestore CRUD с real-time подпиской. Implements `Notifiable`.
 
 ```typescript
-class FirebaseService<T> extends EventEmitter {
+class FirebaseServiceBase<T> extends EventEmitter implements Notifiable {
   constructor(args: {
     documentPath: string;
     defaultData: T;
-    onNotify: (message: string) => void | Promise<void>;
-    onError: (message: string, error: unknown) => void | Promise<void>;
+    telegramNotifier: TelegramNotifier;
   })
   initialize(): Promise<void>         // init Firebase app + подписка
   getData(): T                        // текущие данные
   updateData(data: Partial<T>): Promise<void>
+  getDocumentReference(): DocumentReference
+  getFirestore(): Firestore
   getChangedSettings(current: T, previous: T): SettingChange<T[keyof T]>[]
   disconnect(): Promise<void>         // отписка + delete app
+  onNotify: Notifiable['onNotify']    // делегирует в telegramNotifier.sendFormattedMessage
+  onError: Notifiable['onError']      // делегирует в telegramNotifier.sendError
 }
 ```
 
@@ -88,7 +95,8 @@ class FirebaseService<T> extends EventEmitter {
 - Данные мержатся с defaults: `{ ...defaultData, ...fetchedData }`
 - Event `dataChanged` с `{ current, previous }`
 - Сравнение массивов через `JSON.stringify`, примитивов — по значению
-- Форматирование изменений настроек с emoji и diff
+- Protected методы для форматирования настроек: `formatSettingMessage()`, `getAddedAndRemovedItemsMessage()`
+- Предназначен для наследования — потребители расширяют этот класс
 
 ## ConfigManager (`src/core/config.ts`)
 

@@ -64,12 +64,12 @@ npx jest --config jest.integration.config.js --runInBand --testPathPatterns=<pat
 - **`src/core/orderCalculator.ts`** — статические методы расчёта ордеров, маппинг символов, кредитное плечо, spot fallback. → [подробнее](.claude/rules/order-calculator.md)
 - **`src/core/orderExecutor.ts`** — базовый класс исполнения ордеров с TP/SL и аварийным выходом.
 - **`src/services/telegram*.ts`** — Telegram-бот (Telegraf) + MTProto-слушатель. → [подробнее](.claude/rules/services.md)
-- **`src/services/firebaseService.ts`** — Firestore CRUD с real-time подпиской. → [подробнее](.claude/rules/services.md)
+- **`src/services/firebaseServiceBase.ts`** — базовый класс Firestore CRUD с real-time подпиской. → [подробнее](.claude/rules/services.md)
 
 ### Ключевые принципы
 
 - **Ошибки — не исключения**: торговые операции возвращают `errorText` в результате, не бросают. Проверка через `isOrderSuccessful(result)`.
-- **Demo trading**: `ExchangeConfig.demo = true`, никаких ручных URL-переопределений.
+- **Demo trading**: `ExchangeConfig.isDemoMode = true`, никаких ручных URL-переопределений.
 - **Биржи**: `@solncebro/exchange-engine` (не CCXT напрямую). Bybit: WebSocket для ордеров.
 - **Map-коллекции**: `SymbolMappingByExchange` и `ExchangeConnectorByName` — это `Map`, не объекты.
 

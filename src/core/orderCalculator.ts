@@ -2,10 +2,11 @@ import { logger } from './logger';
 
 import { ExchangeConnector } from '../services/exchangeConnector';
 import {
+  CalculateAmountForMarketTypeArgs,
   ExchangeConnectorByName,
   ExchangeNameEnum,
   MarginModeEnum,
-  MarketType,
+  MarketTypeEnum,
   OrderAttributes,
   OrderParams,
   OrderSideEnum,
@@ -35,9 +36,8 @@ interface SetupLeverageAndMarginModeEnumArgs {
 
 interface BaseOrderCalculationArgs {
   stopBuyAfterPercent: number;
-  orderVolumeUsdt: number;
+  allowedVolumeByExchange: Map<ExchangeNameEnum, number>;
   leverage: number;
-  uniqueSymbolCount: number;
 }
 
 interface CreateOrderAttributesForSymbolArgs extends BaseOrderCalculationArgs {
@@ -46,12 +46,16 @@ interface CreateOrderAttributesForSymbolArgs extends BaseOrderCalculationArgs {
   symbolMappingByExchange: SymbolMappingByExchange;
 }
 
-interface CreateOrderAttributesForMarketTypeArgs extends BaseOrderCalculationArgs {
+interface CreateOrderAttributesForMarketTypeArgs {
   exchangeConnector: ExchangeConnector;
   exchangeName: ExchangeNameEnum;
   symbol: string;
   isLong: boolean;
-  marketType: MarketType;
+  stopBuyAfterPercent: number;
+  allowedVolumeUsdt: number;
+  uniqueSymbolCount: number;
+  leverage: number;
+  marketType: MarketTypeEnum;
 }
 
 interface EnrichWithSpotFallbackArgs extends BaseOrderCalculationArgs {
@@ -73,9 +77,9 @@ export class OrderCalculator {
   private static calculateOrderAmount(
     price: number,
     symbolCount: number,
-    orderVolumeUsdt: number
+    allowedVolumeUsdt: number
   ): number {
-    const volumeUsdtPerSymbol = orderVolumeUsdt / symbolCount;
+    const volumeUsdtPerSymbol = allowedVolumeUsdt / symbolCount;
 
     return volumeUsdtPerSymbol / price;
   }
@@ -118,22 +122,18 @@ export class OrderCalculator {
     return uniqueSymbolSet.size;
   }
 
-  private static calculateAmountForMarketType(args: {
-    price: number;
-    orderVolumeUsdt: number;
-    uniqueSymbolCount: number;
-    leverage: number;
-    marketType: MarketType;
-  }): number {
-    const { price, orderVolumeUsdt, uniqueSymbolCount, leverage, marketType } =
+  private static calculateAmountForMarketType(
+    args: CalculateAmountForMarketTypeArgs
+  ): number {
+    const { price, allowedVolumeUsdt, uniqueSymbolCount, leverage, marketType } =
       args;
 
     const amount = OrderCalculator.calculateOrderAmount(
       price,
       uniqueSymbolCount,
-      marketType === MarketType.Spot
-        ? orderVolumeUsdt / leverage
-        : orderVolumeUsdt
+      marketType === MarketTypeEnum.Spot
+        ? allowedVolumeUsdt / leverage
+        : allowedVolumeUsdt
     );
 
     return amount;
@@ -148,7 +148,7 @@ export class OrderCalculator {
       symbol,
       isLong,
       stopBuyAfterPercent,
-      orderVolumeUsdt,
+      allowedVolumeUsdt,
       uniqueSymbolCount,
       leverage,
       marketType,
@@ -166,13 +166,16 @@ export class OrderCalculator {
       marketType,
     };
 
+    const orderVolumeUsdt = allowedVolumeUsdt / uniqueSymbolCount;
+
     const baseOrderParamsWithExchange: OrderAttributes = {
       orderParams: baseOrderParams,
       exchangeName,
+      orderVolumeUsdt,
     };
 
     const marketLabel =
-      marketType === MarketType.Spot ? 'on spot ' : 'on futures ';
+      marketType === MarketTypeEnum.Spot ? 'on spot ' : 'on futures ';
 
     if (!price) {
       const errorText = `🏷️ ${NO_PRICE_DATA_AVAILABLE} for ${symbol} ${marketLabel}on ${exchangeName}`;
@@ -186,7 +189,7 @@ export class OrderCalculator {
     }
 
     if (
-      marketType !== MarketType.Spot &&
+      marketType !== MarketTypeEnum.Spot &&
       ticker.priceChangePercent !== undefined &&
       ticker.priceChangePercent >= stopBuyAfterPercent
     ) {
@@ -211,7 +214,7 @@ export class OrderCalculator {
 
     const rawAmount = OrderCalculator.calculateAmountForMarketType({
       price,
-      orderVolumeUsdt,
+      allowedVolumeUsdt,
       uniqueSymbolCount,
       leverage,
       marketType,
@@ -245,7 +248,7 @@ export class OrderCalculator {
     for (const symbol of symbolList) {
       for (const [exchangeName, exchangeConnector] of exchangeConnectorByName) {
         const resolvedSymbol =
-          exchangeConnector.resolveSymbolWithPrefix(symbol);
+          exchangeConnector.resolveSymbolWithPrefix(symbol, MarketTypeEnum.Futures);
 
         let exchangeMap = symbolMappingByExchange.get(exchangeName);
 
@@ -279,15 +282,10 @@ export class OrderCalculator {
         const setupPromise = (async () => {
           try {
             await Promise.all([
-              exchangeConnector.setLeverage(
-                resolvedSymbol,
-                leverage,
-                MarketType.Futures
-              ),
+              exchangeConnector.setLeverage(resolvedSymbol, leverage),
               exchangeConnector.setMarginMode(
                 resolvedSymbol,
-                MarginModeEnum.Isolated,
-                MarketType.Futures
+                MarginModeEnum.Isolated
               ),
             ]);
           } catch (error) {
@@ -318,39 +316,39 @@ export class OrderCalculator {
       isLong,
       exchangeConnectorByName,
       stopBuyAfterPercent,
-      orderVolumeUsdt,
+      allowedVolumeByExchange,
       symbolMappingByExchange,
       leverage,
-      uniqueSymbolCount,
     } = args;
 
     const orderAttributesList: OrderAttributes[] = [];
 
-    OrderCalculator.iterateSymbolMappingByExchange({
-      symbolMappingByExchange,
-      callback: ({ exchangeName, resolvedSymbol }) => {
-        const exchangeConnector = exchangeConnectorByName.get(exchangeName);
+    for (const [exchangeName, symbolMapping] of symbolMappingByExchange) {
+      const exchangeConnector = exchangeConnectorByName.get(exchangeName);
 
-        if (!exchangeConnector) {
-          return;
-        }
+      if (!exchangeConnector) {
+        continue;
+      }
 
-        const orderAttributes =
+      const allowedVolumeUsdt = allowedVolumeByExchange.get(exchangeName) ?? 0;
+      const uniqueSymbolCount = symbolMapping.size;
+
+      for (const [, resolvedSymbol] of symbolMapping) {
+        orderAttributesList.push(
           OrderCalculator.createOrderAttributesForMarketType({
             exchangeConnector,
             exchangeName,
             symbol: resolvedSymbol,
             isLong,
             stopBuyAfterPercent,
-            orderVolumeUsdt,
+            allowedVolumeUsdt,
             uniqueSymbolCount,
             leverage,
-            marketType: MarketType.Futures,
-          });
-
-        orderAttributesList.push(orderAttributes);
-      },
-    });
+            marketType: MarketTypeEnum.Futures,
+          })
+        );
+      }
+    }
 
     return orderAttributesList;
   }
@@ -362,10 +360,19 @@ export class OrderCalculator {
       orderAttributesList,
       exchangeConnectorByName,
       stopBuyAfterPercent,
-      orderVolumeUsdt,
+      allowedVolumeByExchange,
       leverage,
-      uniqueSymbolCount,
     } = args;
+
+    const symbolSetByExchange = new Map<ExchangeNameEnum, Set<string>>();
+
+    for (const attr of orderAttributesList) {
+      if (!symbolSetByExchange.has(attr.exchangeName)) {
+        symbolSetByExchange.set(attr.exchangeName, new Set());
+      }
+
+      symbolSetByExchange.get(attr.exchangeName)!.add(attr.orderParams.symbol);
+    }
 
     return orderAttributesList.map(orderAttributes => {
       const isNoPriceError = orderAttributes.errorText?.includes(
@@ -383,16 +390,20 @@ export class OrderCalculator {
         return orderAttributes;
       }
 
+      const allowedVolumeUsdt = allowedVolumeByExchange.get(exchangeName) ?? 0;
+      const uniqueSymbolCount =
+        symbolSetByExchange.get(exchangeName)?.size ?? 1;
+
       return OrderCalculator.createOrderAttributesForMarketType({
         exchangeConnector,
         exchangeName,
         symbol: orderParams.symbol,
         isLong: orderParams.side === OrderSideEnum.Buy,
         stopBuyAfterPercent,
-        orderVolumeUsdt,
+        allowedVolumeUsdt,
         uniqueSymbolCount,
         leverage,
-        marketType: MarketType.Spot,
+        marketType: MarketTypeEnum.Spot,
       });
     });
   }
@@ -410,7 +421,7 @@ export class OrderCalculator {
     const rawAmount = OrderCalculator.calculateOrderAmount(
       adjustedPrice,
       1,
-      orderParams.marketType === MarketType.Spot
+      orderParams.marketType === MarketTypeEnum.Spot
         ? orderVolumeUsdt / leverage
         : orderVolumeUsdt
     );

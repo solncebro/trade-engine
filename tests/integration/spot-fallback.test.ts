@@ -12,14 +12,12 @@ import { OrderCalculator } from '../../src/core/orderCalculator';
 import { ExchangeConnector } from '../../src/services/exchangeConnector';
 import {
   ExchangeNameEnum,
-  MarketType,
+  MarketTypeEnum,
   OrderSideEnum,
   OrderTypeEnum,
 } from '../../src/types';
 import { isOrderSuccessful } from '../../src/utils/order.utils';
 
-
-// Test spot fallback on both exchanges
 describeIfCredentials(ExchangeNameEnum.Bybit, 'Bybit Spot Fallback Integration', () => {
   let connector: ExchangeConnector;
   const exchangeName = ExchangeNameEnum.Bybit;
@@ -36,7 +34,7 @@ describeIfCredentials(ExchangeNameEnum.Bybit, 'Bybit Spot Fallback Integration',
 
   describe('Spot Fallback', () => {
     test('futures ticker exists for real symbols', () => {
-      const ticker = connector.getTicker(BYBIT_FUTURES_TEST_SYMBOL, MarketType.Futures);
+      const ticker = connector.getTicker(BYBIT_FUTURES_TEST_SYMBOL, MarketTypeEnum.Futures);
       expect(ticker).toBeDefined();
       expect(ticker!.lastPrice).toBeGreaterThan(0);
     });
@@ -52,9 +50,8 @@ describeIfCredentials(ExchangeNameEnum.Bybit, 'Bybit Spot Fallback Integration',
         exchangeConnectorByName: new Map([[exchangeName, connector]]),
         symbolMappingByExchange: mapping,
         stopBuyAfterPercent: 50,
-        orderVolumeUsdt: 100,
+        allowedVolumeByExchange: new Map([[exchangeName, 100]]),
         leverage: 5,
-        uniqueSymbolCount: 1,
       });
 
       expect(attributes[0].errorText).toBeDefined();
@@ -73,45 +70,38 @@ describeIfCredentials(ExchangeNameEnum.Bybit, 'Bybit Spot Fallback Integration',
         exchangeConnectorByName: new Map([[exchangeName, connector]]),
         symbolMappingByExchange: mapping,
         stopBuyAfterPercent: 50,
-        orderVolumeUsdt: 100,
+        allowedVolumeByExchange: new Map([[exchangeName, 100]]),
         leverage: 5,
-        uniqueSymbolCount: 1,
       });
 
-      // Initial attributes should have error
       expect(attributes[0].errorText).toBeDefined();
-      expect(attributes[0].orderParams.marketType).toBe(MarketType.Futures);
+      expect(attributes[0].orderParams.marketType).toBe(MarketTypeEnum.Futures);
 
-      // After fallback, should attempt spot market
       const enriched = OrderCalculator.enrichWithSpotFallback({
         orderAttributesList: attributes,
         exchangeConnectorByName: new Map([[exchangeName, connector]]),
         stopBuyAfterPercent: 50,
-        orderVolumeUsdt: 100,
+        allowedVolumeByExchange: new Map([[exchangeName, 100]]),
         leverage: 5,
-        uniqueSymbolCount: 1,
       });
 
-      // Enriched attributes should have switched to spot or still have error (if not in spot either)
-      expect(enriched[0].orderParams.marketType).toBe(MarketType.Spot);
+      expect(enriched[0].orderParams.marketType).toBe(MarketTypeEnum.Spot);
     });
 
     test('creates actual spot market order when fallback succeeds', async () => {
-      // Use real BTCUSDT symbol - should exist in spot
       OrderCalculator.resolveSymbolsForExchanges(
         [BYBIT_FUTURES_TEST_SYMBOL],
         new Map([[exchangeName, connector]])
       );
 
-      // Get spot ticker
-      const spotTicker = connector.getTicker(BYBIT_FUTURES_TEST_SYMBOL, MarketType.Spot);
+      const spotTicker = connector.getTicker(BYBIT_FUTURES_TEST_SYMBOL, MarketTypeEnum.Spot);
+
       if (!spotTicker?.lastPrice) {
-        // Skip if spot ticker not available
         console.warn(`Spot ticker for ${BYBIT_FUTURES_TEST_SYMBOL} not yet loaded, skipping test`);
         return;
       }
 
-      const spotQty = connector.getClient(MarketType.Spot).amountToPrecision(BYBIT_FUTURES_TEST_SYMBOL, MIN_TEST_USDT / spotTicker.lastPrice);
+      const spotQty = connector.getClient(MarketTypeEnum.Spot).amountToPrecision(BYBIT_FUTURES_TEST_SYMBOL, MIN_TEST_USDT / spotTicker.lastPrice);
 
       const spotOrderResult = await connector.createOrder({
         symbol: BYBIT_FUTURES_TEST_SYMBOL,
@@ -119,7 +109,7 @@ describeIfCredentials(ExchangeNameEnum.Bybit, 'Bybit Spot Fallback Integration',
         amount: spotQty,
         price: spotTicker.lastPrice,
         type: OrderTypeEnum.Market,
-        marketType: MarketType.Spot,
+        marketType: MarketTypeEnum.Spot,
       });
 
       expect(isOrderSuccessful(spotOrderResult)).toBe(true);
@@ -131,21 +121,18 @@ describeIfCredentials(ExchangeNameEnum.Bybit, 'Bybit Spot Fallback Integration',
         amount: spotQty,
         price: spotTicker.lastPrice,
         type: OrderTypeEnum.Market,
-        marketType: MarketType.Spot,
+        marketType: MarketTypeEnum.Spot,
       });
 
       expect(isOrderSuccessful(closeResult)).toBe(true);
     });
 
     test('spot and futures tickers are independently tracked', () => {
-      const futuresTicker = connector.getTicker(BYBIT_FUTURES_TEST_SYMBOL, MarketType.Futures);
-      const spotTicker = connector.getTicker(BYBIT_FUTURES_TEST_SYMBOL, MarketType.Spot);
+      const futuresTicker = connector.getTicker(BYBIT_FUTURES_TEST_SYMBOL, MarketTypeEnum.Futures);
+      const spotTicker = connector.getTicker(BYBIT_FUTURES_TEST_SYMBOL, MarketTypeEnum.Spot);
 
-      // Both should be available
       expect(futuresTicker).toBeDefined();
       expect(spotTicker).toBeDefined();
-
-      // Prices may differ (spot vs futures)
       expect(futuresTicker!.lastPrice).toBeGreaterThan(0);
       expect(spotTicker!.lastPrice).toBeGreaterThan(0);
     });
@@ -163,23 +150,20 @@ describeIfCredentials(ExchangeNameEnum.Bybit, 'Bybit Spot Fallback Integration',
         exchangeConnectorByName: new Map([[exchangeName, connector]]),
         symbolMappingByExchange: mapping,
         stopBuyAfterPercent: 50,
-        orderVolumeUsdt: 100,
+        allowedVolumeByExchange: new Map([[exchangeName, 100]]),
         leverage: 5,
-        uniqueSymbolCount: 1,
       });
 
       const enriched = OrderCalculator.enrichWithSpotFallback({
         orderAttributesList: attributes,
         exchangeConnectorByName: new Map([[exchangeName, connector]]),
         stopBuyAfterPercent: 50,
-        orderVolumeUsdt: 100,
+        allowedVolumeByExchange: new Map([[exchangeName, 100]]),
         leverage: 5,
-        uniqueSymbolCount: 1,
       });
 
-      // Symbol should remain the same, only marketType should change
       expect(enriched[0].orderParams.symbol).toBe(symbol);
-      expect(enriched[0].orderParams.marketType).toBe(MarketType.Spot);
+      expect(enriched[0].orderParams.marketType).toBe(MarketTypeEnum.Spot);
     });
   });
 });
@@ -210,34 +194,32 @@ describeIfCredentials(ExchangeNameEnum.Binance, 'Binance Spot Fallback Integrati
         exchangeConnectorByName: new Map([[exchangeName, connector]]),
         symbolMappingByExchange: mapping,
         stopBuyAfterPercent: 50,
-        orderVolumeUsdt: 100,
+        allowedVolumeByExchange: new Map([[exchangeName, 100]]),
         leverage: 5,
-        uniqueSymbolCount: 1,
       });
 
-      expect(attributes[0].orderParams.marketType).toBe(MarketType.Futures);
+      expect(attributes[0].orderParams.marketType).toBe(MarketTypeEnum.Futures);
 
       const enriched = OrderCalculator.enrichWithSpotFallback({
         orderAttributesList: attributes,
         exchangeConnectorByName: new Map([[exchangeName, connector]]),
         stopBuyAfterPercent: 50,
-        orderVolumeUsdt: 100,
+        allowedVolumeByExchange: new Map([[exchangeName, 100]]),
         leverage: 5,
-        uniqueSymbolCount: 1,
       });
 
-      // After enrichment, marketType should be Spot
-      expect(enriched[0].orderParams.marketType).toBe(MarketType.Spot);
+      expect(enriched[0].orderParams.marketType).toBe(MarketTypeEnum.Spot);
     });
 
     test('creates actual spot order on Binance', async () => {
-      const spotTicker = connector.getTicker(BINANCE_FUTURES_TEST_SYMBOL, MarketType.Spot);
+      const spotTicker = connector.getTicker(BINANCE_FUTURES_TEST_SYMBOL, MarketTypeEnum.Spot);
+
       if (!spotTicker?.lastPrice) {
         console.warn(`Spot ticker for ${BINANCE_FUTURES_TEST_SYMBOL} not yet loaded on Binance, skipping`);
         return;
       }
 
-      const binanceSpotQty = connector.getClient(MarketType.Spot).amountToPrecision(BINANCE_FUTURES_TEST_SYMBOL, MIN_TEST_USDT / spotTicker.lastPrice);
+      const binanceSpotQty = connector.getClient(MarketTypeEnum.Spot).amountToPrecision(BINANCE_FUTURES_TEST_SYMBOL, MIN_TEST_USDT / spotTicker.lastPrice);
 
       const openResult = await connector.createOrder({
         symbol: BINANCE_FUTURES_TEST_SYMBOL,
@@ -245,7 +227,7 @@ describeIfCredentials(ExchangeNameEnum.Binance, 'Binance Spot Fallback Integrati
         amount: binanceSpotQty,
         price: spotTicker.lastPrice,
         type: OrderTypeEnum.Market,
-        marketType: MarketType.Spot,
+        marketType: MarketTypeEnum.Spot,
       });
 
       expect(isOrderSuccessful(openResult)).toBe(true);
@@ -256,17 +238,16 @@ describeIfCredentials(ExchangeNameEnum.Binance, 'Binance Spot Fallback Integrati
         amount: binanceSpotQty,
         price: spotTicker.lastPrice,
         type: OrderTypeEnum.Market,
-        marketType: MarketType.Spot,
+        marketType: MarketTypeEnum.Spot,
       });
 
       expect(isOrderSuccessful(closeResult)).toBe(true);
     });
 
     test('spot ticker loading works independently from futures', () => {
-      const spotTicker = connector.getTicker(BINANCE_FUTURES_TEST_SYMBOL, MarketType.Spot);
-      const futuresTicker = connector.getTicker(BINANCE_FUTURES_TEST_SYMBOL, MarketType.Futures);
+      const spotTicker = connector.getTicker(BINANCE_FUTURES_TEST_SYMBOL, MarketTypeEnum.Spot);
+      const futuresTicker = connector.getTicker(BINANCE_FUTURES_TEST_SYMBOL, MarketTypeEnum.Futures);
 
-      // Both should be available on Binance
       expect(spotTicker).toBeDefined();
       expect(futuresTicker).toBeDefined();
       expect(spotTicker!.lastPrice).toBeGreaterThan(0);

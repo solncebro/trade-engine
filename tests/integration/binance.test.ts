@@ -15,7 +15,7 @@ import { ExchangeConnector } from '../../src/services/exchangeConnector';
 import {
   ExchangeConnectorByName,
   ExchangeNameEnum,
-  MarketType,
+  MarketTypeEnum,
   OrderSideEnum,
   OrderTypeEnum,
 } from '../../src/types';
@@ -51,30 +51,30 @@ describeIfCredentials(ExchangeNameEnum.Binance, 'Binance Demo Integration', () =
     });
 
     test('getFuturesSymbols() returns non-empty list with ETH', async () => {
-      const symbols = await connector.getFuturesSymbols();
+      const symbolList = await connector.getFuturesSymbols();
       logger.info(
-        { count: symbols.length, sample: [...symbols].sort().slice(0, 20) },
+        { count: symbolList.length, sample: [...symbolList].sort().slice(0, 20) },
         'getFuturesSymbols test result'
       );
-      expect(symbols.length).toBeGreaterThan(0);
-      expect(symbols).toEqual(
+      expect(symbolList.length).toBeGreaterThan(0);
+      expect(symbolList).toEqual(
         expect.arrayContaining([expect.stringContaining('ETH')])
       );
     });
 
     test('getSpotSymbols() returns non-empty list', async () => {
-      const symbols = await connector.getSpotSymbols();
+      const symbolList = await connector.getSpotSymbols();
       logger.info(
-        { count: symbols.length, sample: [...symbols].sort().slice(0, 20) },
+        { count: symbolList.length, sample: [...symbolList].sort().slice(0, 20) },
         'getSpotSymbols test result'
       );
-      expect(symbols.length).toBeGreaterThan(0);
+      expect(symbolList.length).toBeGreaterThan(0);
     });
 
     test('getTicker() returns price data for futures', () => {
       const ticker = connector.getTicker(
         BINANCE_FUTURES_TEST_SYMBOL,
-        MarketType.Futures
+        MarketTypeEnum.Futures
       );
       logger.info({ ticker }, 'getTicker test result');
       expect(ticker).toBeDefined();
@@ -119,7 +119,7 @@ describeIfCredentials(ExchangeNameEnum.Binance, 'Binance Demo Integration', () =
     test('createOrder() market: opens and closes a position', async () => {
       const ticker = connector.getTicker(
         BINANCE_FUTURES_TEST_SYMBOL,
-        MarketType.Futures
+        MarketTypeEnum.Futures
       );
       expect(ticker).toBeDefined();
 
@@ -131,7 +131,7 @@ describeIfCredentials(ExchangeNameEnum.Binance, 'Binance Demo Integration', () =
         amount,
         price: ticker!.lastPrice!,
         type: OrderTypeEnum.Market,
-        marketType: MarketType.Futures,
+        marketType: MarketTypeEnum.Futures,
       });
 
       logger.info({ result: openResult }, 'createOrder market open test result');
@@ -144,7 +144,7 @@ describeIfCredentials(ExchangeNameEnum.Binance, 'Binance Demo Integration', () =
         amount,
         price: ticker!.lastPrice!,
         type: OrderTypeEnum.Market,
-        marketType: MarketType.Futures,
+        marketType: MarketTypeEnum.Futures,
       });
 
       logger.info({ result: closeResult }, 'createOrder market close test result');
@@ -154,7 +154,7 @@ describeIfCredentials(ExchangeNameEnum.Binance, 'Binance Demo Integration', () =
     test('createOrder() limit: opens and closes a position', async () => {
       const ticker = connector.getTicker(
         BINANCE_FUTURES_TEST_SYMBOL,
-        MarketType.Futures
+        MarketTypeEnum.Futures
       );
       expect(ticker).toBeDefined();
       const currentPrice = ticker!.lastPrice!;
@@ -166,7 +166,7 @@ describeIfCredentials(ExchangeNameEnum.Binance, 'Binance Demo Integration', () =
         amount,
         price: currentPrice * 1.03,
         type: OrderTypeEnum.Limit,
-        marketType: MarketType.Futures,
+        marketType: MarketTypeEnum.Futures,
       });
 
       logger.info({ result: openResult }, 'createOrder limit open test result');
@@ -179,7 +179,7 @@ describeIfCredentials(ExchangeNameEnum.Binance, 'Binance Demo Integration', () =
         amount,
         price: currentPrice * 0.97,
         type: OrderTypeEnum.Limit,
-        marketType: MarketType.Futures,
+        marketType: MarketTypeEnum.Futures,
         params: { reduceOnly: true },
       });
 
@@ -220,7 +220,6 @@ describeIfCredentials(ExchangeNameEnum.Binance, 'Binance Demo Integration', () =
       const binanceMap = mapping.get(exchangeName)!;
       expect(binanceMap.size).toBe(BINANCE_FUTURES_TEST_SYMBOL_LIST.length);
 
-      // Unprefixed symbols should resolve to prefixed
       expect(binanceMap.get('FLOKIUSDT')).toBe('1000FLOKIUSDT');
       expect(binanceMap.get('SHIBUSDT')).toBe('1000SHIBUSDT');
       expect(binanceMap.get('ETHUSDT')).toBe('ETHUSDT');
@@ -251,9 +250,8 @@ describeIfCredentials(ExchangeNameEnum.Binance, 'Binance Demo Integration', () =
         exchangeConnectorByName,
         symbolMappingByExchange: mapping,
         stopBuyAfterPercent: 50,
-        orderVolumeUsdt: 100,
+        allowedVolumeByExchange: new Map([[exchangeName, 100]]),
         leverage: 5,
-        uniqueSymbolCount: 1,
       });
 
       logger.info(
@@ -276,9 +274,8 @@ describeIfCredentials(ExchangeNameEnum.Binance, 'Binance Demo Integration', () =
         exchangeConnectorByName,
         symbolMappingByExchange: mapping,
         stopBuyAfterPercent: 50,
-        orderVolumeUsdt: 100,
+        allowedVolumeByExchange: new Map([[exchangeName, 100]]),
         leverage: 5,
-        uniqueSymbolCount: 1,
       });
 
       expect(attributes[0].errorText).toBeDefined();
@@ -287,9 +284,8 @@ describeIfCredentials(ExchangeNameEnum.Binance, 'Binance Demo Integration', () =
         orderAttributesList: attributes,
         exchangeConnectorByName,
         stopBuyAfterPercent: 50,
-        orderVolumeUsdt: 100,
+        allowedVolumeByExchange: new Map([[exchangeName, 100]]),
         leverage: 5,
-        uniqueSymbolCount: 1,
       });
 
       logger.info({ enriched }, 'enrichWithSpotFallback test result');
@@ -299,7 +295,7 @@ describeIfCredentials(ExchangeNameEnum.Binance, 'Binance Demo Integration', () =
     test(`calculateLimitOrderWithPriceAdjustment() adjusts price +${LIMIT_PRICE_ADJUSTMENT_PERCENT}%`, () => {
       const ticker = connector.getTicker(
         BINANCE_FUTURES_TEST_SYMBOL,
-        MarketType.Futures
+        MarketTypeEnum.Futures
       )!;
 
       const limitOrder = OrderCalculator.calculateLimitOrderWithPriceAdjustment(
@@ -309,7 +305,7 @@ describeIfCredentials(ExchangeNameEnum.Binance, 'Binance Demo Integration', () =
           amount: calculateTestAmount(connector, BINANCE_FUTURES_TEST_SYMBOL, ticker.lastPrice!),
           price: ticker.lastPrice!,
           type: OrderTypeEnum.Market,
-          marketType: MarketType.Futures,
+          marketType: MarketTypeEnum.Futures,
         },
         LIMIT_PRICE_ADJUSTMENT_PERCENT,
         100,
@@ -327,7 +323,7 @@ describeIfCredentials(ExchangeNameEnum.Binance, 'Binance Demo Integration', () =
     test('calculateCloseOrder() creates correct TP and SL orders', () => {
       const ticker = connector.getTicker(
         BINANCE_FUTURES_TEST_SYMBOL,
-        MarketType.Futures
+        MarketTypeEnum.Futures
       )!;
 
       const baseParams = {
@@ -336,7 +332,7 @@ describeIfCredentials(ExchangeNameEnum.Binance, 'Binance Demo Integration', () =
         amount: calculateTestAmount(connector, BINANCE_FUTURES_TEST_SYMBOL, ticker.lastPrice!),
         price: ticker.lastPrice!,
         type: OrderTypeEnum.Market as OrderTypeEnum,
-        marketType: MarketType.Futures,
+        marketType: MarketTypeEnum.Futures,
       };
 
       const takeProfit = OrderCalculator.calculateCloseOrder(
@@ -364,20 +360,20 @@ describeIfCredentials(ExchangeNameEnum.Binance, 'Binance Demo Integration', () =
       expect(stopLoss.triggerPrice).toBeLessThan(ticker.lastPrice!);
     });
 
-    test('setupLeverageAndMarginMode() completes without error', async () => {
+    test('setupLeverageAndMarginModeEnum() completes without error', async () => {
       const mapping = OrderCalculator.resolveSymbolsForExchanges(
         [BINANCE_FUTURES_TEST_SYMBOL],
         exchangeConnectorByName
       );
 
       await expect(
-        OrderCalculator.setupLeverageAndMarginMode({
+        OrderCalculator.setupLeverageAndMarginModeEnum({
           exchangeConnectorByName,
           symbolMappingByExchange: mapping,
           leverage: 5,
         })
       ).resolves.not.toThrow();
-      logger.info('setupLeverageAndMarginMode test completed');
+      logger.info('setupLeverageAndMarginModeEnum test completed');
     });
   });
 });

@@ -1,12 +1,12 @@
 import * as crypto from 'crypto';
 
-import { Exchange as ExchangeInstance, ExchangeNameEnum, MarginModeEnum, OrderSideEnum, PositionSideEnum, TimeInForceEnum, TradeSymbolTypeEnum } from '@solncebro/exchange-engine';
-import type { CreateOrderWebSocketArgs, ExchangeClient, Position, Ticker, TickerBySymbol } from '@solncebro/exchange-engine';
+import { Exchange as ExchangeInstance, ExchangeNameEnum, MarginModeEnum, OrderSideEnum, PositionModeEnum, PositionSideEnum, TimeInForceEnum, TradeSymbolTypeEnum } from '@solncebro/exchange-engine';
+import type { BalanceByAsset, CreateOrderWebSocketArgs, ExchangeClient, FetchPageWithLimitArgs, Order, Position, Ticker, TickerBySymbol, WebSocketConnectionInfo } from '@solncebro/exchange-engine';
 
 import { logger } from '../core/logger';
 import {
   ExchangeConfig,
-  MarketType,
+  MarketTypeEnum,
   OrderParams,
   OrderResult,
   OrderTypeEnum,
@@ -29,7 +29,7 @@ export class ExchangeConnector {
     this.exchangeName = exchangeName;
 
     this.exchange = new ExchangeInstance(exchangeName, {
-      config: { apiKey: config.apiKey, secret: config.secret, isDemoMode: config.demo },
+      config,
       logger,
     });
   }
@@ -44,6 +44,7 @@ export class ExchangeConnector {
         { error, exchange: this.exchangeName },
         'Failed to initialize exchange'
       );
+
       throw error;
     }
   }
@@ -72,8 +73,8 @@ export class ExchangeConnector {
         this.exchange.futures.fetchTickers(),
         this.exchange.spot.fetchTickers(),
       ]);
-      this.processTickerList(futuresTickers, MarketType.Futures);
-      this.processTickerList(spotTickers, MarketType.Spot);
+      this.processTickerList(futuresTickers, MarketTypeEnum.Futures);
+      this.processTickerList(spotTickers, MarketTypeEnum.Spot);
     } catch (error) {
       logger.warn({ error }, 'Failed to update tickers');
     }
@@ -81,7 +82,7 @@ export class ExchangeConnector {
 
   private processTickerList(
     tickers: TickerBySymbol,
-    marketType: MarketType = MarketType.Futures
+    marketType: MarketTypeEnum
   ): void {
     for (const [symbol, ticker] of tickers) {
       const normalizedSymbol = normalizeSymbol(symbol);
@@ -90,29 +91,27 @@ export class ExchangeConnector {
     }
   }
 
-  private getTickerKey(symbol: string, marketType?: MarketType): string {
-    const type = marketType ?? MarketType.Futures;
-    return `${type}:${symbol}`;
+  private getTickerKey(symbol: string, marketType: MarketTypeEnum): string {
+    return `${marketType}:${symbol}`;
   }
 
-  private readonly SYMBOL_PREFIX_LIST = [10, 100, 1000, 10000, 100000, 1000000];
+  private readonly symbolPrefixList = [10, 100, 1000, 10000, 100000, 1000000];
 
   public resolveSymbolWithPrefix(
     symbol: string,
-    marketType?: MarketType
+    marketType: MarketTypeEnum
   ): string {
-    const defaultMarketType = marketType ?? MarketType.Futures;
-    const tickerKey = this.getTickerKey(symbol, defaultMarketType);
+    const tickerKey = this.getTickerKey(symbol, marketType);
 
     if (this.tickersByMarketTypeAndSymbol.has(tickerKey)) {
       return symbol;
     }
 
-    for (const prefix of this.SYMBOL_PREFIX_LIST) {
+    for (const prefix of this.symbolPrefixList) {
       const prefixedSymbol = `${prefix}${symbol}`;
       const prefixedTickerKey = this.getTickerKey(
         prefixedSymbol,
-        defaultMarketType
+        marketType
       );
 
       if (this.tickersByMarketTypeAndSymbol.has(prefixedTickerKey)) {
@@ -121,7 +120,7 @@ export class ExchangeConnector {
             originalSymbol: symbol,
             resolvedSymbol: prefixedSymbol,
             exchange: this.exchangeName,
-            marketType: defaultMarketType,
+            marketType,
           },
           'Symbol resolved with prefix'
         );
@@ -134,8 +133,8 @@ export class ExchangeConnector {
       {
         symbol,
         exchange: this.exchangeName,
-        marketType: defaultMarketType,
-        testedPrefixes: this.SYMBOL_PREFIX_LIST,
+        marketType,
+        testedPrefixes: this.symbolPrefixList,
       },
       'Symbol not found with any prefix'
     );
@@ -145,9 +144,10 @@ export class ExchangeConnector {
 
   public getTicker(
     symbol: string,
-    marketType?: MarketType
+    marketType: MarketTypeEnum
   ): Ticker | undefined {
     const tickerKey = this.getTickerKey(symbol, marketType);
+
     return this.tickersByMarketTypeAndSymbol.get(tickerKey);
   }
 
@@ -231,10 +231,11 @@ export class ExchangeConnector {
 
   public async fetchPosition(
     symbol: string,
-    marketType?: MarketType
+    marketType: MarketTypeEnum
   ): Promise<Position | null> {
     try {
       const position = await this.getClient(marketType).fetchPosition(symbol);
+
       return position;
     } catch (error) {
       logger.error(
@@ -248,11 +249,11 @@ export class ExchangeConnector {
 
   public async setLeverage(
     symbol: string,
-    leverage: number,
-    marketType?: MarketType
+    leverage: number
   ): Promise<boolean> {
     try {
-      await this.getClient(marketType).setLeverage(leverage, symbol);
+      await this.exchange.futures.setLeverage(leverage, symbol);
+
       return true;
     } catch {
       return false;
@@ -261,11 +262,11 @@ export class ExchangeConnector {
 
   public async setMarginMode(
     symbol: string,
-    marginMode: MarginModeEnum,
-    marketType?: MarketType
+    marginMode: MarginModeEnum
   ): Promise<boolean> {
     try {
-      await this.getClient(marketType).setMarginMode(marginMode, symbol);
+      await this.exchange.futures.setMarginMode(marginMode, symbol);
+
       return true;
     } catch {
       return false;
@@ -332,7 +333,7 @@ export class ExchangeConnector {
     }
   }
 
-  public getClient(marketType?: MarketType): ExchangeClient {
+  public getClient(marketType: MarketTypeEnum): ExchangeClient {
     return isSpot(marketType) ? this.exchange.spot : this.exchange.futures;
   }
 
@@ -340,11 +341,11 @@ export class ExchangeConnector {
     return this.exchangeName;
   }
 
-  public isTradeWebSocketConnected(marketType?: MarketType): boolean {
+  public isTradeWebSocketConnected(marketType: MarketTypeEnum): boolean {
     return this.getClient(marketType).isTradeWebSocketConnected();
   }
 
-  public async connectTradeWebSocket(marketType?: MarketType): Promise<void> {
+  public async connectTradeWebSocket(marketType: MarketTypeEnum): Promise<void> {
     await this.getClient(marketType).connectTradeWebSocket();
   }
 
@@ -353,6 +354,7 @@ export class ExchangeConnector {
 
     if (!apiKey) {
       logger.warn('No API key available to generate account ID');
+
       return 'default';
     }
 
@@ -362,6 +364,99 @@ export class ExchangeConnector {
       .digest('hex');
 
     return hash.substring(0, 16);
+  }
+
+  public getWebSocketConnectionInfoList(): WebSocketConnectionInfo[] {
+    try {
+      return this.exchange.getWebSocketConnectionInfoList();
+    } catch (error) {
+      logger.error(
+        { error, exchange: this.exchangeName },
+        'Failed to get WebSocket connection info list'
+      );
+
+      return [];
+    }
+  }
+
+  public async fetchBalance(
+    marketType: MarketTypeEnum
+  ): Promise<BalanceByAsset | null> {
+    try {
+      return await this.getClient(marketType).fetchBalance();
+    } catch (error) {
+      logger.error(
+        { error, exchange: this.exchangeName, marketType },
+        'Failed to fetch balance'
+      );
+
+      return null;
+    }
+  }
+
+  public async fetchOrderHistory(
+    symbol: string,
+    marketType: MarketTypeEnum,
+    options?: FetchPageWithLimitArgs
+  ): Promise<Order[]> {
+    try {
+      return await this.getClient(marketType).fetchOrderHistory(
+        symbol,
+        options
+      );
+    } catch (error) {
+      logger.error(
+        { error, symbol, exchange: this.exchangeName, marketType },
+        'Failed to fetch order history'
+      );
+
+      return [];
+    }
+  }
+
+  public getMinOrderQty(
+    symbol: string,
+    marketType: MarketTypeEnum
+  ): number {
+    try {
+      return this.getClient(marketType).getMinOrderQty(symbol);
+    } catch (error) {
+      logger.error(
+        { error, symbol, exchange: this.exchangeName, marketType },
+        'Failed to get min order qty'
+      );
+
+      return 0;
+    }
+  }
+
+  public getMinNotional(
+    symbol: string,
+    marketType: MarketTypeEnum
+  ): number {
+    try {
+      return this.getClient(marketType).getMinNotional(symbol);
+    } catch (error) {
+      logger.error(
+        { error, symbol, exchange: this.exchangeName, marketType },
+        'Failed to get min notional'
+      );
+
+      return 0;
+    }
+  }
+
+  public async fetchPositionMode(): Promise<PositionModeEnum | null> {
+    try {
+      return await this.exchange.futures.fetchPositionMode();
+    } catch (error) {
+      logger.error(
+        { error, exchange: this.exchangeName },
+        'Failed to fetch position mode'
+      );
+
+      return null;
+    }
   }
 
   public async disconnect(): Promise<void> {

@@ -15,7 +15,7 @@ static resolveSymbolsForExchanges(
 ): SymbolMappingByExchange
 ```
 
-Создаёт маппинг символов для всех подключённых бирж. Каждый символ проходит через `resolveSymbolWithPrefix()` коннектора. Результат: `Map<ExchangeName, Map<originalSymbol, resolvedSymbol>>`.
+Создаёт маппинг символов для всех подключённых бирж. Каждый символ проходит через `resolveSymbolWithPrefix()` коннектора. Результат: `Map<ExchangeNameEnum, Map<originalSymbol, resolvedSymbol>>`.
 
 ### createOrderAttributesForSymbol
 
@@ -25,9 +25,8 @@ static createOrderAttributesForSymbol(args: {
   exchangeConnectorByName: ExchangeConnectorByName;
   symbolMappingByExchange: SymbolMappingByExchange;
   stopBuyAfterPercent: number; // порог 24h% роста — не покупать если уже вырос больше
-  orderVolumeUsdt: number;
+  allowedVolumeByExchange: Map<ExchangeNameEnum, number>;
   leverage: number;
-  uniqueSymbolCount: number;
 }): OrderAttributes[]
 ```
 
@@ -35,7 +34,7 @@ static createOrderAttributesForSymbol(args: {
 1. Получает тикер (futures по умолчанию)
 2. Проверяет наличие цены → ошибка "No price data available" если нет
 3. Проверяет 24h% рост vs `stopBuyAfterPercent` → ошибка если превышен
-4. Рассчитывает объём: `orderVolumeUsdt / symbolCount / price`
+4. Рассчитывает объём: `allowedVolumeUsdt / symbolCount / price`
 5. Возвращает `OrderAttributes` с заполненными `orderParams`
 
 ### enrichWithSpotFallback
@@ -45,9 +44,8 @@ static enrichWithSpotFallback(args: {
   orderAttributesList: OrderAttributes[];
   exchangeConnectorByName: ExchangeConnectorByName;
   stopBuyAfterPercent: number;
-  orderVolumeUsdt: number;
+  allowedVolumeByExchange: Map<ExchangeNameEnum, number>;
   leverage: number;
-  uniqueSymbolCount: number;
 }): OrderAttributes[]
 ```
 
@@ -81,12 +79,12 @@ static calculateCloseOrder(
 
 Создаёт обратный ордер (противоположная сторона):
 - **Take Profit**: `Limit` ордер, `reduceOnly` для futures
-- **Stop Loss**: `Market` ордер, `reduceOnly` для futures, добавляет `triggerPrice` и `triggerDirection`
+- **Stop Loss**: `Limit` ордер, `reduceOnly` для futures, добавляет `triggerPrice` и `triggerDirection`
 
-### setupLeverageAndMarginMode
+### setupLeverageAndMarginModeEnum
 
 ```typescript
-static setupLeverageAndMarginMode(args: {
+static setupLeverageAndMarginModeEnum(args: {
   exchangeConnectorByName: ExchangeConnectorByName;
   symbolMappingByExchange: SymbolMappingByExchange;
   leverage: number;
@@ -98,8 +96,7 @@ static setupLeverageAndMarginMode(args: {
 ## Внутренние методы
 
 - `addPercent(price, percent, isIncrease?)` — сдвиг цены на процент
-- `calculateOrderAmount(price, symbolCount, orderVolumeUsdt)` — распределение объёма
-- `resolveOrderSide(isLong)` — `Buy` для long, `Sell` для short
-- `iterateSymbolMappingByExchange()` — итерация по маппингу с коллбэком
-- `calculateAmountForMarketType()` — расчёт количества с точностью биржи
+- `calculateOrderAmount(price, symbolCount, allowedVolumeUsdt)` — распределение объёма
+- `resolveOrderSideEnum(isLong)` — `Buy` для long, `Sell` для short
+- `calculateAmountForMarketType(args: CalculateAmountForMarketTypeArgs)` — расчёт количества с учётом типа рынка
 - `createOrderAttributesForMarketType()` — создание атрибутов для конкретного типа рынка

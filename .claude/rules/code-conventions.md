@@ -59,13 +59,13 @@ catch (error) { ... }
 
 Маппинги бирж и символов — `Map`, не объекты:
 ```typescript
-const connectorByName: ExchangeConnectorByName = new Map([[ExchangeName.Binance, connector]]);
+const connectorByName: ExchangeConnectorByName = new Map([[ExchangeNameEnum.Binance, connector]]);
 const mapping: SymbolMappingByExchange = new Map([[exchangeName, new Map([['BTCUSDT', 'BTCUSDT']])]]);
 ```
 
 ### Event-driven сервисы
 
-`TelegramMessageListener` и `FirebaseService` наследуют `EventEmitter`.
+`TelegramMessageListener` и `FirebaseServiceBase` наследуют `EventEmitter`.
 
 ### Lazy initialization
 
@@ -75,7 +75,7 @@ Logger использует Proxy для ленивой инициализаци
 
 ```bash
 yarn build
-# = rm -rf dist && npm test -- --passWithNoTests && tsc -p tsconfig.json
+# = rm -rf dist && yarn test --passWithNoTests && tsc -p tsconfig.json
 ```
 
 Порядок: удаление dist → юнит-тесты → компиляция TypeScript.

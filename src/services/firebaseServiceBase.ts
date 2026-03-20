@@ -2,7 +2,10 @@ import { EventEmitter } from 'events';
 
 import admin from 'firebase-admin';
 
+import { TelegramNotifier } from './telegramNotifier';
+
 import { logger } from '../core/logger';
+import { Notifiable } from '../types/common';
 import {
   FirebaseStrategySettingsValues,
   FormatSettingMessageArgs,
@@ -10,31 +13,30 @@ import {
 } from '../types/firebase';
 import { SettingConfigBase } from '../types/telegramCommandHandler';
 
-export interface FirebaseServiceArgs<T> {
+export interface FirebaseServiceBaseArgs<T> {
   documentPath: string;
   defaultData: T;
-  onNotify: (message: string) => void | Promise<void>;
-  onError: (message: string, error: unknown) => void | Promise<void>;
+  telegramNotifier: TelegramNotifier;
 }
 
-export class FirebaseService<T> extends EventEmitter {
+export class FirebaseServiceBase<T> extends EventEmitter implements Notifiable {
   private firestore: admin.firestore.Firestore;
   private documentReference: admin.firestore.DocumentReference;
   private settingsListener: (() => void) | null = null;
   private currentData: T;
   private defaultData: T;
-  protected onNotify: (message: string) => void | Promise<void>;
-  protected onError: (message: string, error: unknown) => void | Promise<void>;
+  public onNotify: Notifiable['onNotify'];
+  public onError: Notifiable['onError'];
 
-  constructor(args: FirebaseServiceArgs<T>) {
+  constructor(args: FirebaseServiceBaseArgs<T>) {
     super();
 
-    const { documentPath, defaultData, onNotify, onError } = args;
+    const { documentPath, defaultData, telegramNotifier } = args;
 
     this.defaultData = defaultData;
     this.currentData = { ...defaultData };
-    this.onNotify = onNotify;
-    this.onError = onError;
+    this.onNotify = telegramNotifier.sendFormattedMessage.bind(telegramNotifier);
+    this.onError = telegramNotifier.sendError.bind(telegramNotifier);
 
     if (!admin.apps.length) {
       admin.initializeApp({
@@ -58,12 +60,12 @@ export class FirebaseService<T> extends EventEmitter {
         const data = document.data() as T;
         this.updateCurrentData(data);
       } else {
-        await this.notify('No data found in Firebase, using defaults');
+        await this.onNotify('No data found in Firebase, using defaults');
       }
 
       this.subscribeToDataChanges();
     } catch (error) {
-      await this.notifyError('Failed to initialize Firebase service', error);
+      await this.onError('Failed to initialize Firebase service', error);
 
       throw error;
     }
@@ -120,14 +122,6 @@ export class FirebaseService<T> extends EventEmitter {
     return this.firestore;
   }
 
-  private async notify(message: string): Promise<void> {
-    await this.onNotify(message);
-  }
-
-  private async notifyError(message: string, error: unknown): Promise<void> {
-    await this.onError(message, error);
-  }
-
   public getChangedSettings(
     current: T,
     previous: T
@@ -165,16 +159,16 @@ export class FirebaseService<T> extends EventEmitter {
     const setCurrent = new Set(current);
     const setPrevious = new Set(previous);
 
-    const currentDifference = current.filter(item => !setPrevious.has(item));
-    const previousDifference = previous.filter(item => !setCurrent.has(item));
+    const currentDifferenceList = current.filter(item => !setPrevious.has(item));
+    const previousDifferenceList = previous.filter(item => !setCurrent.has(item));
 
     const addedItems =
-      currentDifference.length > 0
-        ? `Added: ${currentDifference.join(', ')}`
+      currentDifferenceList.length > 0
+        ? `Added: ${currentDifferenceList.join(', ')}`
         : '';
     const removedItems =
-      previousDifference.length > 0
-        ? `Removed: ${previousDifference.join(', ')}`
+      previousDifferenceList.length > 0
+        ? `Removed: ${previousDifferenceList.join(', ')}`
         : '';
 
     return `${addedItems}${addedItems && removedItems ? '; ' : ''}${removedItems}`;

@@ -15,7 +15,7 @@ import { ExchangeConnector } from '../../src/services/exchangeConnector';
 import {
   ExchangeConnectorByName,
   ExchangeNameEnum,
-  MarketType,
+  MarketTypeEnum,
   OrderSideEnum,
   OrderTypeEnum,
 } from '../../src/types';
@@ -51,30 +51,30 @@ describeIfCredentials(ExchangeNameEnum.Bybit, 'Bybit Demo Integration', () => {
     });
 
     test('getFuturesSymbols() returns non-empty list with BTC', async () => {
-      const symbols = await connector.getFuturesSymbols();
+      const symbolList = await connector.getFuturesSymbols();
       logger.info(
-        { count: symbols.length, sample: [...symbols].sort().slice(0, 20) },
+        { count: symbolList.length, sample: [...symbolList].sort().slice(0, 20) },
         'getFuturesSymbols test result'
       );
-      expect(symbols.length).toBeGreaterThan(0);
-      expect(symbols).toEqual(
+      expect(symbolList.length).toBeGreaterThan(0);
+      expect(symbolList).toEqual(
         expect.arrayContaining([expect.stringContaining('BTC')])
       );
     });
 
     test('getSpotSymbols() returns non-empty list', async () => {
-      const symbols = await connector.getSpotSymbols();
+      const symbolList = await connector.getSpotSymbols();
       logger.info(
-        { count: symbols.length, sample: [...symbols].sort().slice(0, 20) },
+        { count: symbolList.length, sample: [...symbolList].sort().slice(0, 20) },
         'getSpotSymbols test result'
       );
-      expect(symbols.length).toBeGreaterThan(0);
+      expect(symbolList.length).toBeGreaterThan(0);
     });
 
     test('getTicker() returns price data for futures', () => {
       const ticker = connector.getTicker(
         BYBIT_FUTURES_TEST_SYMBOL,
-        MarketType.Futures
+        MarketTypeEnum.Futures
       );
       logger.info({ ticker }, 'getTicker test result');
       expect(ticker).toBeDefined();
@@ -120,7 +120,7 @@ describeIfCredentials(ExchangeNameEnum.Bybit, 'Bybit Demo Integration', () => {
     test('createOrder() market: opens and closes a position', async () => {
       const ticker = connector.getTicker(
         BYBIT_FUTURES_TEST_SYMBOL,
-        MarketType.Futures
+        MarketTypeEnum.Futures
       );
       expect(ticker).toBeDefined();
 
@@ -132,7 +132,7 @@ describeIfCredentials(ExchangeNameEnum.Bybit, 'Bybit Demo Integration', () => {
         amount,
         price: ticker!.lastPrice!,
         type: OrderTypeEnum.Market,
-        marketType: MarketType.Futures,
+        marketType: MarketTypeEnum.Futures,
       });
 
       logger.info({ result: openResult }, 'createOrder market open test result');
@@ -145,7 +145,7 @@ describeIfCredentials(ExchangeNameEnum.Bybit, 'Bybit Demo Integration', () => {
         amount,
         price: ticker!.lastPrice!,
         type: OrderTypeEnum.Market,
-        marketType: MarketType.Futures,
+        marketType: MarketTypeEnum.Futures,
         params: { reduceOnly: true },
       });
 
@@ -156,7 +156,7 @@ describeIfCredentials(ExchangeNameEnum.Bybit, 'Bybit Demo Integration', () => {
     test('createOrder() limit: opens and closes a position', async () => {
       const ticker = connector.getTicker(
         BYBIT_FUTURES_TEST_SYMBOL,
-        MarketType.Futures
+        MarketTypeEnum.Futures
       );
       expect(ticker).toBeDefined();
       const currentPrice = ticker!.lastPrice!;
@@ -168,7 +168,7 @@ describeIfCredentials(ExchangeNameEnum.Bybit, 'Bybit Demo Integration', () => {
         amount,
         price: currentPrice * 1.05,
         type: OrderTypeEnum.Limit,
-        marketType: MarketType.Futures,
+        marketType: MarketTypeEnum.Futures,
       });
 
       logger.info({ result: openResult }, 'createOrder limit open test result');
@@ -181,7 +181,7 @@ describeIfCredentials(ExchangeNameEnum.Bybit, 'Bybit Demo Integration', () => {
         amount,
         price: currentPrice * 0.95,
         type: OrderTypeEnum.Limit,
-        marketType: MarketType.Futures,
+        marketType: MarketTypeEnum.Futures,
         params: { reduceOnly: true },
       });
 
@@ -222,7 +222,6 @@ describeIfCredentials(ExchangeNameEnum.Bybit, 'Bybit Demo Integration', () => {
       const bybitMap = mapping.get(exchangeName)!;
       expect(bybitMap.size).toBe(BYBIT_FUTURES_TEST_SYMBOL_LIST.length);
 
-      // Unprefixed symbols should resolve to prefixed
       expect(bybitMap.get('FLOKIUSDT')).toBe('1000FLOKIUSDT');
       expect(bybitMap.get('MOGUSDT')).toBe('1000000MOGUSDT');
       expect(bybitMap.get('BTCUSDT')).toBe('BTCUSDT');
@@ -254,9 +253,8 @@ describeIfCredentials(ExchangeNameEnum.Bybit, 'Bybit Demo Integration', () => {
         exchangeConnectorByName,
         symbolMappingByExchange: mapping,
         stopBuyAfterPercent: 50,
-        orderVolumeUsdt: 100,
+        allowedVolumeByExchange: new Map([[exchangeName, 100]]),
         leverage: 5,
-        uniqueSymbolCount: 1,
       });
 
       logger.info(
@@ -269,7 +267,6 @@ describeIfCredentials(ExchangeNameEnum.Bybit, 'Bybit Demo Integration', () => {
     });
 
     test('enrichWithSpotFallback() falls back to spot for CFGUSDT', () => {
-      // CFGUSDT exists on spot but not on futures
       const mapping = OrderCalculator.resolveSymbolsForExchanges(
         [BYBIT_SPOT_FALLBACK_SYMBOL],
         exchangeConnectorByName
@@ -280,32 +277,29 @@ describeIfCredentials(ExchangeNameEnum.Bybit, 'Bybit Demo Integration', () => {
         exchangeConnectorByName,
         symbolMappingByExchange: mapping,
         stopBuyAfterPercent: 50,
-        orderVolumeUsdt: 100,
+        allowedVolumeByExchange: new Map([[exchangeName, 100]]),
         leverage: 5,
-        uniqueSymbolCount: 1,
       });
 
-      // No futures ticker for CFGUSDT — should have error
       expect(attributes[0].errorText).toBeDefined();
 
       const enriched = OrderCalculator.enrichWithSpotFallback({
         orderAttributesList: attributes,
         exchangeConnectorByName,
         stopBuyAfterPercent: 50,
-        orderVolumeUsdt: 100,
+        allowedVolumeByExchange: new Map([[exchangeName, 100]]),
         leverage: 5,
-        uniqueSymbolCount: 1,
       });
 
       logger.info({ enriched }, 'enrichWithSpotFallback test result');
       expect(enriched).toHaveLength(1);
-      expect(enriched[0].orderParams.marketType).toBe(MarketType.Spot);
+      expect(enriched[0].orderParams.marketType).toBe(MarketTypeEnum.Spot);
     });
 
     test(`calculateLimitOrderWithPriceAdjustment() adjusts price +${LIMIT_PRICE_ADJUSTMENT_PERCENT}%`, () => {
       const ticker = connector.getTicker(
         BYBIT_FUTURES_TEST_SYMBOL,
-        MarketType.Futures
+        MarketTypeEnum.Futures
       )!;
 
       const limitOrder = OrderCalculator.calculateLimitOrderWithPriceAdjustment(
@@ -315,7 +309,7 @@ describeIfCredentials(ExchangeNameEnum.Bybit, 'Bybit Demo Integration', () => {
           amount: calculateTestAmount(connector, BYBIT_FUTURES_TEST_SYMBOL, ticker.lastPrice!),
           price: ticker.lastPrice!,
           type: OrderTypeEnum.Market,
-          marketType: MarketType.Futures,
+          marketType: MarketTypeEnum.Futures,
         },
         LIMIT_PRICE_ADJUSTMENT_PERCENT,
         100,
@@ -333,7 +327,7 @@ describeIfCredentials(ExchangeNameEnum.Bybit, 'Bybit Demo Integration', () => {
     test('calculateCloseOrder() creates correct TP and SL orders', () => {
       const ticker = connector.getTicker(
         BYBIT_FUTURES_TEST_SYMBOL,
-        MarketType.Futures
+        MarketTypeEnum.Futures
       )!;
 
       const baseParams = {
@@ -342,7 +336,7 @@ describeIfCredentials(ExchangeNameEnum.Bybit, 'Bybit Demo Integration', () => {
         amount: calculateTestAmount(connector, BYBIT_FUTURES_TEST_SYMBOL, ticker.lastPrice!),
         price: ticker.lastPrice!,
         type: OrderTypeEnum.Market as OrderTypeEnum,
-        marketType: MarketType.Futures,
+        marketType: MarketTypeEnum.Futures,
       };
 
       const takeProfit = OrderCalculator.calculateCloseOrder(
@@ -370,20 +364,20 @@ describeIfCredentials(ExchangeNameEnum.Bybit, 'Bybit Demo Integration', () => {
       expect(stopLoss.triggerPrice).toBeLessThan(ticker.lastPrice!);
     });
 
-    test('setupLeverageAndMarginMode() completes without error', async () => {
+    test('setupLeverageAndMarginModeEnum() completes without error', async () => {
       const mapping = OrderCalculator.resolveSymbolsForExchanges(
         [BYBIT_FUTURES_TEST_SYMBOL],
         exchangeConnectorByName
       );
 
       await expect(
-        OrderCalculator.setupLeverageAndMarginMode({
+        OrderCalculator.setupLeverageAndMarginModeEnum({
           exchangeConnectorByName,
           symbolMappingByExchange: mapping,
           leverage: 5,
         })
       ).resolves.not.toThrow();
-      logger.info('setupLeverageAndMarginMode test completed');
+      logger.info('setupLeverageAndMarginModeEnum test completed');
     });
   });
 });
