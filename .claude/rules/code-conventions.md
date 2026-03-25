@@ -75,7 +75,7 @@ Logger использует Proxy для ленивой инициализаци
 
 ```bash
 yarn build
-# = rm -rf dist && yarn test --passWithNoTests && tsc -p tsconfig.json
+# = rm -rf dist && yarn lint && yarn test --passWithNoTests && tsc -p tsconfig.json
 ```
 
-Порядок: удаление dist → юнит-тесты → компиляция TypeScript.
+Порядок: удаление dist → ESLint → юнит-тесты → компиляция TypeScript.

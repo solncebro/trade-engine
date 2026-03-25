@@ -24,6 +24,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Upgraded `@solncebro/exchange-engine` from 0.4.0 to 0.6.0
 - `OrderCalculator.setupLeverageAndMarginModeEnum()` now calls `connector.futures.setLeverage()` / `connector.futures.setMarginMode()` directly
 - Documentation and project rules synced with v3 API: direct `connector.spot` / `connector.futures` usage and updated error-handling contract
+- `yarn build` now runs `yarn lint` before tests and `tsc`; `prepublishOnly` delegates to `yarn build` (lint is not duplicated)
 
 ### Fixed
 - Integration test runner now strips proxy environment variables to avoid `403` when the execution environment injects a local proxy.

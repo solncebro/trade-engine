@@ -5,7 +5,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Команды
 
 ```bash
-# Сборка (тесты → tsc)
+# Сборка (lint → тесты → tsc)
 yarn build
 
 # Юнит-тесты

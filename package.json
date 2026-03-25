@@ -13,7 +13,7 @@
     "./package.json": "./package.json"
   },
   "scripts": {
-    "build": "rm -rf dist && yarn test --passWithNoTests && tsc -p tsconfig.json",
+    "build": "rm -rf dist && yarn lint && yarn test --passWithNoTests && tsc -p tsconfig.json",
     "test": "jest",
     "test:watch": "jest --watch",
     "test:integration": "node scripts/runIntegrationJest.js --runInBand",
@@ -29,7 +29,7 @@
     "lint:fix": "eslint . --fix",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
-    "prepublishOnly": "yarn lint && yarn build"
+    "prepublishOnly": "yarn build"
   },
   "sideEffects": false,
   "files": [
