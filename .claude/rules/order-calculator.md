@@ -57,15 +57,15 @@ static enrichWithSpotFallback(args: {
 ### calculateLimitOrderWithPriceAdjustment
 
 ```typescript
-static calculateLimitOrderWithPriceAdjustment(
-  orderParams: OrderParams,
-  priceAdjustmentPercent: number, // +40 для buy, -40 для sell
-  orderVolumeUsdt: number,
-  leverage: number = 1
-): OrderParams
+static calculateLimitOrderWithPriceAdjustment(args: {
+  orderParams: OrderParams;
+  priceAdjustmentPercent: number; // +40 для buy, -40 для sell
+  orderVolumeUsdt: number;
+  leverage?: number; // по умолчанию 1
+}): OrderParams
 ```
 
-Корректирует цену на процент и пересчитывает `amount` по новой цене.
+Корректирует цену на процент и пересчитывает `amount` по новой цене. Для спот-ордеров объём делится на leverage.
 
 ### calculateCloseOrder
 
@@ -91,7 +91,7 @@ static setupLeverageAndMarginModeEnum(args: {
 }): Promise<void>
 ```
 
-Устанавливает `leverage` и `MarginMode.Isolated` для всех символов на всех биржах. Ошибки логируются, но не прерывают выполнение (silent fail).
+Устанавливает `leverage` и `MarginMode.Isolated` для всех символов на всех биржах через `connector.futures.setLeverage()` и `connector.futures.setMarginMode()`. Ошибки логируются, но не прерывают выполнение (silent fail).
 
 ## Внутренние методы
 

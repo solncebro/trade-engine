@@ -5,6 +5,32 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.0] - 2026-03-24
+
+### Breaking Changes
+- **ExchangeConnector**: removed wrapper methods — consumers now use `connector.spot.*` / `connector.futures.*` directly:
+  - Removed: `fetchPosition()`, `setLeverage()`, `setMarginMode()`, `isTradeWebSocketConnected()`, `connectTradeWebSocket()`, `getWebSocketConnectionInfoList()`, `fetchBalance()`, `fetchOrderHistory()`, `getMinOrderQty()`, `getMinNotional()`, `fetchPositionMode()`
+  - These methods no longer swallow errors internally — callers handle exceptions via try/catch
+- **ExchangeConnector.resolveSymbolWithPrefix()**: now requires `marketType` parameter — `resolveSymbolWithPrefix(symbol, marketType)`
+- **OrderCalculator.calculateLimitOrderWithPriceAdjustment()**: changed from positional parameters to a single `CalculateLimitOrderWithPriceAdjustmentArgs` object
+- Removed re-exports: `normalizeBinanceKlineWebSocketMessage`, `normalizeBybitKlineWebSocketMessage`
+- Removed raw type re-exports: `BinanceContinuousKlineMessageRaw`, `BinanceWebSocketKlineRaw`, `BybitKlineMessageRaw`, `BybitPublicTradeDataRaw`, `BybitTradeMessageRaw`, `BybitWebSocketKlineRaw`, `BybitWebSocketMessageRaw`
+
+### Added
+- `ExchangeConnector.spot` / `ExchangeConnector.futures` getters for direct `ExchangeClient` access
+- New type re-exports from `@solncebro/exchange-engine`: `AccountBalances`, `ClosedPnl`, `CreateOrderWebSocketArgs`, `FeeRate`, `FetchAllKlinesOptions`, `Income`, `MarkPrice`, `ModifyOrderArgs`, `OpenInterest`, `OrderBook`, `OrderBookLevel`, `PublicTrade`, `TradeSymbol`, `TradeSymbolBySymbol`, `TradeSymbolFilter`, `WebSocketConnectionInfo`
+
+### Changed
+- Upgraded `@solncebro/exchange-engine` from 0.4.0 to 0.6.0
+- `OrderCalculator.setupLeverageAndMarginModeEnum()` now calls `connector.futures.setLeverage()` / `connector.futures.setMarginMode()` directly
+- Documentation and project rules synced with v3 API: direct `connector.spot` / `connector.futures` usage and updated error-handling contract
+
+### Fixed
+- Integration test runner now strips proxy environment variables to avoid `403` when the execution environment injects a local proxy.
+- `ExchangeConnector.createOrder()` fixes for Binance demo flows:
+  - For `OrderTypeEnum.Market`, `price` is not forwarded to the exchange order-creation params.
+  - For Binance futures, `positionSide` is not sent to avoid conflicts with one-way position settings.
+
 ## [2.2.0] - 2026-03-14
 
 ### Changed
@@ -96,6 +122,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Utility functions: `isOrderSuccessful`, `isSpot`, `normalizeSymbol`, `formatTimestamp`, `createLogger`
 - Error-as-value pattern for all trading operations
 
+[3.0.0]: https://github.com/solncebro/trade-engine/releases/tag/v3.0.0
+[2.2.0]: https://github.com/solncebro/trade-engine/releases/tag/v2.2.0
 [2.1.1]: https://github.com/solncebro/trade-engine/releases/tag/v2.1.1
 [2.1.0]: https://github.com/solncebro/trade-engine/releases/tag/v2.1.0
 [2.0.0]: https://github.com/solncebro/trade-engine/releases/tag/v2.0.0

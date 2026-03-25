@@ -14,6 +14,8 @@
 
 **Jest 30**: использовать `--testPathPatterns` (множественное число), не `--testPathPattern`.
 
+Интеграционные команды запускаются через скрипт `scripts/runIntegrationJest.js`, который очищает proxy-переменные окружения (`HTTP_PROXY/HTTPS_PROXY/ALL_PROXY/GIT_HTTP_PROXY/GIT_HTTPS_PROXY/SOCKS_PROXY/SOCKS5_PROXY`) и lowercase-варианты (`http_proxy/https_proxy/all_proxy/socks_proxy/socks5_proxy`). Это исключает ситуацию, когда запросы к биржам идут через локальный proxy sandbox и получают `403`.
+
 ## Команды
 
 ```bash
@@ -133,8 +135,11 @@ const amount = calculateTestAmount(connector, symbol, ticker.lastPrice);
 
 ## Принцип обработки ошибок в тестах
 
-Торговые ошибки **не бросают исключения**. Проверять через:
+**`createOrder()`** возвращает `errorText` вместо исключения. Проверять через:
 - `isOrderSuccessful(result)` — `!!result.orderId`
 - `result.errorText` — текст ошибки
-- `setLeverage()` / `setMarginMode()` → `boolean`
-- `fetchPosition()` → `null` при ошибке
+
+**Прямые вызовы клиента** (`connector.futures.*`, `connector.spot.*`) могут бросать исключения — потребитель оборачивает в try/catch:
+- `connector.futures.setLeverage()` — throws при невалидном leverage
+- `connector.futures.setMarginMode()` — throws при ошибке
+- `connector.futures.fetchPosition()` — throws при несуществующем символе

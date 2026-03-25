@@ -13,6 +13,7 @@ import { ExchangeConnector } from '../../src/services/exchangeConnector';
 import {
   ExchangeNameEnum,
   MarketTypeEnum,
+  OrderResult,
   OrderSideEnum,
   OrderTypeEnum,
 } from '../../src/types';
@@ -89,7 +90,7 @@ describeIfCredentials(ExchangeNameEnum.Bybit, 'Bybit Multiple Symbols Integratio
 
     test('all symbols have available tickers in market', () => {
       BYBIT_FUTURES_TEST_SYMBOL_LIST.forEach(symbol => {
-        const resolvedSymbol = connector.resolveSymbolWithPrefix(symbol);
+        const resolvedSymbol = connector.resolveSymbolWithPrefix(symbol, MarketTypeEnum.Futures);
         const ticker = connector.getTicker(resolvedSymbol, MarketTypeEnum.Futures);
         expect(ticker).toBeDefined();
         expect(ticker!.lastPrice).toBeGreaterThan(0);
@@ -195,7 +196,7 @@ describeIfCredentials(ExchangeNameEnum.Bybit, 'Bybit Multiple Symbols Integratio
 
       if (!isOrderSuccessful(openResult)) return;
 
-      const positionOpen = await connector.fetchPosition(firstSymbol);
+      const positionOpen = await connector.futures.fetchPosition(firstSymbol);
 
       const closeResult = await connector.createOrder({
         symbol: firstSymbol,
@@ -208,7 +209,7 @@ describeIfCredentials(ExchangeNameEnum.Bybit, 'Bybit Multiple Symbols Integratio
 
       expect(isOrderSuccessful(closeResult)).toBe(true);
 
-      const positionClosed = await connector.fetchPosition(firstSymbol);
+      const positionClosed = await connector.futures.fetchPosition(firstSymbol);
 
       expect(positionOpen !== null || positionClosed !== null).toBe(true);
     });
@@ -282,15 +283,20 @@ describeIfCredentials(ExchangeNameEnum.Binance, 'Binance Multiple Symbols Integr
         leverage: 5,
       });
 
-      const orderPromiseList = symbolToTradeList.map(symbol => {
-        const resolvedSymbol = connector.resolveSymbolWithPrefix(symbol);
+      const openResultList: OrderResult[] = [];
+
+      for (const symbol of symbolToTradeList) {
+        const resolvedSymbol = connector.resolveSymbolWithPrefix(
+          symbol,
+          MarketTypeEnum.Futures
+        );
         const ticker = connector.getTicker(resolvedSymbol, MarketTypeEnum.Futures);
 
         if (!ticker?.lastPrice) {
           throw new Error(`No ticker for ${symbol}`);
         }
 
-        return connector.createOrder({
+        const openResult = await connector.createOrder({
           symbol: resolvedSymbol,
           side: OrderSideEnum.Buy,
           amount: calculateTestAmount(connector, resolvedSymbol, ticker.lastPrice),
@@ -298,23 +304,26 @@ describeIfCredentials(ExchangeNameEnum.Binance, 'Binance Multiple Symbols Integr
           type: OrderTypeEnum.Market,
           marketType: MarketTypeEnum.Futures,
         });
-      });
 
-      const resultList = await Promise.all(orderPromiseList);
+        openResultList.push(openResult);
+      }
 
-      resultList.forEach(result => {
+      openResultList.forEach(result => {
         expect(isOrderSuccessful(result)).toBe(true);
       });
 
-      const closePromiseList = symbolToTradeList.map(symbol => {
-        const resolvedSymbol = connector.resolveSymbolWithPrefix(symbol);
+      for (const symbol of symbolToTradeList) {
+        const resolvedSymbol = connector.resolveSymbolWithPrefix(
+          symbol,
+          MarketTypeEnum.Futures
+        );
         const ticker = connector.getTicker(resolvedSymbol, MarketTypeEnum.Futures);
 
         if (!ticker?.lastPrice) {
           throw new Error(`No ticker for closing ${symbol}`);
         }
 
-        return connector.createOrder({
+        const closeResult = await connector.createOrder({
           symbol: resolvedSymbol,
           side: OrderSideEnum.Sell,
           amount: calculateTestAmount(connector, resolvedSymbol, ticker.lastPrice),
@@ -322,13 +331,9 @@ describeIfCredentials(ExchangeNameEnum.Binance, 'Binance Multiple Symbols Integr
           type: OrderTypeEnum.Market,
           marketType: MarketTypeEnum.Futures,
         });
-      });
 
-      const closeResultList = await Promise.all(closePromiseList);
-
-      closeResultList.forEach(result => {
-        expect(isOrderSuccessful(result)).toBe(true);
-      });
+        expect(isOrderSuccessful(closeResult)).toBe(true);
+      }
     });
   });
 });

@@ -60,7 +60,7 @@ npx jest --config jest.integration.config.js --runInBand --testPathPatterns=<pat
 
 ### Ключевые модули
 
-- **`src/services/exchangeConnector.ts`** — обёртка над `@solncebro/exchange-engine`. Подключения, тикеры, резолвинг символов, исполнение ордеров. → [подробнее](.claude/rules/exchange-connector.md)
+- **`src/services/exchangeConnector.ts`** — обёртка над `@solncebro/exchange-engine`. Подключения, тикеры, резолвинг символов, исполнение ордеров. Прямой доступ к клиентам через `connector.spot` / `connector.futures`. → [подробнее](.claude/rules/exchange-connector.md)
 - **`src/core/orderCalculator.ts`** — статические методы расчёта ордеров, маппинг символов, кредитное плечо, spot fallback. → [подробнее](.claude/rules/order-calculator.md)
 - **`src/core/orderExecutor.ts`** — базовый класс исполнения ордеров с TP/SL и аварийным выходом.
 - **`src/services/telegram*.ts`** — Telegram-бот (Telegraf) + MTProto-слушатель. → [подробнее](.claude/rules/services.md)
@@ -68,7 +68,7 @@ npx jest --config jest.integration.config.js --runInBand --testPathPatterns=<pat
 
 ### Ключевые принципы
 
-- **Ошибки — не исключения**: торговые операции возвращают `errorText` в результате, не бросают. Проверка через `isOrderSuccessful(result)`.
+- **Ошибки — не исключения**: `createOrder()` возвращает `errorText` в результате, не бросает. Проверка через `isOrderSuccessful(result)`. Прямые вызовы `connector.spot`/`connector.futures` могут бросать исключения — потребитель обрабатывает их сам.
 - **Demo trading**: `ExchangeConfig.isDemoMode = true`, никаких ручных URL-переопределений.
 - **Биржи**: `@solncebro/exchange-engine` (не CCXT напрямую). Bybit: WebSocket для ордеров.
 - **Map-коллекции**: `SymbolMappingByExchange` и `ExchangeConnectorByName` — это `Map`, не объекты.
@@ -79,4 +79,5 @@ npx jest --config jest.integration.config.js --runInBand --testPathPatterns=<pat
 - Тесты автоматически пропускаются при отсутствии ключей (`describeIfCredentials()`)
 - Хелперы: `tests/integration/helpers/` — конфиги, символы, WS-эмулятор
 - Всегда `--runInBand` (последовательно), таймаут 180 сек
+- Интеграционные команды запускаются через `scripts/runIntegrationJest.js`, который очищает proxy-переменные окружения (`HTTP_PROXY/HTTPS_PROXY/ALL_PROXY/GIT_HTTP_PROXY/GIT_HTTPS_PROXY/SOCKS_PROXY/SOCKS5_PROXY` и lowercase-варианты)
 - → [подробнее](.claude/rules/testing.md)

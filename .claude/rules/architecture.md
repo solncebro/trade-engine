@@ -49,7 +49,7 @@
 | Тикеры | Кэш `Map<string, Ticker>`, ключ `"marketType:symbol"`, обновление каждые 30 сек |
 | Символы | `resolveSymbolWithPrefix()` проверяет префиксы [10, 100, 1000, 10000, 100000, 1000000] |
 | Ордера | `createOrder()` через WebSocket (`createOrderWebSocket`) |
-| Позиции | `fetchPosition()`, `setLeverage()`, `setMarginMode()` |
+| Прямой доступ | `spot` / `futures` геттеры → `ExchangeClient` напрямую |
 | Аккаунт | `getAccountId()` — первые 16 символов SHA256-хеша API-ключа |
 
 ### 4. Интеграции

@@ -4,14 +4,11 @@
 
 ## Реэкспорты из exchange-engine
 
-Из `@solncebro/exchange-engine` (0.5.0+) реэкспортируются:
+Из `@solncebro/exchange-engine` (0.6.0+) реэкспортируются:
 - **Constants**: `MARKET_TYPE_LIST`
 - **Enums**: `ExchangeNameEnum`, `MarginModeEnum`, `MarketTypeEnum`, `OrderSideEnum`, `OrderTypeEnum`, `PositionModeEnum`, `PositionSideEnum`, `TimeInForceEnum`, `TradeSymbolTypeEnum`, `WebSocketConnectionTypeEnum`, `WorkingTypeEnum`
-- **Types**: `ExchangeClient`, `ExchangeConfig`, `Position`, `Ticker`, `TickerBySymbol`, `Order`, `Balance`, `BalanceByAsset`, `TradeSymbol`, `TradeSymbolBySymbol`, `TradeSymbolFilter`, `WebSocketConnectionInfo`, `FundingInfo`, `FundingRateHistory`, `Kline`, `KlineInterval`, `KlineHandler`, `FetchPageWithLimitArgs`, `SubscribeKlinesArgs`
-- **Bybit raw types**: `BybitWebSocketKlineRaw`, `BybitPublicTradeDataRaw`, `BybitWebSocketMessageRaw`, `BybitKlineMessageRaw`, `BybitTradeMessageRaw`
-- **Binance raw types**: `BinanceWebSocketKlineRaw`, `BinanceContinuousKlineMessageRaw`
+- **Types**: `AccountBalances`, `Balance`, `BalanceByAsset`, `ClosedPnl`, `CreateOrderWebSocketArgs`, `ExchangeClient`, `ExchangeConfig`, `FeeRate`, `FetchAllKlinesOptions`, `FetchPageWithLimitArgs`, `FundingInfo`, `FundingRateHistory`, `Income`, `Kline`, `KlineHandler`, `KlineInterval`, `MarkPrice`, `ModifyOrderArgs`, `OpenInterest`, `Order`, `OrderBook`, `OrderBookLevel`, `Position`, `PublicTrade`, `SubscribeKlinesArgs`, `Ticker`, `TickerBySymbol`, `TradeSymbol`, `TradeSymbolBySymbol`, `TradeSymbolFilter`, `WebSocketConnectionInfo`
 - **Classes**: `ExchangeError`
-- **Functions**: `normalizeBybitKlineWebSocketMessage()`, `normalizeBinanceKlineWebSocketMessage()`
 
 ## Основные типы
 
@@ -25,30 +22,34 @@ interface OrderParams {
   side: OrderSideEnum;       // Buy | Sell
   amount: number;
   price: number;
-  type: OrderTypeEnum;       // Market | Limit
+  type: OrderTypeEnum;       // Market | Limit | StopMarket | TakeProfitMarket | Stop | TakeProfit | TrailingStop
   marketType?: MarketTypeEnum;
   triggerPrice?: number;     // для SL ордеров
   triggerDirection?: 1 | 2;  // 1 = рост, 2 = падение
   params?: Record<string, unknown>; // доп. параметры биржи
 }
 
+interface EntityWithOrderId {
+  orderId?: string;
+}
+
+interface EntityWithErrorText {
+  errorText?: string;
+}
+
 interface OrderAttributes extends EntityWithErrorText {
   orderParams: OrderParams;
   exchangeName: ExchangeNameEnum;
   orderVolumeUsdt?: number; // расчётный объём в USDT для символа
-  errorText?: string;     // ошибка вместо исключения
 }
 
 interface OrderResult extends OrderAttributes, EntityWithOrderId {
-  orderId?: string;
   actualExchangeParams?: ExchangeOrderParams;
   responseData?: ExchangeResponseData;
 }
 
-interface CloseOrderResult {
-  orderId?: string;
+interface CloseOrderResult extends EntityWithErrorText, EntityWithOrderId {
   price?: number;
-  errorText?: string;
 }
 ```
 
@@ -162,6 +163,38 @@ interface ExtensibleRecord {
 interface Notifiable {
   onNotify: (message: string, isLogOnly?: boolean) => void | Promise<void>;
   onError: (customMessage: string, error: unknown) => void | Promise<void>;
+}
+```
+
+### Исполнение ордеров (`orders.ts`)
+
+```typescript
+interface CreateOrderArgs {
+  exchangeConnector: ExchangeConnector;
+  orderParams: OrderParams;
+}
+
+interface CreateCloseOrderArgs {
+  exchangeConnector: ExchangeConnector;
+  orderParams: OrderParams;
+  priceShiftPercent: number;
+  isTakeProfit: boolean;
+  isEmergencyExitPosition?: boolean;
+}
+```
+
+### Маппинг символов (`orders.ts`)
+
+```typescript
+interface SignalRejectionArgs {
+  message: string;
+  logData: Record<string, unknown>;
+}
+
+interface SymbolMappingResult {
+  exchangeName: string;
+  originalSymbol: string;
+  resolvedSymbol: string;
 }
 ```
 

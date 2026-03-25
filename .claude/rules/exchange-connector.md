@@ -4,7 +4,7 @@
 
 ## Зависимость
 
-Использует `@solncebro/exchange-engine` 0.5.0+ (не CCXT напрямую). Все низкоуровневые операции делегируются этой библиотеке.
+Использует `@solncebro/exchange-engine` 0.6.0+ (не CCXT напрямую). Все низкоуровневые операции делегируются этой библиотеке.
 
 ## Инициализация
 
@@ -26,6 +26,89 @@ await connector.initialize();
 - **Bybit**: `https://api-demo.bybit.com` (REST), `wss://stream-demo.bybit.com/v5/trade` (WebSocket)
 
 **Никаких ручных URL-переопределений.** Не использовать sandbox mode CCXT.
+
+## Прямой доступ к клиентам
+
+ExchangeConnector предоставляет прямой доступ к `ExchangeClient` через геттеры:
+
+```typescript
+// Spot-клиент
+connector.spot.fetchBalances();   // → AccountBalances
+connector.spot.fetchPosition(symbol);
+
+// Futures-клиент
+connector.futures.setLeverage(5, 'BTCUSDT');
+connector.futures.setMarginMode(MarginModeEnum.Isolated, 'BTCUSDT');
+connector.futures.fetchPosition('BTCUSDT');
+connector.futures.fetchOrderHistory('BTCUSDT');
+
+// Динамический выбор по marketType
+connector.getClient(marketType).amountToPrecision(symbol, amount);
+```
+
+Потребители работают с `ExchangeClient` напрямую — без промежуточных обёрток. Обработка ошибок — на стороне потребителя.
+
+### Полный справочник методов ExchangeClient
+
+Все методы доступны через `connector.spot` / `connector.futures`:
+
+**Символы и тикеры:**
+- `loadTradeSymbols()` — загрузка торговых символов
+- `fetchTickers()` — получение всех тикеров
+- `watchTickers()` — подписка на тикеры через WebSocket
+
+**Свечи:**
+- `fetchKlines(symbol, interval, since?, limit?)` — получение свечей
+- `fetchAllKlines(options: FetchAllKlinesOptions)` — получение всех свечей с пагинацией
+- `subscribeKlines(args: SubscribeKlinesArgs)` — подписка на свечи через WebSocket
+- `unsubscribeKlines(symbol, interval)` — отписка от свечей
+
+**Баланс:**
+- `fetchBalances()` → `AccountBalances` — баланс аккаунта
+
+**Рыночные данные:**
+- `fetchOrderBook(symbol)` → `OrderBook` — стакан ордеров
+- `fetchTrades(symbol)` → `PublicTrade[]` — публичные сделки
+- `fetchMarkPrice(symbol)` → `MarkPrice` — mark price
+- `fetchOpenInterest(symbol)` → `OpenInterest` — открытый интерес
+
+**Позиции и маржа:**
+- `fetchPosition(symbol)` → `Position` — текущая позиция
+- `fetchPositionMode()` → `PositionModeEnum` — режим позиций
+- `setPositionMode(mode)` — установка режима позиций
+- `setLeverage(leverage, symbol)` — установка кредитного плеча
+- `setMarginMode(mode, symbol)` — установка маржинального режима
+
+**Финансирование:**
+- `fetchFundingRateHistory(symbol)` → `FundingRateHistory[]` — история ставок финансирования
+- `fetchFundingInfo(symbol)` → `FundingInfo` — текущая информация о финансировании
+
+**Ордера:**
+- `createOrderWebSocket(args: CreateOrderWebSocketArgs)` — создание ордера через WebSocket
+- `cancelOrder(orderId, symbol)` — отмена ордера
+- `getOrder(orderId, symbol)` → `Order` — получение ордера
+- `fetchOpenOrders(symbol)` → `Order[]` — открытые ордера
+- `fetchOrderHistory(symbol)` → `Order[]` — история ордеров
+- `modifyOrder(args: ModifyOrderArgs)` — модификация ордера
+- `cancelAllOrders(symbol)` — отмена всех ордеров
+- `createBatchOrders(orderList)` — пакетное создание ордеров
+- `cancelBatchOrders(orderIdList, symbol)` — пакетная отмена ордеров
+
+**Аккаунт:**
+- `fetchFeeRate(symbol)` → `FeeRate` — комиссии
+- `fetchIncome(symbol)` → `Income[]` — доходы/расходы
+- `fetchClosedPnl(symbol)` → `ClosedPnl[]` — закрытые PnL
+
+**Precision:**
+- `amountToPrecision(symbol, amount)` → `string` — округление количества
+- `priceToPrecision(symbol, price)` → `string` — округление цены
+- `getMinOrderQty(symbol)` → `number` — минимальный объём ордера
+- `getMinNotional(symbol)` → `number` — минимальный notional
+
+**WebSocket:**
+- `isTradeWebSocketConnected()` → `boolean` — статус WS-соединения
+- `connectTradeWebSocket()` — подключение торгового WebSocket
+- `getWebSocketConnectionInfoList()` → `WebSocketConnectionInfo[]` — информация о WS-соединениях
 
 ## Тикеры
 
@@ -58,7 +141,9 @@ const result = await connector.createOrder({
 ```
 
 Особенности `buildCreateOrderArgs`:
-- **Futures**: устанавливает `positionSide` (Long для Buy, Short для Sell)
+- **Futures (кроме Binance)**: устанавливает `positionSide` (Long для Buy, Short для Sell)
+- **Binance Futures**: `positionSide` не передаётся (избегаем конфликта с one-way настройками аккаунта)
+- **Market**: поле `price` в `OrderParams` может передаваться для удобства, но для `OrderTypeEnum.Market` оно не форвардится в параметры создания ордера (в том числе для `Binance` market-ордеров)
 - **Все биржи**: `timeInForce` — `IOC` для Market, `GTC` для Limit
 - **reduceOnly**: если `orderParams.params.reduceOnly = true`
 - **Stop Loss**: `triggerPrice` (через `stopPrice`) и `triggerDirection` если указаны в `orderParams`
@@ -67,38 +152,23 @@ const result = await connector.createOrder({
 
 | Метод | Возвращает | Описание |
 |-------|-----------|----------|
+| `get spot` | `ExchangeClient` | Прямой доступ к spot-клиенту |
+| `get futures` | `ExchangeClient` | Прямой доступ к futures-клиенту |
 | `initialize()` | `Promise<void>` | Загрузка символов, старт тикеров |
 | `resolveSymbolWithPrefix(symbol, marketType)` | `string` | Поиск символа с префиксом |
 | `getTicker(symbol, marketType)` | `Ticker \| undefined` | Текущий тикер из кэша |
 | `createOrder(params)` | `Promise<OrderResult>` | Создание ордера |
-| `fetchPosition(symbol, marketType)` | `Promise<Position \| null>` | Текущая позиция |
-| `setLeverage(symbol, leverage)` | `Promise<boolean>` | Установка кредитного плеча (только futures) |
-| `setMarginMode(symbol, mode)` | `Promise<boolean>` | Установка маржинального режима (только futures) |
 | `getFuturesSymbols()` | `Promise<string[]>` | Список фьючерсных символов |
 | `getSpotSymbols()` | `Promise<string[]>` | Список спотовых символов |
-| `getClient(marketType)` | `ExchangeClient` | Низкоуровневый клиент биржи |
-| `isTradeWebSocketConnected(marketType)` | `boolean` | Статус Trade WebSocket |
-| `connectTradeWebSocket(marketType)` | `Promise<void>` | Подключение Trade WebSocket |
+| `getClient(marketType)` | `ExchangeClient` | Динамический выбор клиента по marketType |
 | `getExchangeName()` | `ExchangeNameEnum` | Имя биржи |
 | `getAccountId()` | `string` | SHA256 хеш API-ключа (16 символов) |
-| `getWebSocketConnectionInfoList()` | `WebSocketConnectionInfo[]` | Информация обо всех WS-соединениях |
-| `fetchBalance(marketType)` | `Promise<BalanceByAsset \| null>` | Баланс аккаунта |
-| `fetchOrderHistory(symbol, marketType, options?)` | `Promise<Order[]>` | История ордеров по символу |
-| `getMinOrderQty(symbol, marketType)` | `number` | Минимальный объём ордера |
-| `getMinNotional(symbol, marketType)` | `number` | Минимальный notional ордера |
-| `fetchPositionMode()` | `Promise<PositionModeEnum \| null>` | Режим позиций (Hedge/OneWay) |
 | `disconnect()` | `Promise<void>` | Остановка тикеров, закрытие соединения |
 
 ## Обработка ошибок
 
-Ошибки торговых операций **не бросают исключения**. Вместо этого:
-- `createOrder()` → `OrderResult.errorText`
-- `setLeverage()` / `setMarginMode()` → `false`
-- `fetchPosition()` → `null`
-- `fetchBalance()` → `null`
-- `fetchPositionMode()` → `null`
-- `fetchOrderHistory()` → `[]`
-- `getWebSocketConnectionInfoList()` → `[]`
-- `getMinOrderQty()` / `getMinNotional()` → `0`
+`createOrder()` — единственный метод с внутренним try/catch. Возвращает `OrderResult.errorText` вместо исключения.
 
-Это ключевой принцип: код вызывающей стороны проверяет `isOrderSuccessful(result)` или наличие `errorText`.
+Все остальные операции (позиции, баланс, leverage, margin mode, ордерная книга и т.д.) выполняются через `connector.spot` / `connector.futures` напрямую. Обработка ошибок — ответственность потребителя.
+
+Это ключевой принцип: код вызывающей стороны проверяет `isOrderSuccessful(result)` для ордеров или оборачивает прямые вызовы клиента в try/catch.

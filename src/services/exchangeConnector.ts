@@ -1,7 +1,7 @@
 import * as crypto from 'crypto';
 
-import { Exchange as ExchangeInstance, ExchangeNameEnum, MarginModeEnum, OrderSideEnum, PositionModeEnum, PositionSideEnum, TimeInForceEnum, TradeSymbolTypeEnum } from '@solncebro/exchange-engine';
-import type { BalanceByAsset, CreateOrderWebSocketArgs, ExchangeClient, FetchPageWithLimitArgs, Order, Position, Ticker, TickerBySymbol, WebSocketConnectionInfo } from '@solncebro/exchange-engine';
+import { Exchange as ExchangeInstance, ExchangeNameEnum, OrderSideEnum, PositionSideEnum, TimeInForceEnum, TradeSymbolTypeEnum } from '@solncebro/exchange-engine';
+import type { CreateOrderWebSocketArgs, ExchangeClient, Ticker, TickerBySymbol } from '@solncebro/exchange-engine';
 
 import { logger } from '../core/logger';
 import {
@@ -34,6 +34,14 @@ export class ExchangeConnector {
     });
   }
 
+  public get spot(): ExchangeClient {
+    return this.exchange.spot;
+  }
+
+  public get futures(): ExchangeClient {
+    return this.exchange.futures;
+  }
+
   public async initialize(): Promise<void> {
     try {
       await this.exchange.futures.loadTradeSymbols();
@@ -61,6 +69,7 @@ export class ExchangeConnector {
       if (!this.isWatchingTickers) {
         clearInterval(this.tickerUpdateIntervalId!);
         this.tickerUpdateIntervalId = null;
+
         return;
       }
       await this.updateTickers();
@@ -69,22 +78,22 @@ export class ExchangeConnector {
 
   private async updateTickers(): Promise<void> {
     try {
-      const [futuresTickers, spotTickers] = await Promise.all([
+      const [futuresTickerBySymbol, spotTickerBySymbol] = await Promise.all([
         this.exchange.futures.fetchTickers(),
         this.exchange.spot.fetchTickers(),
       ]);
-      this.processTickerList(futuresTickers, MarketTypeEnum.Futures);
-      this.processTickerList(spotTickers, MarketTypeEnum.Spot);
+      this.processTickerList(futuresTickerBySymbol, MarketTypeEnum.Futures);
+      this.processTickerList(spotTickerBySymbol, MarketTypeEnum.Spot);
     } catch (error) {
       logger.warn({ error }, 'Failed to update tickers');
     }
   }
 
   private processTickerList(
-    tickers: TickerBySymbol,
+    tickerBySymbol: TickerBySymbol,
     marketType: MarketTypeEnum
   ): void {
-    for (const [symbol, ticker] of tickers) {
+    for (const [symbol, ticker] of tickerBySymbol) {
       const normalizedSymbol = normalizeSymbol(symbol);
       const tickerKey = this.getTickerKey(normalizedSymbol, marketType);
       this.tickersByMarketTypeAndSymbol.set(tickerKey, ticker);
@@ -198,10 +207,16 @@ export class ExchangeConnector {
       type: orderParams.type,
       side: orderParams.side,
       amount: client.amountToPrecision(orderParams.symbol, orderParams.amount),
-      price: orderParams.price ? client.priceToPrecision(orderParams.symbol, orderParams.price) : 0,
     };
 
-    if (!isSpot(orderParams.marketType)) {
+    if (orderParams.type !== OrderTypeEnum.Market) {
+      args.price = client.priceToPrecision(
+        orderParams.symbol,
+        orderParams.price
+      );
+    }
+
+    if (!isSpot(orderParams.marketType) && this.exchangeName !== ExchangeNameEnum.Binance) {
       args.positionSide = orderParams.side === OrderSideEnum.Buy
         ? PositionSideEnum.Long
         : PositionSideEnum.Short;
@@ -229,55 +244,11 @@ export class ExchangeConnector {
     return args;
   }
 
-  public async fetchPosition(
-    symbol: string,
-    marketType: MarketTypeEnum
-  ): Promise<Position | null> {
-    try {
-      const position = await this.getClient(marketType).fetchPosition(symbol);
-
-      return position;
-    } catch (error) {
-      logger.error(
-        { error, symbol, exchange: this.exchangeName },
-        'Failed to fetch position'
-      );
-
-      return null;
-    }
-  }
-
-  public async setLeverage(
-    symbol: string,
-    leverage: number
-  ): Promise<boolean> {
-    try {
-      await this.exchange.futures.setLeverage(leverage, symbol);
-
-      return true;
-    } catch {
-      return false;
-    }
-  }
-
-  public async setMarginMode(
-    symbol: string,
-    marginMode: MarginModeEnum
-  ): Promise<boolean> {
-    try {
-      await this.exchange.futures.setMarginMode(marginMode, symbol);
-
-      return true;
-    } catch {
-      return false;
-    }
-  }
-
   public async getFuturesSymbols(): Promise<string[]> {
     try {
-      const tradeSymbols = this.exchange.futures.tradeSymbols;
+      const tradeSymbolBySymbol = this.exchange.futures.tradeSymbols;
 
-      const filteredSymbolList = [...tradeSymbols.values()]
+      const filteredSymbolList = [...tradeSymbolBySymbol.values()]
         .filter(m => m.isActive && (m.type === TradeSymbolTypeEnum.Swap || m.type === TradeSymbolTypeEnum.Future) && m.isLinear)
         .map(m =>
           this.exchangeName === ExchangeNameEnum.Bybit ? normalizeSymbol(m.symbol) : m.symbol
@@ -305,9 +276,9 @@ export class ExchangeConnector {
 
   public async getSpotSymbols(): Promise<string[]> {
     try {
-      const tradeSymbols = this.exchange.spot.tradeSymbols;
+      const tradeSymbolBySymbol = this.exchange.spot.tradeSymbols;
 
-      const filteredSymbolList = [...tradeSymbols.values()]
+      const filteredSymbolList = [...tradeSymbolBySymbol.values()]
         .filter(m => m.isActive && m.type === TradeSymbolTypeEnum.Spot)
         .map(m =>
           this.exchangeName === ExchangeNameEnum.Bybit ? normalizeSymbol(m.symbol) : m.symbol
@@ -341,14 +312,6 @@ export class ExchangeConnector {
     return this.exchangeName;
   }
 
-  public isTradeWebSocketConnected(marketType: MarketTypeEnum): boolean {
-    return this.getClient(marketType).isTradeWebSocketConnected();
-  }
-
-  public async connectTradeWebSocket(marketType: MarketTypeEnum): Promise<void> {
-    await this.getClient(marketType).connectTradeWebSocket();
-  }
-
   public getAccountId(): string {
     const apiKey = this.exchange.futures.apiKey;
 
@@ -364,99 +327,6 @@ export class ExchangeConnector {
       .digest('hex');
 
     return hash.substring(0, 16);
-  }
-
-  public getWebSocketConnectionInfoList(): WebSocketConnectionInfo[] {
-    try {
-      return this.exchange.getWebSocketConnectionInfoList();
-    } catch (error) {
-      logger.error(
-        { error, exchange: this.exchangeName },
-        'Failed to get WebSocket connection info list'
-      );
-
-      return [];
-    }
-  }
-
-  public async fetchBalance(
-    marketType: MarketTypeEnum
-  ): Promise<BalanceByAsset | null> {
-    try {
-      return await this.getClient(marketType).fetchBalance();
-    } catch (error) {
-      logger.error(
-        { error, exchange: this.exchangeName, marketType },
-        'Failed to fetch balance'
-      );
-
-      return null;
-    }
-  }
-
-  public async fetchOrderHistory(
-    symbol: string,
-    marketType: MarketTypeEnum,
-    options?: FetchPageWithLimitArgs
-  ): Promise<Order[]> {
-    try {
-      return await this.getClient(marketType).fetchOrderHistory(
-        symbol,
-        options
-      );
-    } catch (error) {
-      logger.error(
-        { error, symbol, exchange: this.exchangeName, marketType },
-        'Failed to fetch order history'
-      );
-
-      return [];
-    }
-  }
-
-  public getMinOrderQty(
-    symbol: string,
-    marketType: MarketTypeEnum
-  ): number {
-    try {
-      return this.getClient(marketType).getMinOrderQty(symbol);
-    } catch (error) {
-      logger.error(
-        { error, symbol, exchange: this.exchangeName, marketType },
-        'Failed to get min order qty'
-      );
-
-      return 0;
-    }
-  }
-
-  public getMinNotional(
-    symbol: string,
-    marketType: MarketTypeEnum
-  ): number {
-    try {
-      return this.getClient(marketType).getMinNotional(symbol);
-    } catch (error) {
-      logger.error(
-        { error, symbol, exchange: this.exchangeName, marketType },
-        'Failed to get min notional'
-      );
-
-      return 0;
-    }
-  }
-
-  public async fetchPositionMode(): Promise<PositionModeEnum | null> {
-    try {
-      return await this.exchange.futures.fetchPositionMode();
-    } catch (error) {
-      logger.error(
-        { error, exchange: this.exchangeName },
-        'Failed to fetch position mode'
-      );
-
-      return null;
-    }
   }
 
   public async disconnect(): Promise<void> {

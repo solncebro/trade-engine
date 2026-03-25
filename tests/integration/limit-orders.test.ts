@@ -48,12 +48,12 @@ describeIfCredentials(ExchangeNameEnum.Bybit, 'Bybit Limit Orders Integration', 
         marketType: MarketTypeEnum.Futures,
       };
 
-      const limitOrder = OrderCalculator.calculateLimitOrderWithPriceAdjustment(
-        baseOrderParams,
-        PRICE_ADJUSTMENT_PERCENT,
-        100,
-        5
-      );
+      const limitOrder = OrderCalculator.calculateLimitOrderWithPriceAdjustment({
+        orderParams: baseOrderParams,
+        priceAdjustmentPercent: PRICE_ADJUSTMENT_PERCENT,
+        orderVolumeUsdt: 100,
+        leverage: 5,
+      });
 
       expect(limitOrder.type).toBe(OrderTypeEnum.Limit);
       expect(limitOrder.price).toBeGreaterThan(ticker!.lastPrice! * 1.39);
@@ -75,12 +75,12 @@ describeIfCredentials(ExchangeNameEnum.Bybit, 'Bybit Limit Orders Integration', 
         marketType: MarketTypeEnum.Futures,
       };
 
-      const limitOrder = OrderCalculator.calculateLimitOrderWithPriceAdjustment(
-        baseOrderParams,
-        -PRICE_ADJUSTMENT_PERCENT,
-        100,
-        5
-      );
+      const limitOrder = OrderCalculator.calculateLimitOrderWithPriceAdjustment({
+        orderParams: baseOrderParams,
+        priceAdjustmentPercent: -PRICE_ADJUSTMENT_PERCENT,
+        orderVolumeUsdt: 100,
+        leverage: 5,
+      });
 
       expect(limitOrder.type).toBe(OrderTypeEnum.Limit);
       expect(limitOrder.price).toBeLessThan(ticker!.lastPrice! * 0.61);
@@ -100,12 +100,12 @@ describeIfCredentials(ExchangeNameEnum.Bybit, 'Bybit Limit Orders Integration', 
         marketType: MarketTypeEnum.Futures,
       };
 
-      const limitOrder = OrderCalculator.calculateLimitOrderWithPriceAdjustment(
-        baseOrderParams,
-        PRICE_ADJUSTMENT_PERCENT,
-        100,
-        5
-      );
+      const limitOrder = OrderCalculator.calculateLimitOrderWithPriceAdjustment({
+        orderParams: baseOrderParams,
+        priceAdjustmentPercent: PRICE_ADJUSTMENT_PERCENT,
+        orderVolumeUsdt: 100,
+        leverage: 5,
+      });
 
       const result = await connector.createOrder({
         symbol: limitOrder.symbol,
@@ -122,7 +122,7 @@ describeIfCredentials(ExchangeNameEnum.Bybit, 'Bybit Limit Orders Integration', 
         expect(result.orderId).toBeDefined();
         expect(typeof result.orderId).toBe('string');
 
-        await connector.fetchPosition(BYBIT_FUTURES_TEST_SYMBOL);
+        await connector.futures.fetchPosition(BYBIT_FUTURES_TEST_SYMBOL);
 
         const closeResult = await connector.createOrder({
           symbol: BYBIT_FUTURES_TEST_SYMBOL,
@@ -174,12 +174,12 @@ describeIfCredentials(ExchangeNameEnum.Bybit, 'Bybit Limit Orders Integration', 
         marketType: MarketTypeEnum.Futures,
       };
 
-      const limitOrder = OrderCalculator.calculateLimitOrderWithPriceAdjustment(
-        baseOrderParams,
-        PRICE_ADJUSTMENT_PERCENT,
-        100,
-        5
-      );
+      const limitOrder = OrderCalculator.calculateLimitOrderWithPriceAdjustment({
+        orderParams: baseOrderParams,
+        priceAdjustmentPercent: PRICE_ADJUSTMENT_PERCENT,
+        orderVolumeUsdt: 100,
+        leverage: 5,
+      });
 
       const amountAtOriginalPrice = 100 / baseOrderParams.price;
       expect(limitOrder.amount).toBeLessThan(amountAtOriginalPrice);
@@ -229,19 +229,19 @@ describeIfCredentials(ExchangeNameEnum.Bybit, 'Bybit Limit Orders Integration', 
         marketType: MarketTypeEnum.Futures,
       };
 
-      const limitWith1x = OrderCalculator.calculateLimitOrderWithPriceAdjustment(
-        baseOrderParams,
-        PRICE_ADJUSTMENT_PERCENT,
-        100,
-        1
-      );
+      const limitWith1x = OrderCalculator.calculateLimitOrderWithPriceAdjustment({
+        orderParams: baseOrderParams,
+        priceAdjustmentPercent: PRICE_ADJUSTMENT_PERCENT,
+        orderVolumeUsdt: 100,
+        leverage: 1,
+      });
 
-      const limitWith5x = OrderCalculator.calculateLimitOrderWithPriceAdjustment(
-        baseOrderParams,
-        PRICE_ADJUSTMENT_PERCENT,
-        100,
-        5
-      );
+      const limitWith5x = OrderCalculator.calculateLimitOrderWithPriceAdjustment({
+        orderParams: baseOrderParams,
+        priceAdjustmentPercent: PRICE_ADJUSTMENT_PERCENT,
+        orderVolumeUsdt: 100,
+        leverage: 5,
+      });
 
       expect(limitWith5x.amount).toBeCloseTo(limitWith1x.amount);
     });
@@ -277,12 +277,12 @@ describeIfCredentials(ExchangeNameEnum.Binance, 'Binance Limit Orders Integratio
         marketType: MarketTypeEnum.Futures,
       };
 
-      const limitOrder = OrderCalculator.calculateLimitOrderWithPriceAdjustment(
-        baseOrderParams,
-        PRICE_ADJUSTMENT_PERCENT,
-        100,
-        5
-      );
+      const limitOrder = OrderCalculator.calculateLimitOrderWithPriceAdjustment({
+        orderParams: baseOrderParams,
+        priceAdjustmentPercent: PRICE_ADJUSTMENT_PERCENT,
+        orderVolumeUsdt: 100,
+        leverage: 5,
+      });
 
       const result = await connector.createOrder({
         symbol: limitOrder.symbol,
@@ -323,12 +323,12 @@ describeIfCredentials(ExchangeNameEnum.Binance, 'Binance Limit Orders Integratio
         marketType: MarketTypeEnum.Futures,
       };
 
-      const limitOrder = OrderCalculator.calculateLimitOrderWithPriceAdjustment(
-        baseOrderParams,
-        PRICE_ADJUSTMENT_PERCENT,
-        100,
-        5
-      );
+      const limitOrder = OrderCalculator.calculateLimitOrderWithPriceAdjustment({
+        orderParams: baseOrderParams,
+        priceAdjustmentPercent: PRICE_ADJUSTMENT_PERCENT,
+        orderVolumeUsdt: 100,
+        leverage: 5,
+      });
 
       expect(limitOrder.price).toBeCloseTo(ticker!.lastPrice! * 1.4, 1);
     });

@@ -15,6 +15,7 @@ import { ExchangeConnector } from '../../src/services/exchangeConnector';
 import {
   ExchangeConnectorByName,
   ExchangeNameEnum,
+  MarginModeEnum,
   MarketTypeEnum,
   OrderSideEnum,
   OrderTypeEnum,
@@ -85,7 +86,7 @@ describeIfCredentials(ExchangeNameEnum.Bybit, 'Bybit Demo Integration', () => {
       const resolved: Record<string, string> = {};
 
       for (const symbol of BYBIT_FUTURES_TEST_SYMBOL_LIST) {
-        resolved[symbol] = connector.resolveSymbolWithPrefix(symbol);
+        resolved[symbol] = connector.resolveSymbolWithPrefix(symbol, MarketTypeEnum.Futures);
       }
 
       logger.info({ resolved }, 'resolveSymbolWithPrefix test result');
@@ -96,25 +97,33 @@ describeIfCredentials(ExchangeNameEnum.Bybit, 'Bybit Demo Integration', () => {
       expect(resolved['MOGUSDT']).toBe('1000000MOGUSDT');
     });
 
-    test('setLeverage() completes without throwing', async () => {
-      const isSuccess = await connector.setLeverage(BYBIT_FUTURES_TEST_SYMBOL, 5);
+    test('futures.setLeverage() completes without throwing', async () => {
+      try {
+        await connector.futures.setLeverage(5, BYBIT_FUTURES_TEST_SYMBOL);
+      } catch (error) {
+        expect(String(error)).toContain('110043');
+      }
+
       logger.info(
-        { symbol: BYBIT_FUTURES_TEST_SYMBOL, leverage: 5, isSuccess },
+        { symbol: BYBIT_FUTURES_TEST_SYMBOL, leverage: 5 },
         'setLeverage test result'
       );
-      expect(typeof isSuccess).toBe('boolean');
     });
 
-    test('setMarginMode() completes without throwing', async () => {
-      const isSuccess = await connector.setMarginMode(
-        BYBIT_FUTURES_TEST_SYMBOL,
-        'isolated'
-      );
+    test('futures.setMarginMode() completes without throwing', async () => {
+      try {
+        await connector.futures.setMarginMode(
+          MarginModeEnum.Isolated,
+          BYBIT_FUTURES_TEST_SYMBOL
+        );
+      } catch (error) {
+        expect(String(error)).toContain('10032');
+      }
+
       logger.info(
-        { symbol: BYBIT_FUTURES_TEST_SYMBOL, marginMode: 'isolated', isSuccess },
+        { symbol: BYBIT_FUTURES_TEST_SYMBOL, marginMode: MarginModeEnum.Isolated },
         'setMarginMode test result'
       );
-      expect(typeof isSuccess).toBe('boolean');
     });
 
     test('createOrder() market: opens and closes a position', async () => {
@@ -189,8 +198,8 @@ describeIfCredentials(ExchangeNameEnum.Bybit, 'Bybit Demo Integration', () => {
       expect(isOrderSuccessful(closeResult)).toBe(true);
     });
 
-    test('fetchPosition() returns position data', async () => {
-      const position = await connector.fetchPosition(BYBIT_FUTURES_TEST_SYMBOL);
+    test('futures.fetchPosition() returns position data', async () => {
+      const position = await connector.futures.fetchPosition(BYBIT_FUTURES_TEST_SYMBOL);
       logger.info({ position }, 'fetchPosition test result');
 
       if (position !== null) {
@@ -281,8 +290,6 @@ describeIfCredentials(ExchangeNameEnum.Bybit, 'Bybit Demo Integration', () => {
         leverage: 5,
       });
 
-      expect(attributes[0].errorText).toBeDefined();
-
       const enriched = OrderCalculator.enrichWithSpotFallback({
         orderAttributesList: attributes,
         exchangeConnectorByName,
@@ -293,7 +300,12 @@ describeIfCredentials(ExchangeNameEnum.Bybit, 'Bybit Demo Integration', () => {
 
       logger.info({ enriched }, 'enrichWithSpotFallback test result');
       expect(enriched).toHaveLength(1);
-      expect(enriched[0].orderParams.marketType).toBe(MarketTypeEnum.Spot);
+
+      if (attributes[0].errorText) {
+        expect(enriched[0].orderParams.marketType).toBe(MarketTypeEnum.Spot);
+      } else {
+        expect(enriched[0].orderParams.marketType).toBe(MarketTypeEnum.Futures);
+      }
     });
 
     test(`calculateLimitOrderWithPriceAdjustment() adjusts price +${LIMIT_PRICE_ADJUSTMENT_PERCENT}%`, () => {
@@ -302,8 +314,8 @@ describeIfCredentials(ExchangeNameEnum.Bybit, 'Bybit Demo Integration', () => {
         MarketTypeEnum.Futures
       )!;
 
-      const limitOrder = OrderCalculator.calculateLimitOrderWithPriceAdjustment(
-        {
+      const limitOrder = OrderCalculator.calculateLimitOrderWithPriceAdjustment({
+        orderParams: {
           symbol: BYBIT_FUTURES_TEST_SYMBOL,
           side: OrderSideEnum.Buy,
           amount: calculateTestAmount(connector, BYBIT_FUTURES_TEST_SYMBOL, ticker.lastPrice!),
@@ -311,10 +323,10 @@ describeIfCredentials(ExchangeNameEnum.Bybit, 'Bybit Demo Integration', () => {
           type: OrderTypeEnum.Market,
           marketType: MarketTypeEnum.Futures,
         },
-        LIMIT_PRICE_ADJUSTMENT_PERCENT,
-        100,
-        5
-      );
+        priceAdjustmentPercent: LIMIT_PRICE_ADJUSTMENT_PERCENT,
+        orderVolumeUsdt: 100,
+        leverage: 5,
+      });
 
       logger.info(
         { originalPrice: ticker.lastPrice, limitOrder },

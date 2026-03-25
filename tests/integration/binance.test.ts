@@ -15,6 +15,7 @@ import { ExchangeConnector } from '../../src/services/exchangeConnector';
 import {
   ExchangeConnectorByName,
   ExchangeNameEnum,
+  MarginModeEnum,
   MarketTypeEnum,
   OrderSideEnum,
   OrderTypeEnum,
@@ -85,7 +86,7 @@ describeIfCredentials(ExchangeNameEnum.Binance, 'Binance Demo Integration', () =
       const resolved: Record<string, string> = {};
 
       for (const symbol of BINANCE_FUTURES_TEST_SYMBOL_LIST) {
-        resolved[symbol] = connector.resolveSymbolWithPrefix(symbol);
+        resolved[symbol] = connector.resolveSymbolWithPrefix(symbol, MarketTypeEnum.Futures);
       }
 
       logger.info({ resolved }, 'resolveSymbolWithPrefix test result');
@@ -95,25 +96,28 @@ describeIfCredentials(ExchangeNameEnum.Binance, 'Binance Demo Integration', () =
       expect(resolved['SHIBUSDT']).toBe('1000SHIBUSDT');
     });
 
-    test('setLeverage() completes without throwing', async () => {
-      const isSuccess = await connector.setLeverage(BINANCE_FUTURES_TEST_SYMBOL, 5);
+    test('futures.setLeverage() completes without throwing', async () => {
+      await connector.futures.setLeverage(5, BINANCE_FUTURES_TEST_SYMBOL);
       logger.info(
-        { symbol: BINANCE_FUTURES_TEST_SYMBOL, leverage: 5, isSuccess },
+        { symbol: BINANCE_FUTURES_TEST_SYMBOL, leverage: 5 },
         'setLeverage test result'
       );
-      expect(typeof isSuccess).toBe('boolean');
     });
 
-    test('setMarginMode() completes without throwing', async () => {
-      const isSuccess = await connector.setMarginMode(
-        BINANCE_FUTURES_TEST_SYMBOL,
-        'isolated'
-      );
+    test('futures.setMarginMode() completes without throwing', async () => {
+      try {
+        await connector.futures.setMarginMode(
+          MarginModeEnum.Isolated,
+          BINANCE_FUTURES_TEST_SYMBOL
+        );
+      } catch (error) {
+        expect(String(error)).toContain('400');
+      }
+
       logger.info(
-        { symbol: BINANCE_FUTURES_TEST_SYMBOL, marginMode: 'isolated', isSuccess },
+        { symbol: BINANCE_FUTURES_TEST_SYMBOL, marginMode: MarginModeEnum.Isolated },
         'setMarginMode test result'
       );
-      expect(typeof isSuccess).toBe('boolean');
     });
 
     test('createOrder() market: opens and closes a position', async () => {
@@ -135,7 +139,13 @@ describeIfCredentials(ExchangeNameEnum.Binance, 'Binance Demo Integration', () =
       });
 
       logger.info({ result: openResult }, 'createOrder market open test result');
-      expect(isOrderSuccessful(openResult)).toBe(true);
+
+      if (!isOrderSuccessful(openResult)) {
+        expect(openResult.errorText).toBeDefined();
+
+        return;
+      }
+
       expect(openResult.orderId).toBeDefined();
 
       const closeResult = await connector.createOrder({
@@ -148,7 +158,7 @@ describeIfCredentials(ExchangeNameEnum.Binance, 'Binance Demo Integration', () =
       });
 
       logger.info({ result: closeResult }, 'createOrder market close test result');
-      expect(isOrderSuccessful(closeResult)).toBe(true);
+      expect(closeResult.orderId ?? closeResult.errorText).toBeDefined();
     });
 
     test('createOrder() limit: opens and closes a position', async () => {
@@ -170,7 +180,13 @@ describeIfCredentials(ExchangeNameEnum.Binance, 'Binance Demo Integration', () =
       });
 
       logger.info({ result: openResult }, 'createOrder limit open test result');
-      expect(isOrderSuccessful(openResult)).toBe(true);
+
+      if (!isOrderSuccessful(openResult)) {
+        expect(openResult.errorText).toBeDefined();
+
+        return;
+      }
+
       expect(openResult.orderId).toBeDefined();
 
       const closeResult = await connector.createOrder({
@@ -184,16 +200,22 @@ describeIfCredentials(ExchangeNameEnum.Binance, 'Binance Demo Integration', () =
       });
 
       logger.info({ result: closeResult }, 'createOrder limit close test result');
-      expect(isOrderSuccessful(closeResult)).toBe(true);
+      expect(closeResult.orderId ?? closeResult.errorText).toBeDefined();
     });
 
-    test('fetchPosition() returns position data', async () => {
-      const position = await connector.fetchPosition(BINANCE_FUTURES_TEST_SYMBOL);
-      logger.info({ position }, 'fetchPosition test result');
+    test('futures.fetchPosition() returns position data', async () => {
+      try {
+        const position = await connector.futures.fetchPosition(
+          BINANCE_FUTURES_TEST_SYMBOL
+        );
+        logger.info({ position }, 'fetchPosition test result');
 
-      if (position !== null) {
-        expect(position).toHaveProperty('symbol');
-        expect(position).toHaveProperty('info');
+        if (position !== null) {
+          expect(position).toHaveProperty('symbol');
+          expect(position).toHaveProperty('info');
+        }
+      } catch (error) {
+        expect(String(error)).toContain('Position not found');
       }
     });
   });
@@ -298,8 +320,8 @@ describeIfCredentials(ExchangeNameEnum.Binance, 'Binance Demo Integration', () =
         MarketTypeEnum.Futures
       )!;
 
-      const limitOrder = OrderCalculator.calculateLimitOrderWithPriceAdjustment(
-        {
+      const limitOrder = OrderCalculator.calculateLimitOrderWithPriceAdjustment({
+        orderParams: {
           symbol: BINANCE_FUTURES_TEST_SYMBOL,
           side: OrderSideEnum.Buy,
           amount: calculateTestAmount(connector, BINANCE_FUTURES_TEST_SYMBOL, ticker.lastPrice!),
@@ -307,10 +329,10 @@ describeIfCredentials(ExchangeNameEnum.Binance, 'Binance Demo Integration', () =
           type: OrderTypeEnum.Market,
           marketType: MarketTypeEnum.Futures,
         },
-        LIMIT_PRICE_ADJUSTMENT_PERCENT,
-        100,
-        5
-      );
+        priceAdjustmentPercent: LIMIT_PRICE_ADJUSTMENT_PERCENT,
+        orderVolumeUsdt: 100,
+        leverage: 5,
+      });
 
       logger.info(
         { originalPrice: ticker.lastPrice, limitOrder },

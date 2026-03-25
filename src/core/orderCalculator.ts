@@ -63,6 +63,13 @@ interface EnrichWithSpotFallbackArgs extends BaseOrderCalculationArgs {
   exchangeConnectorByName: ExchangeConnectorByName;
 }
 
+interface CalculateLimitOrderWithPriceAdjustmentArgs {
+  orderParams: OrderParams;
+  priceAdjustmentPercent: number;
+  orderVolumeUsdt: number;
+  leverage?: number;
+}
+
 export class OrderCalculator {
   private static addPercent(
     price: number,
@@ -282,10 +289,10 @@ export class OrderCalculator {
         const setupPromise = (async () => {
           try {
             await Promise.all([
-              exchangeConnector.setLeverage(resolvedSymbol, leverage),
-              exchangeConnector.setMarginMode(
-                resolvedSymbol,
-                MarginModeEnum.Isolated
+              exchangeConnector.futures.setLeverage(leverage, resolvedSymbol),
+              exchangeConnector.futures.setMarginMode(
+                MarginModeEnum.Isolated,
+                resolvedSymbol
               ),
             ]);
           } catch (error) {
@@ -409,11 +416,15 @@ export class OrderCalculator {
   }
 
   public static calculateLimitOrderWithPriceAdjustment(
-    orderParams: OrderParams,
-    priceAdjustmentPercent: number,
-    orderVolumeUsdt: number,
-    leverage: number = 1
+    args: CalculateLimitOrderWithPriceAdjustmentArgs
   ): OrderParams {
+    const {
+      orderParams,
+      priceAdjustmentPercent,
+      orderVolumeUsdt,
+      leverage = 1,
+    } = args;
+
     const adjustedPrice = OrderCalculator.addPercent(
       orderParams.price,
       priceAdjustmentPercent

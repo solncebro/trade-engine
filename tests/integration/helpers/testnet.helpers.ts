@@ -83,7 +83,7 @@ export const calculateTestAmount = (
   symbol: string,
   price: number
 ): number =>
-  connector.getClient().amountToPrecision(symbol, MIN_TEST_USDT / price);
+  connector.futures.amountToPrecision(symbol, MIN_TEST_USDT / price);
 
 export const waitForTickers = async (
   connector: ExchangeConnector,
@@ -94,7 +94,7 @@ export const waitForTickers = async (
   const startTime = Date.now();
 
   while (Date.now() - startTime < timeoutMs) {
-    const resolvedSymbol = connector.resolveSymbolWithPrefix(symbol);
+    const resolvedSymbol = connector.resolveSymbolWithPrefix(symbol, MarketTypeEnum.Futures);
     const ticker = connector.getTicker(resolvedSymbol, MarketTypeEnum.Futures);
 
     if (ticker?.lastPrice !== undefined && ticker.lastPrice > 0) {
