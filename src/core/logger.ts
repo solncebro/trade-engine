@@ -9,6 +9,19 @@ export interface CreateLoggerArgs {
   betterStackEndpoint?: string;
 }
 
+function buildLogtailIngestUrl(hostnameOrUrl: string): string {
+  const trimmedValue = hostnameOrUrl.trim();
+
+  if (
+    trimmedValue.startsWith('https://') ||
+    trimmedValue.startsWith('http://')
+  ) {
+    return trimmedValue;
+  }
+
+  return `https://${trimmedValue}`;
+}
+
 export function createLogger(args?: CreateLoggerArgs): Logger {
   const {
     level = process.env.LOG_LEVEL ?? 'info',
@@ -18,6 +31,12 @@ export function createLogger(args?: CreateLoggerArgs): Logger {
     betterStackToken = process.env.BETTERSTACK_TOKEN,
     betterStackEndpoint = process.env.BETTERSTACK_ENDPOINT,
   } = args ?? {};
+
+  const betterStackTokenResolved = betterStackToken?.trim();
+  const betterStackEndpointRaw = betterStackEndpoint?.trim();
+  const betterStackEndpointResolved = betterStackEndpointRaw
+    ? buildLogtailIngestUrl(betterStackEndpointRaw)
+    : undefined;
 
   const transportTargetList: TransportTargetOptions[] = [];
 
@@ -44,12 +63,12 @@ export function createLogger(args?: CreateLoggerArgs): Logger {
     });
   }
 
-  if (betterStackToken && betterStackEndpoint) {
+  if (betterStackTokenResolved && betterStackEndpointResolved) {
     transportTargetList.push({
       target: '@logtail/pino',
       options: {
-        sourceToken: betterStackToken,
-        options: { endpoint: betterStackEndpoint },
+        sourceToken: betterStackTokenResolved,
+        options: { endpoint: betterStackEndpointResolved },
       },
     });
   }

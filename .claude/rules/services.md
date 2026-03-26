@@ -122,7 +122,7 @@ function createLogger(args?: {
 const logger: Logger  // lazy singleton через Proxy
 ```
 
-Транспорты: console (pino-pretty), file (pino-pretty без цвета), BetterStack (@logtail/pino).
+Транспорты: console (pino-pretty), file (pino-pretty без цвета), BetterStack (@logtail/pino). BetterStack-транспорт добавляется только если заданы оба значения: `betterStackToken` и `betterStackEndpoint`. Для endpoint поддерживаются и полный URL (`https://...`/`http://...`), и хост без схемы — в этом случае автоматически добавляется `https://`.
 
 Error serializer: `pino.stdSerializers.wrapErrorSerializer` расширяет стандартную сериализацию, сохраняя поля `code` и `exchange` из объекта ошибки.
 
