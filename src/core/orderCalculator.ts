@@ -1,3 +1,5 @@
+import type { ExchangeClient } from '@solncebro/exchange-engine';
+
 import { logger } from './logger';
 
 import { ExchangeConnector } from '../services/exchangeConnector';
@@ -68,6 +70,7 @@ interface CalculateLimitOrderWithPriceAdjustmentArgs {
   priceAdjustmentPercent: number;
   orderVolumeUsdt: number;
   leverage?: number;
+  exchangeClient?: ExchangeClient;
 }
 
 export class OrderCalculator {
@@ -374,6 +377,7 @@ export class OrderCalculator {
     const symbolSetByExchange = new Map<ExchangeNameEnum, Set<string>>();
 
     for (const attr of orderAttributesList) {
+
       if (!symbolSetByExchange.has(attr.exchangeName)) {
         symbolSetByExchange.set(attr.exchangeName, new Set());
       }
@@ -423,6 +427,7 @@ export class OrderCalculator {
       priceAdjustmentPercent,
       orderVolumeUsdt,
       leverage = 1,
+      exchangeClient,
     } = args;
 
     const adjustedPrice = OrderCalculator.addPercent(
@@ -437,11 +442,19 @@ export class OrderCalculator {
         : orderVolumeUsdt
     );
 
+    const amount = exchangeClient
+      ? exchangeClient.amountToPrecision(orderParams.symbol, rawAmount)
+      : rawAmount;
+
+    const price = exchangeClient
+      ? exchangeClient.priceToPrecision(orderParams.symbol, adjustedPrice)
+      : adjustedPrice;
+
     return {
       ...orderParams,
       type: OrderTypeEnum.Limit,
-      amount: rawAmount,
-      price: adjustedPrice,
+      amount,
+      price,
     };
   }
 

@@ -61,11 +61,12 @@ static calculateLimitOrderWithPriceAdjustment(args: {
   orderParams: OrderParams;
   priceAdjustmentPercent: number; // +40 для buy, -40 для sell
   orderVolumeUsdt: number;
-  leverage?: number; // по умолчанию 1
+  leverage?: number;        // по умолчанию 1
+  exchangeClient?: ExchangeClient; // опционально: применяет precision биржи
 }): OrderParams
 ```
 
-Корректирует цену на процент и пересчитывает `amount` по новой цене. Для спот-ордеров объём делится на leverage.
+Корректирует цену на процент и пересчитывает `amount` по новой цене. Для спот-ордеров объём делится на leverage. Если передан `exchangeClient` — применяет `amountToPrecision` и `priceToPrecision` к результирующим `amount` и `price`.
 
 ### calculateCloseOrder
 
