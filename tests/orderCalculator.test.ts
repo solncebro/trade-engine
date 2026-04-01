@@ -23,7 +23,6 @@ describe('OrderCalculator.calculateLimitOrderWithPriceAdjustment', () => {
     });
 
     test('adjusts price by percent', () => {
-      // price=1000, +10% → 1000 * 1.1 = 1100
       const result = OrderCalculator.calculateLimitOrderWithPriceAdjustment({
         orderParams: BASE_ORDER_PARAMS,
         priceAdjustmentPercent: 10,
@@ -34,7 +33,6 @@ describe('OrderCalculator.calculateLimitOrderWithPriceAdjustment', () => {
     });
 
     test('calculates futures amount as volume / adjustedPrice', () => {
-      // adjustedPrice = 1000 * 1.1 = 1100, amount = 100 / 1100
       const result = OrderCalculator.calculateLimitOrderWithPriceAdjustment({
         orderParams: BASE_ORDER_PARAMS,
         priceAdjustmentPercent: 10,
@@ -45,7 +43,6 @@ describe('OrderCalculator.calculateLimitOrderWithPriceAdjustment', () => {
     });
 
     test('reduces spot amount by leverage', () => {
-      // adjustedPrice = 1000, spotVolume = 100 / 5 = 20, amount = 20 / 1000 = 0.02
       const result = OrderCalculator.calculateLimitOrderWithPriceAdjustment({
         orderParams: { ...BASE_ORDER_PARAMS, marketType: MarketTypeEnum.Spot },
         priceAdjustmentPercent: 0,
@@ -80,10 +77,9 @@ describe('OrderCalculator.calculateLimitOrderWithPriceAdjustment', () => {
       }) as unknown as ExchangeClient;
 
     test('applies amountToPrecision to the calculated amount', () => {
-      // rawAmount = 100 / 1100, mock rounds to 4 decimal places
-      const adjustedPrice = 1000 * 1.1; // 1100
+      const adjustedPrice = 1000 * 1.1;
       const rawAmount = 100 / adjustedPrice;
-      const roundedAmount = Math.floor(rawAmount * 10000) / 10000; // 0.0909
+      const roundedAmount = Math.floor(rawAmount * 10000) / 10000;
 
       const exchangeClient = makeExchangeClient(
         () => roundedAmount,
@@ -105,7 +101,7 @@ describe('OrderCalculator.calculateLimitOrderWithPriceAdjustment', () => {
     });
 
     test('applies priceToPrecision to the adjusted price', () => {
-      const adjustedPrice = 1000 * 1.1; // 1100
+      const adjustedPrice = 1000 * 1.1;
       const roundedPrice = 1100.5;
 
       const exchangeClient = makeExchangeClient(
@@ -128,11 +124,10 @@ describe('OrderCalculator.calculateLimitOrderWithPriceAdjustment', () => {
     });
 
     test('passes rawAmount (not adjusted) to amountToPrecision', () => {
-      // rawAmount uses adjustedPrice in denominator, not original price
       const priceAdjustmentPercent = 20;
-      const adjustedPrice = 1000 * (1 + priceAdjustmentPercent / 100); // 1200
+      const adjustedPrice = 1000 * (1 + priceAdjustmentPercent / 100);
       const orderVolumeUsdt = 240;
-      const expectedRawAmount = orderVolumeUsdt / adjustedPrice; // 0.2
+      const expectedRawAmount = orderVolumeUsdt / adjustedPrice;
 
       const exchangeClient = makeExchangeClient(jest.fn((_, a) => a), jest.fn((_, p) => p));
 
@@ -149,7 +144,6 @@ describe('OrderCalculator.calculateLimitOrderWithPriceAdjustment', () => {
     });
 
     test('without exchangeClient does not round values', () => {
-      // 100 / 1100 is a repeating decimal — should remain unrounded
       const withClient = makeExchangeClient(
         (_, a) => Math.floor(a * 1000) / 1000,
         (_, p) => p

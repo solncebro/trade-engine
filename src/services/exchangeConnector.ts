@@ -24,13 +24,15 @@ export class ExchangeConnector {
 
   constructor(
     exchangeName: ExchangeNameEnum,
-    config: ExchangeConfig
+    config: ExchangeConfig,
+    onNotify?: (message: string) => void | Promise<void>
   ) {
     this.exchangeName = exchangeName;
 
     this.exchange = new ExchangeInstance(exchangeName, {
       config,
       logger,
+      onNotify,
     });
   }
 

@@ -4,20 +4,22 @@
 
 ## Зависимость
 
-Использует `@solncebro/exchange-engine` 0.6.0+ (не CCXT напрямую). Все низкоуровневые операции делегируются этой библиотеке.
+Использует `@solncebro/exchange-engine` 0.7.1+ (не CCXT напрямую). Все низкоуровневые операции делегируются этой библиотеке.
 
 ## Инициализация
 
 ```typescript
-const connector = new ExchangeConnector(ExchangeNameEnum.Binance, {
-  apiKey: '...',
-  secret: '...',
-  isDemoMode: true, // demo trading
-});
+const connector = new ExchangeConnector(
+  ExchangeNameEnum.Binance,
+  { apiKey: '...', secret: '...', isDemoMode: true },
+  message => logger.warn(message) // опциональный onNotify callback
+);
 await connector.initialize();
 // → загружает futures символы, затем spot символы
 // → запускает периодическое обновление тикеров (30 сек)
 ```
+
+Третий параметр `onNotify` — опциональный callback для получения критических уведомлений от биржи. В `exchange-engine` 0.7.1+ сообщения с уровнем CRITICAL автоматически вызывают `process.exit(1)` после вызова callback.
 
 ## Demo Trading
 

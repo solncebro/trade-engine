@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.1.2] - 2026-04-01
+
+### Added
+- `ExchangeConnector` constructor: new optional `onNotify` parameter — when provided, passes the callback to `exchange-engine` for handling critical exchange notifications
+- New type re-exports from `@solncebro/exchange-engine`: `ExchangeArgs`, `ExchangeLogger`
+
+### Changed
+- Upgraded `@solncebro/exchange-engine` from 0.6.3 to 0.7.1
+
 ## [3.0.2] - 2026-03-31
 
 ### Added
@@ -139,6 +148,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Utility functions: `isOrderSuccessful`, `isSpot`, `normalizeSymbol`, `formatTimestamp`, `createLogger`
 - Error-as-value pattern for all trading operations
 
+[3.1.2]: https://github.com/solncebro/trade-engine/releases/tag/v3.1.2
+[3.0.2]: https://github.com/solncebro/trade-engine/releases/tag/v3.0.2
 [3.0.1]: https://github.com/solncebro/trade-engine/releases/tag/v3.0.1
 [3.0.0]: https://github.com/solncebro/trade-engine/releases/tag/v3.0.0
 [2.2.0]: https://github.com/solncebro/trade-engine/releases/tag/v2.2.0

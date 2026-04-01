@@ -41,7 +41,7 @@
 
 ### 3. Коннекторы бирж
 
-**ExchangeConnector** — обёртка над `@solncebro/exchange-engine`:
+**ExchangeConnector** — обёртка над `@solncebro/exchange-engine` 0.7.1+:
 
 | Компонент | Детали |
 |-----------|--------|

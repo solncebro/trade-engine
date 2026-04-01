@@ -377,7 +377,6 @@ export class OrderCalculator {
     const symbolSetByExchange = new Map<ExchangeNameEnum, Set<string>>();
 
     for (const attr of orderAttributesList) {
-
       if (!symbolSetByExchange.has(attr.exchangeName)) {
         symbolSetByExchange.set(attr.exchangeName, new Set());
       }
