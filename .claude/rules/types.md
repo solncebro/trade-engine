@@ -24,6 +24,7 @@ interface OrderParams {
   price: number;
   type: OrderTypeEnum;       // Market | Limit | StopMarket | TakeProfitMarket | Stop | TakeProfit | TrailingStop
   marketType?: MarketTypeEnum;
+  positionSide?: PositionSideEnum;  // Long | Short — явное управление сайдом позиции (только futures)
   triggerPrice?: number;     // для SL ордеров
   triggerDirection?: 1 | 2;  // 1 = рост, 2 = падение
   params?: Record<string, unknown>; // доп. параметры биржи

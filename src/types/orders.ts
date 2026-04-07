@@ -1,4 +1,4 @@
-import { ExchangeNameEnum, MarketTypeEnum, OrderSideEnum, OrderTypeEnum } from '@solncebro/exchange-engine';
+import { ExchangeNameEnum, MarketTypeEnum, OrderSideEnum, OrderTypeEnum, PositionSideEnum } from '@solncebro/exchange-engine';
 
 import {
   ExchangeOrderParams,
@@ -14,6 +14,7 @@ export interface OrderParams {
   price: number;
   type: OrderTypeEnum;
   marketType?: MarketTypeEnum;
+  positionSide?: PositionSideEnum;
   triggerPrice?: number;
   triggerDirection?: 1 | 2;
   params?: Record<string, unknown>;

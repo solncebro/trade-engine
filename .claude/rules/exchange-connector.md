@@ -143,7 +143,8 @@ const result = await connector.createOrder({
 ```
 
 Особенности `buildCreateOrderArgs`:
-- **Futures (кроме Binance)**: устанавливает `positionSide` (Long для Buy, Short для Sell)
+- **positionSide**: если явно указан в `orderParams.positionSide`, используется без изменений; для остальных non-Binance бирж автоматически вычисляется (Long для Buy, Short для Sell); Binance Futures игнорирует это поле
+- **Futures (кроме Binance)**: если `positionSide` не задан, устанавливает его автоматически (Long для Buy, Short для Sell)
 - **Binance Futures**: `positionSide` не передаётся (избегаем конфликта с one-way настройками аккаунта)
 - **Market**: поле `price` в `OrderParams` может передаваться для удобства, но для `OrderTypeEnum.Market` оно не форвардится в параметры создания ордера (в том числе для `Binance` market-ордеров)
 - **Все биржи**: `timeInForce` — `IOC` для Market, `GTC` для Limit

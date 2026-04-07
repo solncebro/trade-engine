@@ -218,10 +218,14 @@ export class ExchangeConnector {
       );
     }
 
-    if (!isSpot(orderParams.marketType) && this.exchangeName !== ExchangeNameEnum.Binance) {
-      args.positionSide = orderParams.side === OrderSideEnum.Buy
-        ? PositionSideEnum.Long
-        : PositionSideEnum.Short;
+    if (!isSpot(orderParams.marketType)) {
+      if (orderParams.positionSide) {
+        args.positionSide = orderParams.positionSide;
+      } else if (this.exchangeName !== ExchangeNameEnum.Binance) {
+        args.positionSide = orderParams.side === OrderSideEnum.Buy
+          ? PositionSideEnum.Long
+          : PositionSideEnum.Short;
+      }
     }
 
     if (orderParams.params?.reduceOnly) {
