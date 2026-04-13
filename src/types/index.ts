@@ -39,6 +39,7 @@ export type {
   OrderBookLevel,
   Position,
   PublicTrade,
+  ResubscribeKlinesArgs,
   SubscribeKlinesArgs,
   Ticker,
   TickerBySymbol,

@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.1.4] - 2026-04-13
+
+### Changed
+- Upgraded `@solncebro/exchange-engine` from 0.7.1 to 0.9.1
+
+### Notes on exchange-engine 0.8.0–0.9.1
+- `ExchangeClient.resubscribeKlines(symbol, interval)` — new method for explicit WebSocket stream reconnection
+- `TradeSymbol.contractType: string` — new field identifying contract type (PERPETUAL, TRADIFI_PERPETUAL, etc.)
+- `BaseExchangeClient.createNotifyHandler()` no longer calls `process.exit(1)` after CRITICAL messages — consumers must implement their own shutdown logic if needed
+- `BaseHttpClient` non-GET HTTP errors now throw readable `Error` messages instead of raw `AxiosError`
+
 ## [3.1.3] - 2026-04-08
 
 ### Added
@@ -156,6 +167,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Utility functions: `isOrderSuccessful`, `isSpot`, `normalizeSymbol`, `formatTimestamp`, `createLogger`
 - Error-as-value pattern for all trading operations
 
+[3.1.4]: https://github.com/solncebro/trade-engine/releases/tag/v3.1.4
+[3.1.3]: https://github.com/solncebro/trade-engine/releases/tag/v3.1.3
 [3.1.2]: https://github.com/solncebro/trade-engine/releases/tag/v3.1.2
 [3.0.2]: https://github.com/solncebro/trade-engine/releases/tag/v3.0.2
 [3.0.1]: https://github.com/solncebro/trade-engine/releases/tag/v3.0.1

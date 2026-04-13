@@ -4,7 +4,7 @@
 
 ## Зависимость
 
-Использует `@solncebro/exchange-engine` 0.7.1+ (не CCXT напрямую). Все низкоуровневые операции делегируются этой библиотеке.
+Использует `@solncebro/exchange-engine` 0.9.1+ (не CCXT напрямую). Все низкоуровневые операции делегируются этой библиотеке.
 
 ## Инициализация
 
@@ -19,7 +19,7 @@ await connector.initialize();
 // → запускает периодическое обновление тикеров (30 сек)
 ```
 
-Третий параметр `onNotify` — опциональный callback для получения критических уведомлений от биржи. В `exchange-engine` 0.7.1+ сообщения с уровнем CRITICAL автоматически вызывают `process.exit(1)` после вызова callback.
+Третий параметр `onNotify` — опциональный callback для получения критических уведомлений от биржи. Начиная с `exchange-engine` 0.9.0, обработчик CRITICAL-сообщений **не вызывает `process.exit(1)` автоматически** — потребитель должен реализовать собственную логику завершения при необходимости.
 
 ## Demo Trading
 
@@ -64,6 +64,7 @@ connector.getClient(marketType).amountToPrecision(symbol, amount);
 - `fetchAllKlines(options: FetchAllKlinesOptions)` — получение всех свечей с пагинацией
 - `subscribeKlines(args: SubscribeKlinesArgs)` — подписка на свечи через WebSocket
 - `unsubscribeKlines(symbol, interval)` — отписка от свечей
+- `resubscribeKlines(symbol, interval)` — переподписка на свечи (явный реконнект WebSocket-стрима)
 
 **Баланс:**
 - `fetchBalances()` → `AccountBalances` — баланс аккаунта
