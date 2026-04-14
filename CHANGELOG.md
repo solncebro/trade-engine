@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.1.5] - 2026-04-14
+
+### Changed
+- Upgraded `@solncebro/exchange-engine` from 0.9.1 to 0.10.0
+
+### Notes on exchange-engine 0.10.0
+- `BybitLinear.setMarginMode()` is now a no-op — Bybit manages margin mode at account level, not per-symbol
+- `BybitPublicStream`: improved multi-connection support with automatic topic chunking (max 200 topics per connection) and batched subscribe messages (max 10 topics per SUBSCRIBE request)
+- `BybitBaseClient.getOrder()`: now checks realtime (open orders) first, then falls back to order history
+- `BybitBaseClient.submitOrder()`: now checks `isConnected()` before sending via WebSocket
+- `BybitLinear.setLeverage()`: improved error handling for error code 110043 (leverage not modified)
+- `normalizeBybitKlines()`: fixed kline sorting order (now ascending chronological)
+
 ## [3.1.4] - 2026-04-13
 
 ### Changed
@@ -167,6 +180,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Utility functions: `isOrderSuccessful`, `isSpot`, `normalizeSymbol`, `formatTimestamp`, `createLogger`
 - Error-as-value pattern for all trading operations
 
+[3.1.5]: https://github.com/solncebro/trade-engine/releases/tag/v3.1.5
 [3.1.4]: https://github.com/solncebro/trade-engine/releases/tag/v3.1.4
 [3.1.3]: https://github.com/solncebro/trade-engine/releases/tag/v3.1.3
 [3.1.2]: https://github.com/solncebro/trade-engine/releases/tag/v3.1.2

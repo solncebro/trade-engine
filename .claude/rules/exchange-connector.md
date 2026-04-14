@@ -4,7 +4,7 @@
 
 ## Зависимость
 
-Использует `@solncebro/exchange-engine` 0.9.1+ (не CCXT напрямую). Все низкоуровневые операции делегируются этой библиотеке.
+Использует `@solncebro/exchange-engine` 0.10.0+. Все низкоуровневые операции делегируются этой библиотеке.
 
 ## Инициализация
 
@@ -27,7 +27,7 @@ await connector.initialize();
 - **Binance**: `https://demo-api.binance.com` (spot), `https://demo-fapi.binance.com` (futures)
 - **Bybit**: `https://api-demo.bybit.com` (REST), `wss://stream-demo.bybit.com/v5/trade` (WebSocket)
 
-**Никаких ручных URL-переопределений.** Не использовать sandbox mode CCXT.
+**Никаких ручных URL-переопределений.**
 
 ## Прямой доступ к клиентам
 

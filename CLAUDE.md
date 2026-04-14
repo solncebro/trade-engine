@@ -70,7 +70,7 @@ npx jest --config jest.integration.config.js --runInBand --testPathPatterns=<pat
 
 - **Ошибки — не исключения**: `createOrder()` возвращает `errorText` в результате, не бросает. Проверка через `isOrderSuccessful(result)`. Прямые вызовы `connector.spot`/`connector.futures` могут бросать исключения — потребитель обрабатывает их сам.
 - **Demo trading**: `ExchangeConfig.isDemoMode = true`, никаких ручных URL-переопределений.
-- **Биржи**: `@solncebro/exchange-engine` 0.9.1+ (не CCXT напрямую). Bybit: WebSocket для ордеров.
+- **Биржи**: `@solncebro/exchange-engine` 0.10.0+. Bybit: WebSocket для ордеров.
 - **Map-коллекции**: `SymbolMappingByExchange` и `ExchangeConnectorByName` — это `Map`, не объекты.
 
 ### Интеграционные тесты

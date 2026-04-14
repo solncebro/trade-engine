@@ -190,7 +190,7 @@ const limitParams = OrderCalculator.calculateLimitOrderWithPriceAdjustment({
 ## Requirements
 
 - Node.js >= 18
-- `@solncebro/exchange-engine` >= 0.6.0
+- `@solncebro/exchange-engine` >= 0.10.0
 
 ## License
 
