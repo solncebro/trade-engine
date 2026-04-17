@@ -47,6 +47,11 @@ export type {
   TradeSymbolBySymbol,
   TradeSymbolFilter,
   WebSocketConnectionInfo,
+  OrderUpdateEvent,
+  PositionUpdateEvent,
+  OrderUpdateHandler,
+  PositionUpdateHandler,
+  UserDataStreamHandlerArgs,
 } from '@solncebro/exchange-engine';
 
 export * from './common';

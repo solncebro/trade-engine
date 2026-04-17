@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.2.0] - 2026-04-17
+
+### Added
+- New type re-exports from `@solncebro/exchange-engine`: `OrderUpdateEvent`, `PositionUpdateEvent`, `OrderUpdateHandler`, `PositionUpdateHandler`, `UserDataStreamHandlerArgs`
+
+### Changed
+- Upgraded `@solncebro/exchange-engine` from 0.10.0 to 0.11.0
+
+### Notes on exchange-engine 0.11.0
+- `ExchangeClient` interface: новые методы User Data Stream — `connectUserDataStream(handler)`, `disconnectUserDataStream()`, `isUserDataStreamConnected()`
+- `OrderUpdateEvent` — нормализованное событие обновления ордера (symbol, orderId, side, status, price, avgPrice, amount, filledAmount, timestamp)
+- `PositionUpdateEvent` — нормализованное событие обновления позиции (symbol, side, size, entryPrice, markPrice, unrealisedPnl, leverage, liquidationPrice, positionSide, timestamp)
+
 ## [3.1.5] - 2026-04-14
 
 ### Changed
@@ -180,6 +193,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Utility functions: `isOrderSuccessful`, `isSpot`, `normalizeSymbol`, `formatTimestamp`, `createLogger`
 - Error-as-value pattern for all trading operations
 
+[3.2.0]: https://github.com/solncebro/trade-engine/releases/tag/v3.2.0
 [3.1.5]: https://github.com/solncebro/trade-engine/releases/tag/v3.1.5
 [3.1.4]: https://github.com/solncebro/trade-engine/releases/tag/v3.1.4
 [3.1.3]: https://github.com/solncebro/trade-engine/releases/tag/v3.1.3

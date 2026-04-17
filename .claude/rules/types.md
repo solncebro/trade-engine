@@ -4,10 +4,10 @@
 
 ## Реэкспорты из exchange-engine
 
-Из `@solncebro/exchange-engine` (0.9.1+) реэкспортируются:
+Из `@solncebro/exchange-engine` (0.11.0+) реэкспортируются:
 - **Constants**: `MARKET_TYPE_LIST`
 - **Enums**: `ExchangeNameEnum`, `MarginModeEnum`, `MarketTypeEnum`, `OrderSideEnum`, `OrderTypeEnum`, `PositionModeEnum`, `PositionSideEnum`, `TimeInForceEnum`, `TradeSymbolTypeEnum`, `WebSocketConnectionTypeEnum`, `WorkingTypeEnum`
-- **Types**: `AccountBalances`, `Balance`, `BalanceByAsset`, `ClosedPnl`, `CreateOrderWebSocketArgs`, `ExchangeArgs`, `ExchangeClient`, `ExchangeConfig`, `ExchangeLogger`, `FeeRate`, `FetchAllKlinesOptions`, `FetchPageWithLimitArgs`, `FundingInfo`, `FundingRateHistory`, `Income`, `Kline`, `KlineHandler`, `KlineInterval`, `MarkPrice`, `ModifyOrderArgs`, `OpenInterest`, `Order`, `OrderBook`, `OrderBookLevel`, `Position`, `PublicTrade`, `ResubscribeKlinesArgs`, `SubscribeKlinesArgs`, `Ticker`, `TickerBySymbol`, `TradeSymbol`, `TradeSymbolBySymbol`, `TradeSymbolFilter`, `WebSocketConnectionInfo`
+- **Types**: `AccountBalances`, `Balance`, `BalanceByAsset`, `ClosedPnl`, `CreateOrderWebSocketArgs`, `ExchangeArgs`, `ExchangeClient`, `ExchangeConfig`, `ExchangeLogger`, `FeeRate`, `FetchAllKlinesOptions`, `FetchPageWithLimitArgs`, `FundingInfo`, `FundingRateHistory`, `Income`, `Kline`, `KlineHandler`, `KlineInterval`, `MarkPrice`, `ModifyOrderArgs`, `OpenInterest`, `Order`, `OrderBook`, `OrderBookLevel`, `OrderUpdateEvent`, `OrderUpdateHandler`, `Position`, `PositionUpdateEvent`, `PositionUpdateHandler`, `PublicTrade`, `ResubscribeKlinesArgs`, `SubscribeKlinesArgs`, `Ticker`, `TickerBySymbol`, `TradeSymbol`, `TradeSymbolBySymbol`, `TradeSymbolFilter`, `UserDataStreamHandlerArgs`, `WebSocketConnectionInfo`
 - **Classes**: `ExchangeError`
 
 ## Основные типы
@@ -152,6 +152,45 @@ interface TelegramCommandHandlerConfig<T> {
   settingsGetter: () => T;
   settingUpdater: (key: keyof T, value: unknown) => Promise<void>;
 }
+```
+
+### User Data Stream типы (реэкспорт из exchange-engine)
+
+```typescript
+interface OrderUpdateEvent {
+  symbol: string;
+  orderId: string;
+  clientOrderId: string;
+  side: OrderSideEnum;
+  status: string;
+  price: number;
+  avgPrice: number;
+  amount: number;
+  filledAmount: number;
+  timestamp: number;
+}
+
+interface PositionUpdateEvent {
+  symbol: string;
+  side: string;
+  size: number;
+  entryPrice: number;
+  markPrice: number;
+  unrealisedPnl: number;
+  leverage: number;
+  liquidationPrice: number;
+  positionSide: string;
+  timestamp: number;
+}
+
+type OrderUpdateHandler = (event: OrderUpdateEvent) => void;
+type PositionUpdateHandler = (event: PositionUpdateEvent) => void;
+
+interface UserDataStreamHandlerArgs {
+  onOrderUpdate: OrderUpdateHandler;
+  onPositionUpdate: PositionUpdateHandler;
+}
+// Используется в ExchangeClient.connectUserDataStream(handler)
 ```
 
 ### Общие типы (`common.ts`)
