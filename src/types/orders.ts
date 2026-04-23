@@ -26,6 +26,7 @@ export interface EntityWithOrderId {
 
 export interface EntityWithErrorText {
   errorText?: string;
+  errorCode?: number | string;
 }
 
 export interface OrderAttributes extends EntityWithErrorText {
@@ -37,6 +38,7 @@ export interface OrderAttributes extends EntityWithErrorText {
 export interface OrderResult extends OrderAttributes, EntityWithOrderId {
   actualExchangeParams?: ExchangeOrderParams;
   responseData?: ExchangeResponseData;
+  attemptCount?: number;
 }
 
 export interface CloseOrderResult

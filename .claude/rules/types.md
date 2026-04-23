@@ -4,10 +4,10 @@
 
 ## Реэкспорты из exchange-engine
 
-Из `@solncebro/exchange-engine` (0.11.0+) реэкспортируются:
+Из `@solncebro/exchange-engine` (0.12.0+) реэкспортируются:
 - **Constants**: `MARKET_TYPE_LIST`
 - **Enums**: `ExchangeNameEnum`, `MarginModeEnum`, `MarketTypeEnum`, `OrderSideEnum`, `OrderTypeEnum`, `PositionModeEnum`, `PositionSideEnum`, `TimeInForceEnum`, `TradeSymbolTypeEnum`, `WebSocketConnectionTypeEnum`, `WorkingTypeEnum`
-- **Types**: `AccountBalances`, `Balance`, `BalanceByAsset`, `ClosedPnl`, `CreateOrderWebSocketArgs`, `ExchangeArgs`, `ExchangeClient`, `ExchangeConfig`, `ExchangeLogger`, `FeeRate`, `FetchAllKlinesOptions`, `FetchPageWithLimitArgs`, `FundingInfo`, `FundingRateHistory`, `Income`, `Kline`, `KlineHandler`, `KlineInterval`, `MarkPrice`, `ModifyOrderArgs`, `OpenInterest`, `Order`, `OrderBook`, `OrderBookLevel`, `OrderUpdateEvent`, `OrderUpdateHandler`, `Position`, `PositionUpdateEvent`, `PositionUpdateHandler`, `PublicTrade`, `ResubscribeKlinesArgs`, `SubscribeKlinesArgs`, `Ticker`, `TickerBySymbol`, `TradeSymbol`, `TradeSymbolBySymbol`, `TradeSymbolFilter`, `UserDataStreamHandlerArgs`, `WebSocketConnectionInfo`
+- **Types**: `AccountBalances`, `Balance`, `BalanceByAsset`, `ClosedPnl`, `CreateOrderWebSocketArgs`, `ExchangeArgs`, `ExchangeClient`, `ExchangeConfig`, `ExchangeLogger`, `FeeRate`, `FetchAllKlinesOptions`, `FetchPageWithLimitArgs`, `FundingInfo`, `FundingRateHistory`, `Income`, `Kline`, `KlineHandler`, `KlineInterval`, `MarkPrice`, `MarkPriceUpdate`, `ModifyOrderArgs`, `OpenInterest`, `Order`, `OrderBook`, `OrderBookLevel`, `OrderUpdateEvent`, `OrderUpdateHandler`, `Position`, `PositionUpdateEvent`, `PositionUpdateHandler`, `PublicTrade`, `ResubscribeKlinesArgs`, `SubscribeKlinesArgs`, `Ticker`, `TickerBySymbol`, `TradeSymbol`, `TradeSymbolBySymbol`, `TradeSymbolFilter`, `UserDataStreamHandlerArgs`, `WebSocketConnectionInfo`
 - **Classes**: `ExchangeError`
 
 ## Основные типы
@@ -36,6 +36,7 @@ interface EntityWithOrderId {
 
 interface EntityWithErrorText {
   errorText?: string;
+  errorCode?: number | string; // код ошибки биржи (из ExchangeError.code)
 }
 
 interface OrderAttributes extends EntityWithErrorText {
@@ -47,6 +48,7 @@ interface OrderAttributes extends EntityWithErrorText {
 interface OrderResult extends OrderAttributes, EntityWithOrderId {
   actualExchangeParams?: ExchangeOrderParams;
   responseData?: ExchangeResponseData;
+  attemptCount?: number; // количество попыток создания ордера
 }
 
 interface CloseOrderResult extends EntityWithErrorText, EntityWithOrderId {
@@ -192,6 +194,26 @@ interface UserDataStreamHandlerArgs {
 }
 // Используется в ExchangeClient.connectUserDataStream(handler)
 ```
+
+### Ценовые лимиты (`priceLimit.ts`)
+
+```typescript
+interface PriceLimitBoundsArgs {
+  tradeSymbol: TradeSymbol;
+  markPrice: number;
+  indexPrice?: number;
+}
+
+interface PriceLimitBounds {
+  minPrice: number;
+  maxPrice: number;
+  minDeviationPercent: number;
+  maxDeviationPercent: number;
+  source: PriceLimitRisk['source']; // 'bybitRiskParameters' | 'binancePercentPriceBySide' | ...
+}
+```
+
+Используется в `OrderCalculator.calculatePriceLimitBounds()`. Возвращает `null`, если у символа нет `priceLimitRisk` или `markPrice <= 0`, а также для `binancePercentPriceBySide` (не поддерживается в расчёте).
 
 ### Общие типы (`common.ts`)
 

@@ -130,6 +130,28 @@ const limitParams = OrderCalculator.calculateLimitOrderWithPriceAdjustment({
 });
 ```
 
+### Mark price streaming
+
+```typescript
+connector.startWatchingMarkPrices();
+
+const markPriceUpdate = connector.getMarkPrice('BTCUSDT');
+// { symbol, markPrice, indexPrice?, timestamp }
+
+connector.stopWatchingMarkPrices();
+```
+
+### Price limit bounds
+
+```typescript
+const bounds = OrderCalculator.calculatePriceLimitBounds({
+  tradeSymbol,
+  markPrice: 50000,
+  indexPrice: 49980,
+});
+// { minPrice, maxPrice, minDeviationPercent, maxDeviationPercent, source } | null
+```
+
 ## Exports
 
 ### Classes
@@ -163,9 +185,11 @@ const limitParams = OrderCalculator.calculateLimitOrderWithPriceAdjustment({
 |------|------------|
 | `OrderParams` | Order parameters (symbol, side, amount, price, type, marketType) |
 | `OrderAttributes` | Calculated order with exchange name and optional error |
-| `OrderResult` | Execution result with orderId and response data |
+| `OrderResult` | Execution result with orderId, responseData, optional errorCode and attemptCount |
 | `CloseOrderResult` | TP/SL order result |
 | `SignalExecutionDetails` | Full signal execution with TP/SL/emergency results and timings |
+| `PriceLimitBoundsArgs` | Arguments for `calculatePriceLimitBounds` |
+| `PriceLimitBounds` | Price limit calculation result (min/max price with deviation percentages) |
 | `SymbolMappingByExchange` | `Map<ExchangeNameEnum, Map<string, string>>` |
 | `ExchangeConnectorByName` | `Map<ExchangeNameEnum, ExchangeConnector>` |
 | `ExchangeConfig` | `{ apiKey, secret, isDemoMode? }` |
@@ -190,7 +214,7 @@ const limitParams = OrderCalculator.calculateLimitOrderWithPriceAdjustment({
 ## Requirements
 
 - Node.js >= 18
-- `@solncebro/exchange-engine` >= 0.10.0
+- `@solncebro/exchange-engine` >= 0.12.0
 
 ## License
 

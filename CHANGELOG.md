@@ -5,6 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.3.0] - 2026-04-24
+
+### Added
+- `ExchangeConnector.startWatchingMarkPrices()` — подписка на real-time обновления mark price через WebSocket
+- `ExchangeConnector.stopWatchingMarkPrices()` — отписка и очистка кэша mark price
+- `ExchangeConnector.getMarkPrice(symbol)` — получение последнего mark price из кэша (`MarkPriceUpdate | undefined`)
+- `OrderCalculator.calculatePriceLimitBounds(args)` — расчёт ценовых лимитов (min/max) для символа с учётом exchange-specific правил (Bybit `bybitRiskParameters`, Binance `multiplierUp/Down`)
+- Новые типы: `PriceLimitBounds`, `PriceLimitBoundsArgs` (реэкспортируются из `src/types/priceLimit.ts`)
+- `EntityWithErrorText.errorCode?: number | string` — числовой или строковый код ошибки биржи (заполняется из `ExchangeError.code` при ошибке создания ордера)
+- `OrderResult.attemptCount?: number` — количество попыток создания ордера
+- Новый реэкспорт из `@solncebro/exchange-engine`: `MarkPriceUpdate`
+
+### Changed
+- Upgraded `@solncebro/exchange-engine` from 0.11.0 to 0.12.0
+- `ExchangeConnector.disconnect()` теперь вызывает `stopWatchingMarkPrices()` при отключении
+
+### Notes on exchange-engine 0.12.0
+- `ExchangeClient` interface: новые методы подписки на mark price — `subscribeMarkPrices(handler)`, `unsubscribeMarkPrices(handler)`
+- `MarkPriceUpdate` — нормализованное событие обновления mark price (symbol, markPrice, indexPrice?, timestamp)
+
 ## [3.2.0] - 2026-04-17
 
 ### Added
@@ -193,6 +213,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Utility functions: `isOrderSuccessful`, `isSpot`, `normalizeSymbol`, `formatTimestamp`, `createLogger`
 - Error-as-value pattern for all trading operations
 
+[3.3.0]: https://github.com/solncebro/trade-engine/releases/tag/v3.3.0
 [3.2.0]: https://github.com/solncebro/trade-engine/releases/tag/v3.2.0
 [3.1.5]: https://github.com/solncebro/trade-engine/releases/tag/v3.1.5
 [3.1.4]: https://github.com/solncebro/trade-engine/releases/tag/v3.1.4

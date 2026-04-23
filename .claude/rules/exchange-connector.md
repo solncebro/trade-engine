@@ -4,7 +4,7 @@
 
 ## Зависимость
 
-Использует `@solncebro/exchange-engine` 0.10.0+. Все низкоуровневые операции делегируются этой библиотеке.
+Использует `@solncebro/exchange-engine` 0.12.0+. Все низкоуровневые операции делегируются этой библиотеке.
 
 ## Инициализация
 
@@ -113,6 +113,21 @@ connector.getClient(marketType).amountToPrecision(symbol, amount);
 - `connectTradeWebSocket()` — подключение торгового WebSocket
 - `getWebSocketConnectionInfoList()` → `WebSocketConnectionInfo[]` — информация о WS-соединениях
 
+## Mark Price (real-time)
+
+`ExchangeConnector` поддерживает подписку на real-time обновления mark price через WebSocket:
+
+```typescript
+connector.startWatchingMarkPrices(); // подписка (idempotent)
+connector.getMarkPrice('BTCUSDT');   // → MarkPriceUpdate | undefined
+connector.stopWatchingMarkPrices();  // отписка + очистка кэша
+```
+
+- Данные хранятся в `Map<symbol, MarkPriceUpdate>` — обновляются при каждом WebSocket-событии
+- Фильтрует невалидные значения (`markPrice <= 0` или не-finite)
+- `disconnect()` автоматически вызывает `stopWatchingMarkPrices()`
+- Использует `exchange.futures.subscribeMarkPrices` / `unsubscribeMarkPrices` из `exchange-engine` 0.12.0+
+
 ## Тикеры
 
 - Хранятся в `Map<string, Ticker>` с ключом `"marketType:symbol"` (например `"futures:BTCUSDT"`)
@@ -161,17 +176,20 @@ const result = await connector.createOrder({
 | `initialize()` | `Promise<void>` | Загрузка символов, старт тикеров |
 | `resolveSymbolWithPrefix(symbol, marketType)` | `string` | Поиск символа с префиксом |
 | `getTicker(symbol, marketType)` | `Ticker \| undefined` | Текущий тикер из кэша |
+| `startWatchingMarkPrices()` | `void` | Подписка на real-time mark price (idempotent) |
+| `stopWatchingMarkPrices()` | `void` | Отписка и очистка кэша mark price |
+| `getMarkPrice(symbol)` | `MarkPriceUpdate \| undefined` | Последний mark price из кэша |
 | `createOrder(params)` | `Promise<OrderResult>` | Создание ордера |
 | `getFuturesSymbols()` | `Promise<string[]>` | Список фьючерсных символов |
 | `getSpotSymbols()` | `Promise<string[]>` | Список спотовых символов |
 | `getClient(marketType)` | `ExchangeClient` | Динамический выбор клиента по marketType |
 | `getExchangeName()` | `ExchangeNameEnum` | Имя биржи |
 | `getAccountId()` | `string` | SHA256 хеш API-ключа (16 символов) |
-| `disconnect()` | `Promise<void>` | Остановка тикеров, закрытие соединения |
+| `disconnect()` | `Promise<void>` | Остановка тикеров, mark price, закрытие соединения |
 
 ## Обработка ошибок
 
-`createOrder()` — единственный метод с внутренним try/catch. Возвращает `OrderResult.errorText` вместо исключения.
+`createOrder()` — единственный метод с внутренним try/catch. Возвращает `OrderResult.errorText` вместо исключения. Если ошибка является `ExchangeError`, то `OrderResult.errorCode` заполняется кодом ошибки биржи.
 
 Все остальные операции (позиции, баланс, leverage, margin mode, ордерная книга и т.д.) выполняются через `connector.spot` / `connector.futures` напрямую. Обработка ошибок — ответственность потребителя.
 

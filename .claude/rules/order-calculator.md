@@ -68,6 +68,19 @@ static calculateLimitOrderWithPriceAdjustment(args: {
 
 Корректирует цену на процент и пересчитывает `amount` по новой цене. Для спот-ордеров объём делится на leverage. Если передан `exchangeClient` — применяет `amountToPrecision` и `priceToPrecision` к результирующим `amount` и `price`.
 
+### calculatePriceLimitBounds
+
+```typescript
+static calculatePriceLimitBounds(args: PriceLimitBoundsArgs): PriceLimitBounds | null
+```
+
+Рассчитывает допустимые ценовые границы для символа на основе биржевых правил:
+- Возвращает `null`, если у символа нет `priceLimitRisk`, `markPrice <= 0` или source = `binancePercentPriceBySide` (не поддерживается)
+- **`bybitRiskParameters`**: использует `priceLimitRatioX` и `priceLimitRatioY` вместе с `indexPrice` (при наличии) и `markPrice`
+- **Остальные sources**: использует `multiplierUp` / `multiplierDown` от `markPrice`
+
+Результат: `{ minPrice, maxPrice, minDeviationPercent, maxDeviationPercent, source }`.
+
 ### calculateCloseOrder
 
 ```typescript

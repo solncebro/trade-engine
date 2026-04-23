@@ -1,7 +1,7 @@
 import * as crypto from 'crypto';
 
-import { Exchange as ExchangeInstance, ExchangeNameEnum, OrderSideEnum, PositionSideEnum, TimeInForceEnum, TradeSymbolTypeEnum } from '@solncebro/exchange-engine';
-import type { CreateOrderWebSocketArgs, ExchangeClient, Ticker, TickerBySymbol } from '@solncebro/exchange-engine';
+import { ExchangeError, Exchange as ExchangeInstance, ExchangeNameEnum, OrderSideEnum, PositionSideEnum, TimeInForceEnum, TradeSymbolTypeEnum } from '@solncebro/exchange-engine';
+import type { CreateOrderWebSocketArgs, ExchangeClient, MarkPriceUpdate, Ticker, TickerBySymbol } from '@solncebro/exchange-engine';
 
 import { logger } from '../core/logger';
 import {
@@ -21,6 +21,17 @@ export class ExchangeConnector {
   private tickersByMarketTypeAndSymbol: Map<string, Ticker> = new Map();
   private isWatchingTickers: boolean = false;
   private tickerUpdateIntervalId: NodeJS.Timeout | null = null;
+  private markPriceByFuturesSymbol: Map<string, MarkPriceUpdate> = new Map();
+  private isWatchingMarkPrices: boolean = false;
+
+  private readonly markPriceHandler = (list: MarkPriceUpdate[]): void => {
+    for (const update of list) {
+      if (!Number.isFinite(update.markPrice) || update.markPrice <= 0) {
+        continue;
+      }
+      this.markPriceByFuturesSymbol.set(update.symbol, update);
+    }
+  };
 
   constructor(
     exchangeName: ExchangeNameEnum,
@@ -162,6 +173,47 @@ export class ExchangeConnector {
     return this.tickersByMarketTypeAndSymbol.get(tickerKey);
   }
 
+  public startWatchingMarkPrices(): void {
+    if (this.isWatchingMarkPrices) {
+      return;
+    }
+
+    this.isWatchingMarkPrices = true;
+
+    try {
+      this.exchange.futures.subscribeMarkPrices(this.markPriceHandler);
+    } catch (error) {
+      logger.error(
+        { error, exchange: this.exchangeName },
+        'Failed to start watching mark prices',
+      );
+      this.isWatchingMarkPrices = false;
+    }
+  }
+
+  public stopWatchingMarkPrices(): void {
+    if (!this.isWatchingMarkPrices) {
+      return;
+    }
+
+    this.isWatchingMarkPrices = false;
+
+    try {
+      this.exchange.futures.unsubscribeMarkPrices(this.markPriceHandler);
+    } catch (error) {
+      logger.warn(
+        { error, exchange: this.exchangeName },
+        'Error during mark price unsubscribe',
+      );
+    }
+
+    this.markPriceByFuturesSymbol.clear();
+  }
+
+  public getMarkPrice(symbol: string): MarkPriceUpdate | undefined {
+    return this.markPriceByFuturesSymbol.get(symbol);
+  }
+
   public async createOrder(orderParams: OrderParams): Promise<OrderResult> {
     const resultBase = {
       exchangeName: this.exchangeName,
@@ -187,6 +239,8 @@ export class ExchangeConnector {
         customMessage: 'Failed to create order',
         error,
       });
+      const errorCode = error instanceof ExchangeError ? error.code : undefined;
+
       logger.error(
         { error, orderParams, exchange: this.exchangeName },
         errorMessage
@@ -195,6 +249,7 @@ export class ExchangeConnector {
       return {
         ...resultBase,
         errorText: errorMessage,
+        errorCode,
         actualExchangeParams: undefined,
       };
     }
@@ -337,6 +392,7 @@ export class ExchangeConnector {
 
   public async disconnect(): Promise<void> {
     this.isWatchingTickers = false;
+    this.stopWatchingMarkPrices();
 
     if (this.tickerUpdateIntervalId) {
       clearInterval(this.tickerUpdateIntervalId);

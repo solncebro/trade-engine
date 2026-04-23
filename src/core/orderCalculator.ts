@@ -13,6 +13,8 @@ import {
   OrderParams,
   OrderSideEnum,
   OrderTypeEnum,
+  PriceLimitBounds,
+  PriceLimitBoundsArgs,
   SymbolMappingByExchange,
 } from '../types';
 import { isSpot } from '../utils/order.utils';
@@ -454,6 +456,57 @@ export class OrderCalculator {
       type: OrderTypeEnum.Limit,
       amount,
       price,
+    };
+  }
+
+  public static calculatePriceLimitBounds(
+    args: PriceLimitBoundsArgs
+  ): PriceLimitBounds | null {
+    const { tradeSymbol, markPrice, indexPrice } = args;
+    const priceLimitRisk = tradeSymbol.priceLimitRisk;
+
+    if (!priceLimitRisk || markPrice <= 0) {
+      return null;
+    }
+
+    if (priceLimitRisk.source === 'binancePercentPriceBySide') {
+      return null;
+    }
+
+    let minPrice: number;
+    let maxPrice: number;
+
+    if (priceLimitRisk.source === 'bybitRiskParameters') {
+      const x = parseFloat(priceLimitRisk.priceLimitRatioX);
+      const y = parseFloat(priceLimitRisk.priceLimitRatioY);
+      const referencePrice =
+        indexPrice !== undefined && indexPrice > 0 ? indexPrice : markPrice;
+
+      maxPrice = Math.min(
+        Math.max(referencePrice, markPrice * (1 + x)),
+        markPrice * (1 + y)
+      );
+      minPrice = Math.max(
+        Math.min(referencePrice, markPrice * (1 - x)),
+        markPrice * (1 - y)
+      );
+    } else {
+      const multiplierUp = parseFloat(priceLimitRisk.multiplierUp);
+      const multiplierDown = parseFloat(priceLimitRisk.multiplierDown);
+
+      maxPrice = markPrice * multiplierUp;
+      minPrice = markPrice * multiplierDown;
+    }
+
+    const maxDeviationPercent = ((maxPrice - markPrice) / markPrice) * 100;
+    const minDeviationPercent = ((minPrice - markPrice) / markPrice) * 100;
+
+    return {
+      minPrice,
+      maxPrice,
+      minDeviationPercent,
+      maxDeviationPercent,
+      source: priceLimitRisk.source,
     };
   }
 
