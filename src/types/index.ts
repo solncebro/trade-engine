@@ -32,6 +32,7 @@ export type {
   KlineHandler,
   KlineInterval,
   MarkPrice,
+  MarkPriceUpdate,
   ModifyOrderArgs,
   OpenInterest,
   Order,

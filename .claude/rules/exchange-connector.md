@@ -4,15 +4,18 @@
 
 ## Зависимость
 
-Использует `@solncebro/exchange-engine` 0.12.0+. Все низкоуровневые операции делегируются этой библиотеке.
+Использует `@solncebro/exchange-engine` 0.12.1+. Все низкоуровневые операции делегируются этой библиотеке.
 
 ## Инициализация
 
 ```typescript
+import { ExchangeNameEnum, PositionModeEnum } from '@solncebro/exchange-engine';
+
 const connector = new ExchangeConnector(
   ExchangeNameEnum.Binance,
   { apiKey: '...', secret: '...', isDemoMode: true },
-  message => logger.warn(message) // опциональный onNotify callback
+  message => logger.warn(message),
+  PositionModeEnum.Hedge,
 );
 await connector.initialize();
 // → загружает futures символы, затем spot символы
@@ -20,6 +23,8 @@ await connector.initialize();
 ```
 
 Третий параметр `onNotify` — опциональный callback для получения критических уведомлений от биржи. Начиная с `exchange-engine` 0.9.0, обработчик CRITICAL-сообщений **не вызывает `process.exit(1)` автоматически** — потребитель должен реализовать собственную логику завершения при необходимости.
+
+Четвёртый параметр `futuresPositionMode` (по умолчанию `PositionModeEnum.OneWay`) задаёт режим для логики `positionSide` при создании **futures**-ордеров; значение доступно как публичное поле `connector.futuresPositionMode`.
 
 ## Demo Trading
 
@@ -159,9 +164,9 @@ const result = await connector.createOrder({
 ```
 
 Особенности `buildCreateOrderArgs`:
-- **positionSide**: если явно указан в `orderParams.positionSide`, используется без изменений; для остальных non-Binance бирж автоматически вычисляется (Long для Buy, Short для Sell); Binance Futures игнорирует это поле
-- **Futures (кроме Binance)**: если `positionSide` не задан, устанавливает его автоматически (Long для Buy, Short для Sell)
-- **Binance Futures**: `positionSide` не передаётся (избегаем конфликта с one-way настройками аккаунта)
+- **positionSide**: если явно указан в `orderParams.positionSide`, используется без изменений
+- **`futuresPositionMode === OneWay`** (по умолчанию): если `positionSide` не задан в `orderParams`, поле не передаётся
+- **`futuresPositionMode === Hedge`**: если `positionSide` не задан в `orderParams`, автоматически Long для Buy, Short для Sell
 - **Market**: поле `price` в `OrderParams` может передаваться для удобства, но для `OrderTypeEnum.Market` оно не форвардится в параметры создания ордера (в том числе для `Binance` market-ордеров)
 - **Все биржи**: `timeInForce` — `IOC` для Market, `GTC` для Limit
 - **reduceOnly**: если `orderParams.params.reduceOnly = true`
@@ -169,10 +174,11 @@ const result = await connector.createOrder({
 
 ## Публичные методы
 
-| Метод | Возвращает | Описание |
+| Метод / поле | Возвращает | Описание |
 |-------|-----------|----------|
 | `get spot` | `ExchangeClient` | Прямой доступ к spot-клиенту |
 | `get futures` | `ExchangeClient` | Прямой доступ к futures-клиенту |
+| `futuresPositionMode` | `PositionModeEnum` | Режим позиций для futures (задаётся в конструкторе, по умолчанию `OneWay`) |
 | `initialize()` | `Promise<void>` | Загрузка символов, старт тикеров |
 | `resolveSymbolWithPrefix(symbol, marketType)` | `string` | Поиск символа с префиксом |
 | `getTicker(symbol, marketType)` | `Ticker \| undefined` | Текущий тикер из кэша |

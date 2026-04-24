@@ -60,7 +60,7 @@ npx jest --config jest.integration.config.js --runInBand --testPathPatterns=<pat
 
 ### Ключевые модули
 
-- **`src/services/exchangeConnector.ts`** — обёртка над `@solncebro/exchange-engine`. Подключения, тикеры, резолвинг символов, исполнение ордеров. Прямой доступ к клиентам через `connector.spot` / `connector.futures`. → [подробнее](.claude/rules/exchange-connector.md)
+- **`src/services/exchangeConnector.ts`** — обёртка над `@solncebro/exchange-engine`. Подключения, тикеры, mark price WebSocket, резолвинг символов, исполнение ордеров; для futures — `futuresPositionMode` (OneWay / Hedge) влияет на авто-`positionSide` в `createOrder`. Прямой доступ к клиентам через `connector.spot` / `connector.futures`. → [подробнее](.claude/rules/exchange-connector.md)
 - **`src/core/orderCalculator.ts`** — статические методы расчёта ордеров, маппинг символов, кредитное плечо, spot fallback. → [подробнее](.claude/rules/order-calculator.md)
 - **`src/core/orderExecutor.ts`** — базовый класс исполнения ордеров с TP/SL и аварийным выходом.
 - **`src/services/telegram*.ts`** — Telegram-бот (Telegraf) + MTProto-слушатель. → [подробнее](.claude/rules/services.md)
@@ -70,7 +70,7 @@ npx jest --config jest.integration.config.js --runInBand --testPathPatterns=<pat
 
 - **Ошибки — не исключения**: `createOrder()` возвращает `errorText` в результате, не бросает. Проверка через `isOrderSuccessful(result)`. Прямые вызовы `connector.spot`/`connector.futures` могут бросать исключения — потребитель обрабатывает их сам.
 - **Demo trading**: `ExchangeConfig.isDemoMode = true`, никаких ручных URL-переопределений.
-- **Биржи**: `@solncebro/exchange-engine` 0.12.0+. Bybit: WebSocket для ордеров.
+- **Биржи**: `@solncebro/exchange-engine` 0.12.1+. Bybit: WebSocket для ордеров.
 - **Map-коллекции**: `SymbolMappingByExchange` и `ExchangeConnectorByName` — это `Map`, не объекты.
 
 ### Интеграционные тесты

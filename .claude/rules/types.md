@@ -4,7 +4,7 @@
 
 ## Реэкспорты из exchange-engine
 
-Из `@solncebro/exchange-engine` (0.12.0+) реэкспортируются:
+Из `@solncebro/exchange-engine` (0.12.1+) реэкспортируются:
 - **Constants**: `MARKET_TYPE_LIST`
 - **Enums**: `ExchangeNameEnum`, `MarginModeEnum`, `MarketTypeEnum`, `OrderSideEnum`, `OrderTypeEnum`, `PositionModeEnum`, `PositionSideEnum`, `TimeInForceEnum`, `TradeSymbolTypeEnum`, `WebSocketConnectionTypeEnum`, `WorkingTypeEnum`
 - **Types**: `AccountBalances`, `Balance`, `BalanceByAsset`, `ClosedPnl`, `CreateOrderWebSocketArgs`, `ExchangeArgs`, `ExchangeClient`, `ExchangeConfig`, `ExchangeLogger`, `FeeRate`, `FetchAllKlinesOptions`, `FetchPageWithLimitArgs`, `FundingInfo`, `FundingRateHistory`, `Income`, `Kline`, `KlineHandler`, `KlineInterval`, `MarkPrice`, `MarkPriceUpdate`, `ModifyOrderArgs`, `OpenInterest`, `Order`, `OrderBook`, `OrderBookLevel`, `OrderUpdateEvent`, `OrderUpdateHandler`, `Position`, `PositionUpdateEvent`, `PositionUpdateHandler`, `PublicTrade`, `ResubscribeKlinesArgs`, `SubscribeKlinesArgs`, `Ticker`, `TickerBySymbol`, `TradeSymbol`, `TradeSymbolBySymbol`, `TradeSymbolFilter`, `UserDataStreamHandlerArgs`, `WebSocketConnectionInfo`

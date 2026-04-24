@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.3.1] - 2026-04-24
+
+### Added
+- `ExchangeConnector`: четвёртый опциональный аргумент конструктора `futuresPositionMode` (по умолчанию `PositionModeEnum.OneWay`) и публичное поле `readonly futuresPositionMode` — режим для логики `positionSide` при создании futures-ордеров
+
+### Changed
+- Upgraded `@solncebro/exchange-engine` from 0.12.0 to 0.12.1
+- `ExchangeConnector.buildCreateOrderArgs()`: в режиме **Hedge** при отсутствии явного `orderParams.positionSide` автоматически выставляется `Long` / `Short` по стороне ордера; в режиме **OneWay** (по умолчанию) `positionSide` автоматически не подставляется
+
+### Fixed
+- Явный реэкспорт типа `MarkPriceUpdate` из публичного entry (`src/types/index.ts`)
+
 ## [3.3.0] - 2026-04-24
 
 ### Added
@@ -213,6 +225,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Utility functions: `isOrderSuccessful`, `isSpot`, `normalizeSymbol`, `formatTimestamp`, `createLogger`
 - Error-as-value pattern for all trading operations
 
+[3.3.1]: https://github.com/solncebro/trade-engine/releases/tag/v3.3.1
 [3.3.0]: https://github.com/solncebro/trade-engine/releases/tag/v3.3.0
 [3.2.0]: https://github.com/solncebro/trade-engine/releases/tag/v3.2.0
 [3.1.5]: https://github.com/solncebro/trade-engine/releases/tag/v3.1.5

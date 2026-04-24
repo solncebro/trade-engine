@@ -1,6 +1,6 @@
 import * as crypto from 'crypto';
 
-import { ExchangeError, Exchange as ExchangeInstance, ExchangeNameEnum, OrderSideEnum, PositionSideEnum, TimeInForceEnum, TradeSymbolTypeEnum } from '@solncebro/exchange-engine';
+import { ExchangeError, Exchange as ExchangeInstance, ExchangeNameEnum, OrderSideEnum, PositionModeEnum, PositionSideEnum, TimeInForceEnum, TradeSymbolTypeEnum } from '@solncebro/exchange-engine';
 import type { CreateOrderWebSocketArgs, ExchangeClient, MarkPriceUpdate, Ticker, TickerBySymbol } from '@solncebro/exchange-engine';
 
 import { logger } from '../core/logger';
@@ -23,6 +23,7 @@ export class ExchangeConnector {
   private tickerUpdateIntervalId: NodeJS.Timeout | null = null;
   private markPriceByFuturesSymbol: Map<string, MarkPriceUpdate> = new Map();
   private isWatchingMarkPrices: boolean = false;
+  public readonly futuresPositionMode: PositionModeEnum;
 
   private readonly markPriceHandler = (list: MarkPriceUpdate[]): void => {
     for (const update of list) {
@@ -36,9 +37,11 @@ export class ExchangeConnector {
   constructor(
     exchangeName: ExchangeNameEnum,
     config: ExchangeConfig,
-    onNotify?: (message: string) => void | Promise<void>
+    onNotify?: (message: string) => void | Promise<void>,
+    futuresPositionMode: PositionModeEnum = PositionModeEnum.OneWay
   ) {
     this.exchangeName = exchangeName;
+    this.futuresPositionMode = futuresPositionMode;
 
     this.exchange = new ExchangeInstance(exchangeName, {
       config,
@@ -276,7 +279,7 @@ export class ExchangeConnector {
     if (!isSpot(orderParams.marketType)) {
       if (orderParams.positionSide) {
         args.positionSide = orderParams.positionSide;
-      } else if (this.exchangeName !== ExchangeNameEnum.Binance) {
+      } else if (this.futuresPositionMode === PositionModeEnum.Hedge) {
         args.positionSide = orderParams.side === OrderSideEnum.Buy
           ? PositionSideEnum.Long
           : PositionSideEnum.Short;

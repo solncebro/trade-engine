@@ -15,16 +15,27 @@ yarn add @solncebro/trade-engine
 ### Connect to an exchange
 
 ```typescript
-import { ExchangeConnector, ExchangeNameEnum } from '@solncebro/trade-engine';
+import {
+  ExchangeConnector,
+  ExchangeNameEnum,
+  PositionModeEnum,
+} from '@solncebro/trade-engine';
 
-const connector = new ExchangeConnector(ExchangeNameEnum.Bybit, {
-  apiKey: process.env.API_KEY!,
-  secret: process.env.API_SECRET!,
-  isDemoMode: true, // demo trading mode
-});
+const connector = new ExchangeConnector(
+  ExchangeNameEnum.Bybit,
+  {
+    apiKey: process.env.API_KEY!,
+    secret: process.env.API_SECRET!,
+    isDemoMode: true,
+  },
+  undefined,
+  PositionModeEnum.Hedge,
+);
 
 await connector.initialize();
 ```
+
+Для futures-ордеров можно управлять авто-`positionSide` через 4-й аргумент конструктора `futuresPositionMode`: по умолчанию `PositionModeEnum.OneWay` (авто-`positionSide` не подставляется), в `PositionModeEnum.Hedge` — подставляется автоматически по стороне ордера, если `orderParams.positionSide` не задан.
 
 ### Resolve symbols and create orders
 
@@ -158,7 +169,7 @@ const bounds = OrderCalculator.calculatePriceLimitBounds({
 
 | Class | Description |
 |-------|------------|
-| `ExchangeConnector` | Exchange connection, tickers, symbol resolution, order execution |
+| `ExchangeConnector` | Exchange connection, tickers, symbol resolution, order execution; optional `futuresPositionMode` for futures `positionSide` behavior |
 | `OrderCalculator` | Static methods for order calculation, symbol mapping, leverage setup |
 | `OrderExecutor` | Base class for order execution with TP/SL and emergency exit |
 | `TelegramNotifier` | Telegraf bot for sending notifications and registering commands |
@@ -175,6 +186,7 @@ const bounds = OrderCalculator.calculatePriceLimitBounds({
 | `OrderSideEnum` | `Buy`, `Sell` |
 | `OrderTypeEnum` | `Market`, `Limit`, `StopMarket`, `TakeProfitMarket`, `Stop`, `TakeProfit`, `TrailingStop` |
 | `MarginModeEnum` | `Isolated`, `Cross` |
+| `PositionModeEnum` | `Hedge`, `OneWay` |
 | `MarketTypeEnum` | `Futures`, `Spot` |
 | `TimeInForceEnum` | `Gtc`, `Ioc`, `Fok`, `PostOnly` |
 | `TradeSymbolTypeEnum` | `Spot`, `Swap`, `Future` |
@@ -214,7 +226,7 @@ const bounds = OrderCalculator.calculatePriceLimitBounds({
 ## Requirements
 
 - Node.js >= 18
-- `@solncebro/exchange-engine` >= 0.12.0
+- `@solncebro/exchange-engine` >= 0.12.1
 
 ## License
 

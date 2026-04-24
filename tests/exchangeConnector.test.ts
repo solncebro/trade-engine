@@ -1,4 +1,9 @@
-import { ExchangeError, ExchangeNameEnum } from '@solncebro/exchange-engine';
+import {
+  ExchangeError,
+  ExchangeNameEnum,
+  PositionModeEnum,
+  PositionSideEnum,
+} from '@solncebro/exchange-engine';
 import type { MarkPriceHandler, MarkPriceUpdate } from '@solncebro/exchange-engine';
 
 import { ExchangeConnector } from '../src/services/exchangeConnector';
@@ -80,6 +85,95 @@ describe('ExchangeConnector.createOrder errorCode', () => {
     });
 
     expect(result.errorCode).toBeUndefined();
+  });
+});
+
+describe('ExchangeConnector Binance futures positionSide', () => {
+  function createBinanceConnector(
+    futuresPositionMode?: PositionModeEnum
+  ): ExchangeConnector {
+    const connector = new ExchangeConnector(
+      ExchangeNameEnum.Binance,
+      { apiKey: 'k', secret: 's' } as ExchangeConfig,
+      undefined,
+      futuresPositionMode,
+    );
+    (connector.futures.createOrderWebSocket as jest.Mock).mockResolvedValue({
+      id: 'oid1',
+      symbol: 'BTCUSDT',
+    });
+
+    return connector;
+  }
+
+  it('omits positionSide for Binance one-way futures when orderParams has no positionSide', async () => {
+    const connector = createBinanceConnector(PositionModeEnum.OneWay);
+
+    const result = await connector.createOrder({
+      symbol: 'BTCUSDT',
+      amount: 1,
+      price: 100,
+      type: OrderTypeEnum.Limit,
+      side: OrderSideEnum.Buy,
+      marketType: MarketTypeEnum.Futures,
+    });
+
+    expect(result.actualExchangeParams?.positionSide).toBeUndefined();
+  });
+
+  it('defaults Binance connector to one-way futuresPositionMode', () => {
+    const connector = new ExchangeConnector(ExchangeNameEnum.Binance, {
+      apiKey: 'k',
+      secret: 's',
+    } as ExchangeConfig);
+
+    expect(connector.futuresPositionMode).toBe(PositionModeEnum.OneWay);
+  });
+
+  it('sets positionSide Long for Binance hedge futures Buy when orderParams has no positionSide', async () => {
+    const connector = createBinanceConnector(PositionModeEnum.Hedge);
+
+    const result = await connector.createOrder({
+      symbol: 'BTCUSDT',
+      amount: 1,
+      price: 100,
+      type: OrderTypeEnum.Limit,
+      side: OrderSideEnum.Buy,
+      marketType: MarketTypeEnum.Futures,
+    });
+
+    expect(result.actualExchangeParams?.positionSide).toBe(PositionSideEnum.Long);
+  });
+
+  it('sets positionSide Short for Binance hedge futures Sell when orderParams has no positionSide', async () => {
+    const connector = createBinanceConnector(PositionModeEnum.Hedge);
+
+    const result = await connector.createOrder({
+      symbol: 'BTCUSDT',
+      amount: 1,
+      price: 100,
+      type: OrderTypeEnum.Limit,
+      side: OrderSideEnum.Sell,
+      marketType: MarketTypeEnum.Futures,
+    });
+
+    expect(result.actualExchangeParams?.positionSide).toBe(PositionSideEnum.Short);
+  });
+
+  it('uses explicit orderParams.positionSide for Binance hedge futures', async () => {
+    const connector = createBinanceConnector(PositionModeEnum.Hedge);
+
+    const result = await connector.createOrder({
+      symbol: 'BTCUSDT',
+      amount: 1,
+      price: 100,
+      type: OrderTypeEnum.Limit,
+      side: OrderSideEnum.Buy,
+      marketType: MarketTypeEnum.Futures,
+      positionSide: PositionSideEnum.Short,
+    });
+
+    expect(result.actualExchangeParams?.positionSide).toBe(PositionSideEnum.Short);
   });
 });
 
