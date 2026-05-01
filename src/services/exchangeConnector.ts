@@ -4,6 +4,7 @@ import { ExchangeError, Exchange as ExchangeInstance, ExchangeNameEnum, OrderSid
 import type { CreateOrderWebSocketArgs, ExchangeClient, MarkPriceUpdate, Ticker, TickerBySymbol } from '@solncebro/exchange-engine';
 
 import { logger } from '../core/logger';
+import { PositionManager } from '../core/positionManager';
 import {
   ExchangeConfig,
   MarketTypeEnum,
@@ -15,6 +16,23 @@ import { formatErrorMessage } from '../utils/errorFormatter.utils';
 import { isSpot } from '../utils/order.utils';
 import { normalizeSymbol } from '../utils/symbol.utils';
 
+function readReduceOnly(orderParams: OrderParams): boolean {
+  if (orderParams.reduceOnly === true) {
+    return true;
+  }
+  if (orderParams.params && (orderParams.params as { reduceOnly?: unknown }).reduceOnly === true) {
+    return true;
+  }
+  return false;
+}
+
+function inferHedgePositionSide(side: OrderSideEnum, isReduceOnly: boolean): PositionSideEnum {
+  if (isReduceOnly) {
+    return side === OrderSideEnum.Sell ? PositionSideEnum.Long : PositionSideEnum.Short;
+  }
+  return side === OrderSideEnum.Buy ? PositionSideEnum.Long : PositionSideEnum.Short;
+}
+
 export class ExchangeConnector {
   private exchange: ExchangeInstance;
   private exchangeName: ExchangeNameEnum;
@@ -23,6 +41,7 @@ export class ExchangeConnector {
   private tickerUpdateIntervalId: NodeJS.Timeout | null = null;
   private markPriceByFuturesSymbol: Map<string, MarkPriceUpdate> = new Map();
   private isWatchingMarkPrices: boolean = false;
+  private _positionManager: PositionManager | null = null;
   public readonly futuresPositionMode: PositionModeEnum;
 
   private readonly markPriceHandler = (list: MarkPriceUpdate[]): void => {
@@ -56,6 +75,13 @@ export class ExchangeConnector {
 
   public get futures(): ExchangeClient {
     return this.exchange.futures;
+  }
+
+  public get positionManager(): PositionManager {
+    if (this._positionManager === null) {
+      this._positionManager = new PositionManager(this);
+    }
+    return this._positionManager;
   }
 
   public async initialize(): Promise<void> {
@@ -269,30 +295,77 @@ export class ExchangeConnector {
       amount: client.amountToPrecision(orderParams.symbol, orderParams.amount),
     };
 
-    if (orderParams.type !== OrderTypeEnum.Market) {
+    const isMarketLike = orderParams.type === OrderTypeEnum.Market;
+
+    if (!isMarketLike) {
       args.price = client.priceToPrecision(
         orderParams.symbol,
         orderParams.price
       );
     }
 
-    if (!isSpot(orderParams.marketType)) {
-      if (orderParams.positionSide) {
+    const reduceOnly = readReduceOnly(orderParams);
+    const isFuturesOrder = !isSpot(orderParams.marketType);
+
+    if (isFuturesOrder) {
+      if (orderParams.positionSide !== undefined) {
         args.positionSide = orderParams.positionSide;
       } else if (this.futuresPositionMode === PositionModeEnum.Hedge) {
-        args.positionSide = orderParams.side === OrderSideEnum.Buy
-          ? PositionSideEnum.Long
-          : PositionSideEnum.Short;
+        args.positionSide = inferHedgePositionSide(orderParams.side, reduceOnly);
+        logger.warn(
+          {
+            exchangeName: this.exchangeName,
+            symbol: orderParams.symbol,
+            side: orderParams.side,
+            reduceOnly,
+            inferredPositionSide: args.positionSide,
+          },
+          `[${this.exchangeName.toUpperCase()}] positionSide auto-inferred from (side, reduceOnly) in Hedge mode — use PositionManager API for explicit control`
+        );
+      }
+
+      if (reduceOnly) {
+        args.reduceOnly = true;
+      }
+
+      if (orderParams.closePosition !== undefined) {
+        args.closePosition = orderParams.closePosition;
+      }
+
+      if (orderParams.workingType !== undefined) {
+        args.workingType = orderParams.workingType;
+      }
+
+      if (orderParams.triggerBy !== undefined) {
+        args.triggerBy = orderParams.triggerBy;
+      }
+
+      if (orderParams.triggerDirection !== undefined) {
+        args.triggerDirection = orderParams.triggerDirection;
+      }
+
+      if (orderParams.closeOnTrigger !== undefined) {
+        args.closeOnTrigger = orderParams.closeOnTrigger;
+      }
+    } else {
+      if (orderParams.orderFilter !== undefined) {
+        args.orderFilter = orderParams.orderFilter;
+      }
+
+      if (orderParams.marketUnit !== undefined) {
+        args.marketUnit = orderParams.marketUnit;
+      }
+
+      if (orderParams.quoteOrderQty !== undefined) {
+        args.quoteOrderQty = orderParams.quoteOrderQty;
+      }
+
+      if (orderParams.trailingDelta !== undefined) {
+        args.trailingDelta = orderParams.trailingDelta;
       }
     }
 
-    if (orderParams.params?.reduceOnly) {
-      args.reduceOnly = true;
-    }
-
-    args.timeInForce = orderParams.type === OrderTypeEnum.Market
-      ? TimeInForceEnum.Ioc
-      : TimeInForceEnum.Gtc;
+    args.timeInForce = isMarketLike ? TimeInForceEnum.Ioc : TimeInForceEnum.Gtc;
 
     if (orderParams.triggerPrice !== undefined) {
       args.stopPrice = client.priceToPrecision(
@@ -301,8 +374,8 @@ export class ExchangeConnector {
       );
     }
 
-    if (orderParams.triggerDirection !== undefined) {
-      args.triggerDirection = orderParams.triggerDirection;
+    if (orderParams.clientOrderId !== undefined) {
+      args.clientOrderId = orderParams.clientOrderId;
     }
 
     return args;

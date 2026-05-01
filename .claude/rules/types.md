@@ -4,11 +4,17 @@
 
 ## Реэкспорты из exchange-engine
 
-Из `@solncebro/exchange-engine` (0.12.1+) реэкспортируются:
+Из `@solncebro/exchange-engine` (0.13.0+) реэкспортируются:
 - **Constants**: `MARKET_TYPE_LIST`
-- **Enums**: `ExchangeNameEnum`, `MarginModeEnum`, `MarketTypeEnum`, `OrderSideEnum`, `OrderTypeEnum`, `PositionModeEnum`, `PositionSideEnum`, `TimeInForceEnum`, `TradeSymbolTypeEnum`, `WebSocketConnectionTypeEnum`, `WorkingTypeEnum`
+- **Enums**: `ExchangeNameEnum`, `MarginModeEnum`, `MarketTypeEnum`, `MarketUnitEnum`, `OrderFilterEnum`, `OrderSideEnum`, `OrderTypeEnum`, `PositionModeEnum`, `PositionSideEnum`, `TimeInForceEnum`, `TradeSymbolTypeEnum`, `TriggerByEnum`, `WebSocketConnectionTypeEnum`, `WorkingTypeEnum`
 - **Types**: `AccountBalances`, `Balance`, `BalanceByAsset`, `ClosedPnl`, `CreateOrderWebSocketArgs`, `ExchangeArgs`, `ExchangeClient`, `ExchangeConfig`, `ExchangeLogger`, `FeeRate`, `FetchAllKlinesOptions`, `FetchPageWithLimitArgs`, `FundingInfo`, `FundingRateHistory`, `Income`, `Kline`, `KlineHandler`, `KlineInterval`, `MarkPrice`, `MarkPriceUpdate`, `ModifyOrderArgs`, `OpenInterest`, `Order`, `OrderBook`, `OrderBookLevel`, `OrderUpdateEvent`, `OrderUpdateHandler`, `Position`, `PositionUpdateEvent`, `PositionUpdateHandler`, `PublicTrade`, `ResubscribeKlinesArgs`, `SubscribeKlinesArgs`, `Ticker`, `TickerBySymbol`, `TradeSymbol`, `TradeSymbolBySymbol`, `TradeSymbolFilter`, `UserDataStreamHandlerArgs`, `WebSocketConnectionInfo`
 - **Classes**: `ExchangeError`
+
+## Собственные классы trade-engine (3.4.0)
+
+- **`PositionManager`** (`src/core/positionManager.ts`) — высокоуровневый семантический API; доступ через `ExchangeConnector.positionManager`.
+- **Экспорт из entry** (`src/index.ts`) — типы из `positionManager.types.ts`: `Direction`, `StopOrderType`, `OpenPositionLimitArgs`, `OpenPositionMarketArgs`, `ClosePositionLimitArgs`, `ClosePositionMarketArgs`, `PlaceStopLossArgs`, `PlaceTakeProfitArgs`, `CancelOrderArgs`, `CancelBatchOrdersArgs`, `SpotMarketBuyByQuoteArgs`, `SetLeverageArgs`, `SetMarginModeArgs`.
+- **Внутренние типы** того же файла (без реэкспорта из entry): `PlaceConditionalArgs`, `BuildOrderParamsInput`, `ApplyFuturesSetupArgs`.
 
 ## Основные типы
 
@@ -22,11 +28,21 @@ interface OrderParams {
   side: OrderSideEnum;       // Buy | Sell
   amount: number;
   price: number;
-  type: OrderTypeEnum;       // Market | Limit | StopMarket | TakeProfitMarket | Stop | TakeProfit | TrailingStop
+  type: OrderTypeEnum;       // Market | Limit | StopMarket | StopLimit | TakeProfitMarket | TakeProfitLimit | Stop | TakeProfit | TrailingStop
   marketType?: MarketTypeEnum;
   positionSide?: PositionSideEnum;  // Long | Short — явное управление сайдом позиции (только futures)
   triggerPrice?: number;     // для SL ордеров
   triggerDirection?: 1 | 2;  // 1 = рост, 2 = падение
+  triggerBy?: TriggerByEnum;          // 3.4.0 — Bybit Linear: MarkPrice | LastPrice | IndexPrice
+  workingType?: WorkingTypeEnum;       // 3.4.0 — Binance Futures: MarkPrice | ContractPrice
+  reduceOnly?: boolean;                // 3.4.0 — top-level (читается приоритетом над params.reduceOnly)
+  closeOnTrigger?: boolean;            // 3.4.0 — Bybit Linear conditional close
+  closePosition?: boolean;             // 3.4.0 — Binance STOP_MARKET/TAKE_PROFIT_MARKET закрытие всей позиции
+  orderFilter?: OrderFilterEnum;       // 3.4.0 — Bybit Spot: Order | tpslOrder | StopOrder
+  marketUnit?: MarketUnitEnum;         // 3.4.0 — Bybit Spot Market: baseCoin | quoteCoin
+  trailingDelta?: number;              // 3.4.0 — Binance Spot STOP_LOSS/TAKE_PROFIT trailing
+  quoteOrderQty?: number;              // 3.4.0 — Binance/Bybit Spot Market Buy: USDT-сумма вместо qty
+  clientOrderId?: string;              // 3.4.0 — клиентский id (orderLinkId на Bybit, newClientOrderId на Binance)
   params?: Record<string, unknown>; // доп. параметры биржи
 }
 

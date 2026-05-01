@@ -10,6 +10,22 @@ export { ConfigManager } from './core/config';
 export { createLogger, logger } from './core/logger';
 export { OrderCalculator } from './core/orderCalculator';
 export { OrderExecutor } from './core/orderExecutor';
+export { PositionManager } from './core/positionManager';
+export type {
+  CancelBatchOrdersArgs,
+  CancelOrderArgs,
+  ClosePositionLimitArgs,
+  ClosePositionMarketArgs,
+  Direction,
+  OpenPositionLimitArgs,
+  OpenPositionMarketArgs,
+  PlaceStopLossArgs,
+  PlaceTakeProfitArgs,
+  SetLeverageArgs,
+  SetMarginModeArgs,
+  SpotMarketBuyByQuoteArgs,
+  StopOrderType,
+} from './core/positionManager.types';
 
 export * from './types';
 

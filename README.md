@@ -35,7 +35,49 @@ const connector = new ExchangeConnector(
 await connector.initialize();
 ```
 
-Для futures-ордеров можно управлять авто-`positionSide` через 4-й аргумент конструктора `futuresPositionMode`: по умолчанию `PositionModeEnum.OneWay` (авто-`positionSide` не подставляется), в `PositionModeEnum.Hedge` — подставляется автоматически по стороне ордера, если `orderParams.positionSide` не задан.
+Для futures-ордеров можно управлять авто-`positionSide` через 4-й аргумент конструктора `futuresPositionMode`: по умолчанию `PositionModeEnum.OneWay` (авто-`positionSide` не подставляется), в `PositionModeEnum.Hedge` — smart-inference как safety-net (открытие: `Buy → Long`, `Sell → Short`; закрытие при `reduceOnly=true`: `Sell → Long`, `Buy → Short`). **Идиоматический путь** — `connector.positionManager.*` с явным `direction`, который выводит все биржевые поля внутри библиотеки.
+
+### Open / close positions via PositionManager (recommended)
+
+```typescript
+import { MarketTypeEnum, MarginModeEnum } from '@solncebro/trade-engine';
+
+// Open futures long with explicit setup
+const openResult = await connector.positionManager.openPositionLimit({
+  symbol: 'BTCUSDT',
+  marketType: MarketTypeEnum.Futures,
+  direction: 'long',
+  amount: 0.01,
+  price: 50000,
+  leverage: 5,
+  marginMode: MarginModeEnum.Isolated,
+});
+
+// Close half at market
+await connector.positionManager.closePositionMarket({
+  symbol: 'BTCUSDT',
+  marketType: MarketTypeEnum.Futures,
+  direction: 'long',
+  amount: 0.005,
+});
+
+// Place reduce-only stop loss (Bybit conditional Market or Binance STOP_MARKET inferred internally)
+await connector.positionManager.placeStopLoss({
+  symbol: 'BTCUSDT',
+  marketType: MarketTypeEnum.Futures,
+  direction: 'long',
+  triggerPrice: 48000,
+  amount: 0.005,
+});
+
+// Spot Market Buy with USDT amount (Bybit `marketUnit=quoteCoin` / Binance `quoteOrderQty`)
+await connector.positionManager.spotMarketBuyByQuote({
+  symbol: 'ETHUSDT',
+  quoteAmount: 100,
+});
+```
+
+`direction='short'` on `marketType=Spot` throws `Error: SHORT positions are not supported on spot. Use marketType=Futures.` synchronously.
 
 ### Resolve symbols and create orders
 
@@ -169,9 +211,10 @@ const bounds = OrderCalculator.calculatePriceLimitBounds({
 
 | Class | Description |
 |-------|------------|
-| `ExchangeConnector` | Exchange connection, tickers, symbol resolution, order execution; optional `futuresPositionMode` for futures `positionSide` behavior |
-| `OrderCalculator` | Static methods for order calculation, symbol mapping, leverage setup |
-| `OrderExecutor` | Base class for order execution with TP/SL and emergency exit |
+| `ExchangeConnector` | Exchange connection, tickers, symbol resolution, low-level `createOrder`; optional `futuresPositionMode` for futures `positionSide` behavior. Lazy-init `connector.positionManager`. |
+| `PositionManager` | High-level semantic API for spot/futures (`openPositionLimit/Market`, `closePositionLimit/Market`, `placeStopLoss/TakeProfit`, `cancelOrder/cancelBatchOrders`, `spotMarketBuyByQuote`, `setLeverage/setMarginMode`). Hides `positionSide`/`positionIdx`/`reduceOnly`/`closePosition`/`workingType`/`triggerDirection`/`triggerBy`/`orderFilter`/`marketUnit` from callers; takes business arguments (`symbol`, `marketType`, `direction`, `amount`, `price`/`triggerPrice`). Spot + `direction='short'` throws. |
+| `OrderCalculator` | Static methods for order calculation, symbol mapping, leverage setup; `calculateCloseOrder` preserves `positionSide` from source `orderParams` |
+| `OrderExecutor` | Base class for order execution with TP/SL and emergency exit (legacy path; new code uses `PositionManager`) |
 | `TelegramNotifier` | Telegraf bot for sending notifications and registering commands |
 | `TelegramCommandHandler<T>` | Command handler with typed settings (boolean/numeric) |
 | `TelegramMessageListener` | MTProto client for listening to Telegram channel messages |
@@ -184,10 +227,13 @@ const bounds = OrderCalculator.calculatePriceLimitBounds({
 |------|--------|
 | `ExchangeNameEnum` | `Binance`, `Bybit` |
 | `OrderSideEnum` | `Buy`, `Sell` |
-| `OrderTypeEnum` | `Market`, `Limit`, `StopMarket`, `TakeProfitMarket`, `Stop`, `TakeProfit`, `TrailingStop` |
+| `OrderTypeEnum` | `Market`, `Limit`, `StopMarket`, `StopLimit`, `TakeProfitMarket`, `TakeProfitLimit`, `Stop`, `TakeProfit`, `TrailingStop` |
 | `MarginModeEnum` | `Isolated`, `Cross` |
 | `PositionModeEnum` | `Hedge`, `OneWay` |
 | `MarketTypeEnum` | `Futures`, `Spot` |
+| `MarketUnitEnum` | `baseCoin`, `quoteCoin` (Bybit Spot Market amount unit) |
+| `OrderFilterEnum` | `Order`, `tpslOrder`, `StopOrder` (Bybit Spot conditional/TPSL filter) |
+| `TriggerByEnum` | `MarkPrice`, `LastPrice`, `IndexPrice` (Bybit Linear conditional trigger source) |
 | `TimeInForceEnum` | `Gtc`, `Ioc`, `Fok`, `PostOnly` |
 | `TradeSymbolTypeEnum` | `Spot`, `Swap`, `Future` |
 
@@ -226,7 +272,7 @@ const bounds = OrderCalculator.calculatePriceLimitBounds({
 ## Requirements
 
 - Node.js >= 18
-- `@solncebro/exchange-engine` >= 0.12.1
+- `@solncebro/exchange-engine` >= 0.13.0
 
 ## License
 

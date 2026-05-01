@@ -13,6 +13,8 @@
               → OrderCalculator.calculateCloseOrder() (TP/SL)
 ```
 
+С 3.4.0 параллельно доступен путь **`connector.positionManager.*`** (открытие/закрытие, SL/TP) без ручной сборки `OrderParams` — см. `positionManager.ts` и `.claude/rules/exchange-connector.md`.
+
 ## Слои
 
 ### 1. Транспортный слой (получение сигналов)
@@ -31,7 +33,7 @@
 | `createOrderAttributesForSymbol()` | Расчёт параметров ордера: цена, объём, сторона, проверка 24h% роста |
 | `enrichWithSpotFallback()` | Замена ошибок "No price data" на спот-ордера |
 | `calculateLimitOrderWithPriceAdjustment()` | Корректировка цены лимитного ордера на процент |
-| `calculateCloseOrder()` | Создание TP/SL ордеров с `reduceOnly` и `triggerPrice` |
+| `calculateCloseOrder()` | Создание TP/SL ордеров с `reduceOnly`, `triggerPrice` и копированием `positionSide` из исходного orderParams (3.4.0) |
 | `setupLeverageAndMarginModeEnum()` | Установка кредитного плеча и маржинального режима |
 | `getUniqueSymbolCountFromMapping()` | Подсчёт уникальных символов для распределения объёма |
 
@@ -41,14 +43,16 @@
 
 ### 3. Коннекторы бирж
 
-**ExchangeConnector** — обёртка над `@solncebro/exchange-engine` 0.9.1+:
+**ExchangeConnector** — обёртка над `@solncebro/exchange-engine` 0.13.0+:
 
 | Компонент | Детали |
 |-----------|--------|
 | Подключение | `initialize()` загружает символы futures + spot, запускает тикеры |
 | Тикеры | Кэш `Map<string, Ticker>`, ключ `"marketType:symbol"`, обновление каждые 30 сек |
+| Mark price | опционально `startWatchingMarkPrices()` / `getMarkPrice()` / `stopWatchingMarkPrices()` |
 | Символы | `resolveSymbolWithPrefix()` проверяет префиксы [10, 100, 1000, 10000, 100000, 1000000] |
 | Ордера | `createOrder()` через WebSocket (`createOrderWebSocket`) |
+| PositionManager | `positionManager` — lazy-init высокоуровневый API (3.4.0) |
 | Прямой доступ | `spot` / `futures` геттеры → `ExchangeClient` напрямую |
 | Аккаунт | `getAccountId()` — первые 16 символов SHA256-хеша API-ключа |
 

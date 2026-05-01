@@ -130,7 +130,7 @@ describe('ExchangeConnector Binance futures positionSide', () => {
     expect(connector.futuresPositionMode).toBe(PositionModeEnum.OneWay);
   });
 
-  it('sets positionSide Long for Binance hedge futures Buy when orderParams has no positionSide', async () => {
+  it('auto-infers Long for Binance hedge futures Buy when positionSide missing (open intent)', async () => {
     const connector = createBinanceConnector(PositionModeEnum.Hedge);
 
     const result = await connector.createOrder({
@@ -145,7 +145,7 @@ describe('ExchangeConnector Binance futures positionSide', () => {
     expect(result.actualExchangeParams?.positionSide).toBe(PositionSideEnum.Long);
   });
 
-  it('sets positionSide Short for Binance hedge futures Sell when orderParams has no positionSide', async () => {
+  it('auto-infers Short for Binance hedge futures Sell when positionSide missing (open intent)', async () => {
     const connector = createBinanceConnector(PositionModeEnum.Hedge);
 
     const result = await connector.createOrder({
@@ -155,6 +155,38 @@ describe('ExchangeConnector Binance futures positionSide', () => {
       type: OrderTypeEnum.Limit,
       side: OrderSideEnum.Sell,
       marketType: MarketTypeEnum.Futures,
+    });
+
+    expect(result.actualExchangeParams?.positionSide).toBe(PositionSideEnum.Short);
+  });
+
+  it('auto-infers Long for Binance hedge close-long (Sell + reduceOnly=true)', async () => {
+    const connector = createBinanceConnector(PositionModeEnum.Hedge);
+
+    const result = await connector.createOrder({
+      symbol: 'BTCUSDT',
+      amount: 1,
+      price: 100,
+      type: OrderTypeEnum.Limit,
+      side: OrderSideEnum.Sell,
+      marketType: MarketTypeEnum.Futures,
+      reduceOnly: true,
+    });
+
+    expect(result.actualExchangeParams?.positionSide).toBe(PositionSideEnum.Long);
+  });
+
+  it('auto-infers Short for Binance hedge close-short (Buy + nested params.reduceOnly=true)', async () => {
+    const connector = createBinanceConnector(PositionModeEnum.Hedge);
+
+    const result = await connector.createOrder({
+      symbol: 'BTCUSDT',
+      amount: 1,
+      price: 100,
+      type: OrderTypeEnum.Limit,
+      side: OrderSideEnum.Buy,
+      marketType: MarketTypeEnum.Futures,
+      params: { reduceOnly: true },
     });
 
     expect(result.actualExchangeParams?.positionSide).toBe(PositionSideEnum.Short);
@@ -170,10 +202,10 @@ describe('ExchangeConnector Binance futures positionSide', () => {
       type: OrderTypeEnum.Limit,
       side: OrderSideEnum.Buy,
       marketType: MarketTypeEnum.Futures,
-      positionSide: PositionSideEnum.Short,
+      positionSide: PositionSideEnum.Long,
     });
 
-    expect(result.actualExchangeParams?.positionSide).toBe(PositionSideEnum.Short);
+    expect(result.actualExchangeParams?.positionSide).toBe(PositionSideEnum.Long);
   });
 });
 

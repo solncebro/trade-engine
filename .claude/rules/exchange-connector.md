@@ -4,7 +4,7 @@
 
 ## Зависимость
 
-Использует `@solncebro/exchange-engine` 0.12.1+. Все низкоуровневые операции делегируются этой библиотеке.
+Использует `@solncebro/exchange-engine` 0.13.0+. Все низкоуровневые операции делегируются этой библиотеке.
 
 ## Инициализация
 
@@ -131,7 +131,7 @@ connector.stopWatchingMarkPrices();  // отписка + очистка кэша
 - Данные хранятся в `Map<symbol, MarkPriceUpdate>` — обновляются при каждом WebSocket-событии
 - Фильтрует невалидные значения (`markPrice <= 0` или не-finite)
 - `disconnect()` автоматически вызывает `stopWatchingMarkPrices()`
-- Использует `exchange.futures.subscribeMarkPrices` / `unsubscribeMarkPrices` из `exchange-engine` 0.12.0+
+- Использует `exchange.futures.subscribeMarkPrices` / `unsubscribeMarkPrices` из `exchange-engine` 0.13.0+
 
 ## Тикеры
 
@@ -163,14 +163,14 @@ const result = await connector.createOrder({
 // result: OrderResult { orderId?, errorText?, actualExchangeParams?, responseData? }
 ```
 
-Особенности `buildCreateOrderArgs`:
-- **positionSide**: если явно указан в `orderParams.positionSide`, используется без изменений
-- **`futuresPositionMode === OneWay`** (по умолчанию): если `positionSide` не задан в `orderParams`, поле не передаётся
-- **`futuresPositionMode === Hedge`**: если `positionSide` не задан в `orderParams`, автоматически Long для Buy, Short для Sell
-- **Market**: поле `price` в `OrderParams` может передаваться для удобства, но для `OrderTypeEnum.Market` оно не форвардится в параметры создания ордера (в том числе для `Binance` market-ордеров)
-- **Все биржи**: `timeInForce` — `IOC` для Market, `GTC` для Limit
-- **reduceOnly**: если `orderParams.params.reduceOnly = true`
-- **Stop Loss**: `triggerPrice` (через `stopPrice`) и `triggerDirection` если указаны в `orderParams`
+Особенности `buildCreateOrderArgs` (3.4.0):
+- **Spot vs futures разведены.** На spot НЕ выставляются `positionSide`/`reduceOnly`/`closePosition`/`workingType`/`triggerDirection`/`triggerBy`/`closeOnTrigger` — даже если приложение их передаёт в `orderParams`, биржевой слой их не получит.
+- **positionSide (futures).** Явный `orderParams.positionSide` используется без изменений. Если не задан: в OneWay поле не передаётся, в Hedge — smart-inference как safety net (открытие: `Buy → Long`, `Sell → Short`; close при `reduceOnly=true`: `Sell → Long`, `Buy → Short`). Идиоматический путь — `connector.positionManager.*`, где `positionSide` всегда явный, а safety-net не задействован.
+- **reduceOnly.** Читается и из top-level `OrderParams.reduceOnly`, и из nested `params.reduceOnly` (top-level ранее терялся, фикс 3.4.0).
+- **Дополнительные поля** (futures, если заданы): `triggerBy`, `closeOnTrigger`, `closePosition`, `workingType`, `triggerDirection`. **На spot**: `orderFilter` (Bybit), `marketUnit` (Bybit), `quoteOrderQty`, `trailingDelta`. **Универсально**: `clientOrderId`.
+- **Market.** Поле `price` в `OrderParams` может передаваться для удобства, но для `OrderTypeEnum.Market` не форвардится в wire-параметры.
+- **timeInForce.** Все биржи: `IOC` для Market, `GTC` для Limit-like (в т.ч. `StopLimit`/`TakeProfitLimit` на spot).
+- **Stop Loss.** `triggerPrice` (через `stopPrice`) и `triggerDirection` если указаны.
 
 ## Публичные методы
 
@@ -178,6 +178,7 @@ const result = await connector.createOrder({
 |-------|-----------|----------|
 | `get spot` | `ExchangeClient` | Прямой доступ к spot-клиенту |
 | `get futures` | `ExchangeClient` | Прямой доступ к futures-клиенту |
+| `get positionManager` | `PositionManager` | Lazy-init высокоуровневый API ордеров и позиций (3.4.0) |
 | `futuresPositionMode` | `PositionModeEnum` | Режим позиций для futures (задаётся в конструкторе, по умолчанию `OneWay`) |
 | `initialize()` | `Promise<void>` | Загрузка символов, старт тикеров |
 | `resolveSymbolWithPrefix(symbol, marketType)` | `string` | Поиск символа с префиксом |

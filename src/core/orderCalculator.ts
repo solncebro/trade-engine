@@ -533,6 +533,7 @@ export class OrderCalculator {
       price: shiftedPrice,
       type: OrderTypeEnum.Limit,
       marketType: orderParams.marketType,
+      positionSide: orderParams.positionSide,
     };
 
     if (!isSpot(orderParams.marketType)) {

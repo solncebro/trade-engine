@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.4.0] - 2026-04-30
+
+### Added
+- **`PositionManager`** (`src/core/positionManager.ts`) — высокоуровневый API поверх `ExchangeConnector`: открытие/закрытие позиций (limit и market), `placeStopLoss` / `placeTakeProfit`, `cancelOrder` / `cancelBatchOrders`, `spotMarketBuyByQuote`, `setLeverage`, `setMarginMode`. Скрывает от приложений детали вроде `positionSide`, `reduceOnly`, `workingType`, `triggerBy`, `orderFilter`, `marketUnit` и различия Binance/Bybit; вход — бизнес-аргументы (`symbol`, `marketType`, `direction`, `amount`, `price` / `triggerPrice`). На spot при `direction='short'` — синхронный `Error`
+- **`ExchangeConnector.positionManager`** — геттер с lazy-init экземпляра `PositionManager`
+- Экспорт из entry (`src/index.ts`): `PositionManager` и типы аргументов `Direction`, `StopOrderType`, `OpenPositionLimitArgs`, `OpenPositionMarketArgs`, `ClosePositionLimitArgs`, `ClosePositionMarketArgs`, `PlaceStopLossArgs`, `PlaceTakeProfitArgs`, `CancelOrderArgs`, `CancelBatchOrdersArgs`, `SpotMarketBuyByQuoteArgs`, `SetLeverageArgs`, `SetMarginModeArgs`
+- **`OrderParams`**: опциональные `triggerBy`, `workingType`, `reduceOnly` (top-level), `closeOnTrigger`, `closePosition`, `orderFilter`, `marketUnit`, `trailingDelta`, `quoteOrderQty`, `clientOrderId`
+- Реэкспорт из `@solncebro/exchange-engine` через `src/types/index.ts`: `MarketUnitEnum`, `OrderFilterEnum`, `TriggerByEnum`
+
+### Changed
+- Upgraded `@solncebro/exchange-engine` from 0.12.1 to **0.13.0** (в т.ч. `OrderTypeEnum.StopLimit` / `TakeProfitLimit`, расширение `CreateOrderWebSocketArgs`, отчёт по WebSocket-соединениям, `fetchPositionMode` для Bybit и др. — см. changelog `exchange-engine`)
+- **`ExchangeConnector.buildCreateOrderArgs()`**: раздельная сборка для spot и futures; на spot не уходят futures-only поля; на futures пробрасываются новые поля; `reduceOnly` учитывается и из top-level `OrderParams.reduceOnly`, и из `params.reduceOnly`; в Hedge при отсутствии `positionSide` выполняется вывод по `(side, reduceOnly)` с записью предупреждения в лог (для явного контракта рекомендуется `PositionManager`)
+
+### Fixed
+- **`OrderCalculator.calculateCloseOrder()`** переносит `positionSide` из исходного `orderParams` в параметры close-ордера (корректная работа в Hedge)
+- Top-level **`OrderParams.reduceOnly`** больше не игнорируется при сборке аргументов ордера
+
 ## [3.3.1] - 2026-04-24
 
 ### Added
@@ -225,6 +242,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Utility functions: `isOrderSuccessful`, `isSpot`, `normalizeSymbol`, `formatTimestamp`, `createLogger`
 - Error-as-value pattern for all trading operations
 
+[3.4.0]: https://github.com/solncebro/trade-engine/releases/tag/v3.4.0
 [3.3.1]: https://github.com/solncebro/trade-engine/releases/tag/v3.3.1
 [3.3.0]: https://github.com/solncebro/trade-engine/releases/tag/v3.3.0
 [3.2.0]: https://github.com/solncebro/trade-engine/releases/tag/v3.2.0

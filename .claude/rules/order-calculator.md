@@ -92,6 +92,7 @@ static calculateCloseOrder(
 ```
 
 Создаёт обратный ордер (противоположная сторона):
+- **`positionSide`** (3.4.0): копируется из исходного `orderParams` в результат — нужно для Hedge при TP/SL
 - **Take Profit**: `Limit` ордер, `reduceOnly` для futures
 - **Stop Loss**: `Limit` ордер, `reduceOnly` для futures, добавляет `triggerPrice` и `triggerDirection`
 
