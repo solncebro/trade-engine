@@ -43,17 +43,20 @@
 
 ### 3. Коннекторы бирж
 
-**ExchangeConnector** — обёртка над `@solncebro/exchange-engine` 0.13.0+:
+**ExchangeConnector** — обёртка над `@solncebro/exchange-engine` 0.14.0 (установлено локально через `file:../exchange-engine`):
 
 | Компонент | Детали |
 |-----------|--------|
-| Подключение | `initialize()` загружает символы futures + spot, запускает тикеры |
+| Подключение | `initialize()` загружает символы futures + spot (через `withReadRetry`), запускает тикеры (тоже `withReadRetry`), разрешает rate limit |
 | Тикеры | Кэш `Map<string, Ticker>`, ключ `"marketType:symbol"`, обновление каждые 30 сек |
 | Mark price | опционально `startWatchingMarkPrices()` / `getMarkPrice()` / `stopWatchingMarkPrices()` |
 | Символы | `resolveSymbolWithPrefix()` проверяет префиксы [10, 100, 1000, 10000, 100000, 1000000] |
 | Ордера | `createOrder()` через WebSocket (`createOrderWebSocket`) |
-| PositionManager | `positionManager` — lazy-init высокоуровневый API (3.4.0) |
-| Прямой доступ | `spot` / `futures` геттеры → `ExchangeClient` напрямую |
+| PositionManager | `positionManager` — lazy-init высокоуровневый API (3.4.0); расширен `modifyOrder/modifyBatchOrders/cancelAllOrders` (3.5.0) |
+| Прямой доступ | `spot` / `futures` геттеры → `ExchangeClient` напрямую (с Proxy для kline watchdog, если включён) |
+| Rate Limit (3.5.0) | при `initialize()` — `getOrderRateLimit()` → `RateLimitedRequestQueue` для write-операций (можно override через `rateLimitConfig` в конструкторе) |
+| Kline Watchdog (3.5.0) | опциональный `KlineSubscriptionWatchdog` (5-й аргумент конструктора) — обёртывает `subscribeKlines`/`unsubscribeKlines` через Proxy, восстанавливает overdue-подписки |
+| Read Retry (3.5.0) | `initialize()` и `updateTickers()` обёрнуты в `withReadRetry()` |
 | Аккаунт | `getAccountId()` — первые 16 символов SHA256-хеша API-ключа |
 
 ### 4. Интеграции

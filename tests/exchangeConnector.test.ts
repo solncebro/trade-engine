@@ -30,11 +30,17 @@ jest.mock('@solncebro/exchange-engine', () => {
         amountToPrecision: (_s: string, a: number) => a,
         priceToPrecision: (_s: string, p: number) => p,
         createOrderWebSocket: jest.fn(),
+        loadTradeSymbols: jest.fn().mockResolvedValue(new Map()),
+        fetchTickers: jest.fn().mockResolvedValue(new Map()),
+        getOrderRateLimit: jest.fn().mockResolvedValue({ writeRequestsPerSecond: 30, source: 'binance-exchange-info' }),
       },
       spot: {
         amountToPrecision: (_s: string, a: number) => a,
         priceToPrecision: (_s: string, p: number) => p,
         createOrderWebSocket: jest.fn(),
+        loadTradeSymbols: jest.fn().mockResolvedValue(new Map()),
+        fetchTickers: jest.fn().mockResolvedValue(new Map()),
+        getOrderRateLimit: jest.fn().mockResolvedValue({ writeRequestsPerSecond: 30, source: 'binance-exchange-info' }),
       },
       close: jest.fn(),
     })),
@@ -292,5 +298,125 @@ describe('ExchangeConnector mark price cache', () => {
 
     expect(unsubscribeSpy).toHaveBeenCalledTimes(1);
     expect(connector.getMarkPrice('X')).toBeUndefined();
+  });
+});
+
+describe('ExchangeConnector dynamic write rate-limit on initialize', () => {
+  it('creates write queue with effectiveLimit = floor(dynamicRps) when getOrderRateLimit succeeds', async () => {
+    const connector = new ExchangeConnector(ExchangeNameEnum.Binance, {
+      apiKey: 'k',
+      secret: 's',
+    } as ExchangeConfig);
+
+    (connector.futures.getOrderRateLimit as jest.Mock).mockResolvedValue({
+      writeRequestsPerSecond: 30,
+      source: 'binance-exchange-info',
+    });
+
+    await connector.initialize();
+
+    // queue is private; observe via positionManager which uses it.
+    const queue = (connector as unknown as { writeQueue: { getRateLimit(): number } | null }).writeQueue;
+
+    expect(queue).not.toBeNull();
+    expect(queue!.getRateLimit()).toBe(30); // floor(30)
+    await connector.disconnect();
+  });
+
+  it('returns Bybit documented 10 RPS → effective 10 RPS', async () => {
+    const connector = new ExchangeConnector(ExchangeNameEnum.Bybit, {
+      apiKey: 'k',
+      secret: 's',
+    } as ExchangeConfig);
+
+    (connector.futures.getOrderRateLimit as jest.Mock).mockResolvedValue({
+      writeRequestsPerSecond: 10,
+      source: 'bybit-documented',
+    });
+
+    await connector.initialize();
+
+    const queue = (connector as unknown as { writeQueue: { getRateLimit(): number } | null }).writeQueue;
+
+    expect(queue).not.toBeNull();
+    expect(queue!.getRateLimit()).toBe(10); // floor(10)
+    await connector.disconnect();
+  });
+
+  it('falls back to 10 RPS when getOrderRateLimit throws', async () => {
+    const connector = new ExchangeConnector(ExchangeNameEnum.Binance, {
+      apiKey: 'k',
+      secret: 's',
+    } as ExchangeConfig);
+
+    (connector.futures.getOrderRateLimit as jest.Mock).mockRejectedValue(new Error('Network error'));
+
+    await connector.initialize();
+
+    const queue = (connector as unknown as { writeQueue: { getRateLimit(): number } | null }).writeQueue;
+
+    expect(queue).not.toBeNull();
+    expect(queue!.getRateLimit()).toBe(10);
+    await connector.disconnect();
+  });
+
+  it('uses explicit rateLimitConfig override AS-IS without applying safety factor', async () => {
+    const connector = new ExchangeConnector(
+      ExchangeNameEnum.Binance,
+      { apiKey: 'k', secret: 's' } as ExchangeConfig,
+      undefined,
+      undefined,
+      undefined,
+      { writeRequestsPerSecond: 10 },
+    );
+
+    await connector.initialize();
+
+    const queue = (connector as unknown as { writeQueue: { getRateLimit(): number } | null }).writeQueue;
+
+    expect(queue).not.toBeNull();
+    expect(queue!.getRateLimit()).toBe(10);
+    // getOrderRateLimit must NOT be called when override is provided
+    expect(connector.futures.getOrderRateLimit as jest.Mock).not.toHaveBeenCalled();
+    await connector.disconnect();
+  });
+
+  it('with rateLimitConfig=null does not create a write queue', async () => {
+    const connector = new ExchangeConnector(
+      ExchangeNameEnum.Binance,
+      { apiKey: 'k', secret: 's' } as ExchangeConfig,
+      undefined,
+      undefined,
+      undefined,
+      null,
+    );
+
+    await connector.initialize();
+
+    const queue = (connector as unknown as { writeQueue: { getRateLimit(): number } | null }).writeQueue;
+
+    expect(queue).toBeNull();
+    expect(connector.futures.getOrderRateLimit as jest.Mock).not.toHaveBeenCalled();
+    await connector.disconnect();
+  });
+
+  it('enforces minimum 1 RPS when dynamic value floors to 0', async () => {
+    const connector = new ExchangeConnector(ExchangeNameEnum.Binance, {
+      apiKey: 'k',
+      secret: 's',
+    } as ExchangeConfig);
+
+    (connector.futures.getOrderRateLimit as jest.Mock).mockResolvedValue({
+      writeRequestsPerSecond: 0,
+      source: 'fallback',
+    });
+
+    await connector.initialize();
+
+    const queue = (connector as unknown as { writeQueue: { getRateLimit(): number } | null }).writeQueue;
+
+    expect(queue).not.toBeNull();
+    expect(queue!.getRateLimit()).toBe(1); // Math.max(1, floor(0)=0) → 1
+    await connector.disconnect();
   });
 });

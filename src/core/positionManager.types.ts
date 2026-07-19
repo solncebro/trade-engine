@@ -1,6 +1,25 @@
-import { MarginModeEnum, MarketTypeEnum, OrderSideEnum, OrderTypeEnum, TriggerByEnum } from '@solncebro/exchange-engine';
+import { MarginModeEnum, MarketTypeEnum, OrderSideEnum, OrderTypeEnum, Position, TriggerByEnum } from '@solncebro/exchange-engine';
 
 export type Direction = 'long' | 'short';
+
+export interface ReadPositionStateArgs {
+  symbol: string;
+  marketType: MarketTypeEnum;
+  direction: Direction;
+}
+
+export interface ReadAllPositionsArgs {
+  marketType: MarketTypeEnum;
+}
+
+export type PositionAbsenceReason = 'no_record' | 'zero_contracts' | 'fetch_error';
+
+export type PositionAmbiguityReason = 'side_mismatch' | 'idx_mismatch';
+
+export type PositionStateResult =
+  | { kind: 'present'; position: Position }
+  | { kind: 'absent'; confidence: 'confirmed' | 'unconfirmed'; reason: PositionAbsenceReason; errorText?: string }
+  | { kind: 'ambiguous'; reason: PositionAmbiguityReason; position: Position };
 
 export type StopOrderType = 'Market' | 'Limit';
 
@@ -110,6 +129,11 @@ export interface CancelBatchOrdersArgs {
   orderIdList: string[];
 }
 
+export interface CancelAllOrdersArgs {
+  symbol: string;
+  marketType: MarketTypeEnum;
+}
+
 export interface SpotMarketBuyByQuoteArgs {
   symbol: string;
   quoteAmount: number;
@@ -125,3 +149,65 @@ export interface SetMarginModeArgs {
   symbol: string;
   marginMode: MarginModeEnum;
 }
+
+export interface PositionManagerModifyOrderArgs {
+  symbol: string;
+  marketType: MarketTypeEnum;
+  orderId: string;
+  price?: number;
+  amount?: number;
+  triggerPrice?: number;
+}
+
+export interface PositionManagerModifyBatchOrderItem {
+  symbol: string;
+  orderId: string;
+  side: OrderSideEnum;
+  price?: number;
+  amount?: number;
+  triggerPrice?: number;
+  clientOrderId?: string;
+}
+
+export interface PositionManagerModifyBatchOrdersArgs {
+  marketType: MarketTypeEnum;
+  orderList: PositionManagerModifyBatchOrderItem[];
+}
+
+export interface OpenPositionBatchLimitItem {
+  direction: Direction;
+  amount: number;
+  price: number;
+  clientOrderId?: string;
+}
+
+export interface OpenPositionBatchLimitArgs {
+  symbol: string;
+  marketType: MarketTypeEnum;
+  itemList: OpenPositionBatchLimitItem[];
+  leverage?: number;
+  marginMode?: MarginModeEnum;
+}
+
+export interface ClosePositionBatchLimitItem {
+  direction: Direction;
+  amount: number;
+  price: number;
+  clientOrderId?: string;
+}
+
+export interface ClosePositionBatchLimitArgs {
+  symbol: string;
+  marketType: MarketTypeEnum;
+  itemList: ClosePositionBatchLimitItem[];
+}
+
+export interface PositionBatchLimitItemResult {
+  isSuccess: boolean;
+  orderId: string | null;
+  errorText: string | null;
+}
+
+export type OpenPositionBatchLimitResult = PositionBatchLimitItemResult[];
+
+export type ClosePositionBatchLimitResult = PositionBatchLimitItemResult[];

@@ -97,6 +97,68 @@ class FirebaseServiceBase<T> extends EventEmitter implements Notifiable {
 - Сравнение массивов через `JSON.stringify`, примитивов — по значению
 - Protected методы для форматирования настроек: `formatSettingMessage()`, `getAddedAndRemovedItemsMessage()`
 - Предназначен для наследования — потребители расширяют этот класс
+- **3.5.0**: `updateData(data: Partial<T>)` внутренне вызывает `flattenForFirestoreUpdate(data)` — превращает вложенные объекты в dot-notation (`{ a: { b: 1 } }` → `{ "a.b": 1 }`), как требует Firestore `documentReference.update()`. Массивы и примитивы сохраняются как есть.
+
+## KlineSubscriptionWatchdog (`src/services/klineSubscriptionWatchdog.ts`, 3.5.0)
+
+Мониторинг активности kline-подписок с автоматическим восстановлением. Создаётся опционально внутри `ExchangeConnector` через 5-й аргумент конструктора `klineWatchdogConfig`.
+
+```typescript
+class KlineSubscriptionWatchdog {
+  constructor(args: KlineSubscriptionWatchdogArgs)
+  wrapHandler(symbol, interval, userHandler): KlineHandler  // обёртка для трекинга timestamp
+  unregisterHandler(symbol, interval): void
+  start(): void
+  stop(): void
+  getDiagnosticInfo(): KlineSubscriptionWatchdogDiagnostic
+}
+
+interface KlineSubscriptionWatchdogConfig {
+  isEnabled?: boolean;                  // default true
+  checkIntervalMs?: number;             // 30_000 — частота сканирования overdue
+  graceMs?: number;                     // 60_000 — порог "молчания" подписки
+  parallelismLimit?: number;            // 2 — макс. параллельных восстановлений
+  restRefetchLimit?: number;            // 100 — fallback REST refetch
+  restTimeoutMs?: number;               // 30_000
+  heartbeatEveryNTicks?: number;        // 10
+  recoveryCooldownMs?: number;          // 120_000
+  recoveryFailCooldownMs?: number;      // 600_000
+  recoveryFailCountThreshold?: number;  // 3
+  restInterCallMs?: number;             // 100
+  symbolMarker?: (symbol, interval) => string;
+}
+```
+
+**Алгоритм восстановления**:
+1. `resubscribeKlines(symbol, interval)` — попытка пересоздать поток через WS.
+2. Если поток не восстановился (новый kline не пришёл в течение grace) → REST `fetchKlines(symbol, interval, limit=restRefetchLimit)` и replay в user handler.
+3. После `recoveryFailCountThreshold` неудач для одной подписки → cooldown `recoveryFailCooldownMs`.
+
+См. `src/services/klineSubscriptionWatchdog.ts`. Использует `subscribeKlines`/`unsubscribeKlines`/`resubscribeKlines`/`fetchKlines` из `ExchangeClient`.
+
+## Binance Spot user-data (exchange-engine 0.14.0, commit `d93c52a`)
+
+Начиная с `exchange-engine` 0.14.0 (commit `d93c52a`), Binance Spot user-data поступает через **WebSocket API** (`BinanceSpotUserDataStream`), а не через listenKey REST (удалён биржей 2026-02-20). Потребитель подписывается через `connector.spot.connectUserDataStream(handler)`. Помимо `onOrderUpdate`/`onPositionUpdate`, доступен опциональный `onBalanceUpdate` (`UserDataStreamHandlerArgs.onBalanceUpdate?`): событие `outboundAccountPosition` маппится в `BalanceUpdateEvent { balanceList: BalanceUpdateItem[]; timestamp }`, где `BalanceUpdateItem = { asset, free, locked }`. Типы `BalanceUpdateEvent`/`BalanceUpdateItem`/`BalanceUpdateHandler` реэкспортируются из `@solncebro/trade-engine`. trade-engine не оборачивает user-data stream — работа идёт напрямую через `connector.spot`/`connector.futures`.
+
+## PremiumIndexCalculator (`src/services/premiumIndexCalculator.ts`)
+
+Поддерживает per-symbol непрерывную EMA «премии» (`midPrice − markPrice`) с окном 30 секунд. Значение используется как `premiumAvg` для `OrderCalculator.calculatePriceLimitBounds` (Bybit-ветка). Bybit не публикует это значение ни на одном публичном WebSocket-стриме для линейных USDT-перпетуалов, поэтому потребитель обязан считать его сам.
+
+```typescript
+class PremiumIndexCalculator {
+  feed(args: { symbol: string; bidPrice: number; askPrice: number; markPrice: number; timestamp: number }): void
+  getPremiumAvg(symbol: string): number | undefined
+  clear(): void
+}
+```
+
+- `midPrice = (bidPrice + askPrice) / 2`, `delta = midPrice − markPrice`.
+- EMA в непрерывном времени: `α(Δt) = 1 − exp(−Δt / 30s)`, `ema_new = ema_prev + α × (delta − ema_prev)`. Первый сэмпл инициализирует состояние напрямую (без сглаживания).
+- `feed` игнорирует невалидные сэмплы (`bid/ask/mark` не-finite или `<= 0`, `timestamp` не-finite) и неположительные интервалы (`intervalSec <= 0`).
+- `getPremiumAvg` возвращает `undefined`, пока по символу не было ни одного валидного сэмпла.
+- **НЕ auto-wired.** Потребитель сам инстанцирует калькулятор, кормит его orderbook + mark price через `feed`, и передаёт `getPremiumAvg(symbol)` в `premiumAvg` аргументов `calculatePriceLimitBounds`.
+
+Экспортируется из `@solncebro/trade-engine` (`src/index.ts`).
 
 ## ConfigManager (`src/core/config.ts`)
 
@@ -125,6 +187,36 @@ const logger: Logger  // lazy singleton через Proxy
 Транспорты: console (pino-pretty), file (pino-pretty без цвета), BetterStack (@logtail/pino). BetterStack-транспорт добавляется только если заданы оба значения: `betterStackToken` и `betterStackEndpoint`. Для endpoint поддерживаются и полный URL (`https://...`/`http://...`), и хост без схемы — в этом случае автоматически добавляется `https://`.
 
 Error serializer: `pino.stdSerializers.wrapErrorSerializer` расширяет стандартную сериализацию, сохраняя поля `code` и `exchange` из объекта ошибки.
+
+## Reliability-инфраструктура (3.5.0)
+
+### RateLimitedRequestQueue (`src/core/RateLimitedRequestQueue.ts`)
+
+Sliding-window очередь для контроля RPS write-операций.
+
+```typescript
+class RateLimitedRequestQueue {
+  constructor(args: { rateLimit: number; intervalMs?: number; loggerLabel?: string })
+  execute<T>(fn: () => Promise<T>, contextLabel?: string): Promise<T>
+  getRateLimit(): number
+  getIntervalMs(): number
+}
+```
+
+Используется внутри `PositionManager` (все write-операции) и `ExchangeConnector` (динамически создаётся в `initialize()` через `getOrderRateLimit()`). Логирует первый раз, когда срабатывает throttling.
+
+### withRetryOn429 / withReadRetry (`src/core/withRetryOn429.ts`)
+
+Retry на 429 и 5xx с exponential backoff и поддержкой `Retry-After` header.
+
+```typescript
+withRetryOn429<T>({ fn, contextLabel, maxRetries?, baseDelayMs? }): Promise<T>
+withReadRetry<T>({ fn, contextLabel, maxRetries?, baseDelayMs? }): Promise<T>
+```
+
+Defaults: `maxRetries = 3`, `baseDelayMs = 1000`, exponential `delay * 2^(attempt-1)`. Используется:
+- `withRetryOn429`: внутри `PositionManager.cancelOrder/cancelBatchOrders/cancelAllOrders/modifyOrder/modifyBatchOrders/setLeverage/setMarginMode`.
+- `withReadRetry`: в `ExchangeConnector.initialize()` (loadTradeSymbols) и `updateTickers()` (fetchTickers).
 
 ## Утилиты (`src/utils/`)
 

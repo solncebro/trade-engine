@@ -92,7 +92,7 @@ describeIfCredentials(ExchangeNameEnum.Bybit, 'Bybit Demo Integration', () => {
       logger.info({ resolved }, 'resolveSymbolWithPrefix test result');
 
       expect(resolved['BTCUSDT']).toBe('BTCUSDT');
-      expect(resolved['10000QUBICUSDT']).toBe('10000QUBICUSDT');
+      expect(resolved['SATSUSDT']).toBe('10000SATSUSDT');
       expect(resolved['FLOKIUSDT']).toBe('1000FLOKIUSDT');
       expect(resolved['MOGUSDT']).toBe('1000000MOGUSDT');
     });
@@ -234,7 +234,7 @@ describeIfCredentials(ExchangeNameEnum.Bybit, 'Bybit Demo Integration', () => {
       expect(bybitMap.get('FLOKIUSDT')).toBe('1000FLOKIUSDT');
       expect(bybitMap.get('MOGUSDT')).toBe('1000000MOGUSDT');
       expect(bybitMap.get('BTCUSDT')).toBe('BTCUSDT');
-      expect(bybitMap.get('10000QUBICUSDT')).toBe('10000QUBICUSDT');
+      expect(bybitMap.get('SATSUSDT')).toBe('10000SATSUSDT');
     });
 
     test('getUniqueSymbolCountFromMapping() returns correct count', () => {

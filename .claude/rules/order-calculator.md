@@ -76,7 +76,11 @@ static calculatePriceLimitBounds(args: PriceLimitBoundsArgs): PriceLimitBounds |
 
 Рассчитывает допустимые ценовые границы для символа на основе биржевых правил:
 - Возвращает `null`, если у символа нет `priceLimitRisk`, `markPrice <= 0` или source = `binancePercentPriceBySide` (не поддерживается)
-- **`bybitRiskParameters`**: использует `priceLimitRatioX` и `priceLimitRatioY` вместе с `indexPrice` (при наличии) и `markPrice`
+- **`bybitRiskParameters`**: применяет официальную формулу Bybit с premium-членом (`X = priceLimitRatioX`, `Y = priceLimitRatioY`, `Index = indexPrice` при наличии, иначе `markPrice`):
+  - `maxPrice (highest_bid) = Min( Mark × (1 + Y), Max( Index, Mark × (1 + X) + Max(0, premiumAvg) ) )`
+  - `minPrice (lowest_ask) = Max( Mark × (1 − Y), Min( Index, Mark × (1 − X) + Min(0, premiumAvg) ) )`
+  - `premiumAvg` при отсутствии (или не-finite) трактуется как `0` — формула схлопывается до упрощённой `Min(Mark × (1+Y), Max(Index, Mark × (1+X)))`.
+  - Возвращает `null`, если `priceLimitRatioX`/`priceLimitRatioY` не парсятся в finite-число.
 - **Остальные sources**: использует `multiplierUp` / `multiplierDown` от `markPrice`
 
 Результат: `{ minPrice, maxPrice, minDeviationPercent, maxDeviationPercent, source }`.

@@ -459,10 +459,33 @@ export class OrderCalculator {
     };
   }
 
+  /**
+   * Computes the symmetric price band the exchange will accept for a limit
+   * order on the given symbol.
+   *
+   * Bybit linear/inverse uses the official formula documented at
+   * https://www.bybit.com/en/help-center/article/Derivatives-Trading-Rules
+   * (section "Price Limit"):
+   *
+   *   highest_bid = Min( Mark × (1 + Y), Max( Index, Mark × (1 + X) + Max(0, premiumAvg) ) )
+   *   lowest_ask  = Max( Mark × (1 - Y), Min( Index, Mark × (1 - X) + Min(0, premiumAvg) ) )
+   *
+   *   premiumAvg = EMA( MidPrice − Mark, 30s ), MidPrice = (Ask1 + Bid1) / 2
+   *
+   * `premiumAvg` is not published by Bybit on any public stream and must be
+   * tracked separately (see `PremiumIndexCalculator`). When omitted it is
+   * treated as `0` — that matches the cold-start state right after a shock,
+   * where the EMA has not yet accumulated, so the result collapses to the
+   * simplified `Min(Mark × (1+Y), Max(Index, Mark × (1+X)))`.
+   *
+   * For Binance `binancePercentPrice` the formula is `max = mark × multiplierUp`,
+   * `min = mark × multiplierDown`. `binancePercentPriceBySide` (spot per-side
+   * bands) is not supported and returns `null`.
+   */
   public static calculatePriceLimitBounds(
     args: PriceLimitBoundsArgs
   ): PriceLimitBounds | null {
-    const { tradeSymbol, markPrice, indexPrice } = args;
+    const { tradeSymbol, markPrice, indexPrice, premiumAvg } = args;
     const priceLimitRisk = tradeSymbol.priceLimitRisk;
 
     if (!priceLimitRisk || markPrice <= 0) {
@@ -479,16 +502,25 @@ export class OrderCalculator {
     if (priceLimitRisk.source === 'bybitRiskParameters') {
       const x = parseFloat(priceLimitRisk.priceLimitRatioX);
       const y = parseFloat(priceLimitRisk.priceLimitRatioY);
+
+      if (!Number.isFinite(x) || !Number.isFinite(y)) {
+        return null;
+      }
+
       const referencePrice =
         indexPrice !== undefined && indexPrice > 0 ? indexPrice : markPrice;
+      const resolvedPremium =
+        premiumAvg !== undefined && Number.isFinite(premiumAvg) ? premiumAvg : 0;
+      const positivePremium = Math.max(0, resolvedPremium);
+      const negativePremium = Math.min(0, resolvedPremium);
 
       maxPrice = Math.min(
-        Math.max(referencePrice, markPrice * (1 + x)),
-        markPrice * (1 + y)
+        markPrice * (1 + y),
+        Math.max(referencePrice, markPrice * (1 + x) + positivePremium)
       );
       minPrice = Math.max(
-        Math.min(referencePrice, markPrice * (1 - x)),
-        markPrice * (1 - y)
+        markPrice * (1 - y),
+        Math.min(referencePrice, markPrice * (1 - x) + negativePremium)
       );
     } else {
       const multiplierUp = parseFloat(priceLimitRisk.multiplierUp);

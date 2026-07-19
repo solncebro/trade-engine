@@ -4,17 +4,24 @@
 
 ## Реэкспорты из exchange-engine
 
-Из `@solncebro/exchange-engine` (0.13.0+) реэкспортируются:
+Из `@solncebro/exchange-engine` (0.14.0, установлено локально через `file:../exchange-engine`) реэкспортируются:
 - **Constants**: `MARKET_TYPE_LIST`
 - **Enums**: `ExchangeNameEnum`, `MarginModeEnum`, `MarketTypeEnum`, `MarketUnitEnum`, `OrderFilterEnum`, `OrderSideEnum`, `OrderTypeEnum`, `PositionModeEnum`, `PositionSideEnum`, `TimeInForceEnum`, `TradeSymbolTypeEnum`, `TriggerByEnum`, `WebSocketConnectionTypeEnum`, `WorkingTypeEnum`
-- **Types**: `AccountBalances`, `Balance`, `BalanceByAsset`, `ClosedPnl`, `CreateOrderWebSocketArgs`, `ExchangeArgs`, `ExchangeClient`, `ExchangeConfig`, `ExchangeLogger`, `FeeRate`, `FetchAllKlinesOptions`, `FetchPageWithLimitArgs`, `FundingInfo`, `FundingRateHistory`, `Income`, `Kline`, `KlineHandler`, `KlineInterval`, `MarkPrice`, `MarkPriceUpdate`, `ModifyOrderArgs`, `OpenInterest`, `Order`, `OrderBook`, `OrderBookLevel`, `OrderUpdateEvent`, `OrderUpdateHandler`, `Position`, `PositionUpdateEvent`, `PositionUpdateHandler`, `PublicTrade`, `ResubscribeKlinesArgs`, `SubscribeKlinesArgs`, `Ticker`, `TickerBySymbol`, `TradeSymbol`, `TradeSymbolBySymbol`, `TradeSymbolFilter`, `UserDataStreamHandlerArgs`, `WebSocketConnectionInfo`
+- **Types**: `AccountBalances`, `Balance`, `BalanceByAsset`, `BalanceUpdateEvent`, `BalanceUpdateHandler`, `BalanceUpdateItem`, `CancelBatchOrdersResult`, `CancelOrderItemResult`, `ClosedPnl`, `CreateOrderWebSocketArgs`, `ExchangeArgs`, `ExchangeClient`, `ExchangeConfig`, `ExchangeLogger`, `FeeRate`, `FetchAllKlinesOptions`, `FetchPageWithLimitArgs`, `FundingInfo`, `FundingRateHistory`, `Income`, `Kline`, `KlineHandler`, `KlineInterval`, `LeverageFilter`, `MarkPrice`, `MarkPriceHandler`, `MarkPriceUpdate`, `ModifyBatchOrderArgs`, `ModifyBatchOrdersResult`, `ModifyOrderArgs`, `ModifyOrderItemResult`, `OpenInterest`, `Order`, `OrderBook`, `OrderBookHandler`, `OrderBookLevel`, `OrderBookRawLevel`, `OrderBookUpdate`, `OrderBookUpdateType`, `OrderRateLimit`, `OrderRateLimitSource`, `OrderUpdateEvent`, `OrderUpdateHandler`, `Position`, `PositionUpdateEvent`, `PositionUpdateHandler`, `PriceLimitRisk`, `PublicTrade`, `PublicTradeHandler`, `ResubscribeKlinesArgs`, `SubscribeKlinesArgs`, `SubscribeOrderbookArgs`, `SubscribePublicTradesArgs`, `Ticker`, `TickerBySymbol`, `TradeSymbol`, `TradeSymbolBySymbol`, `TradeSymbolFilter`, `TradingFunding`, `UserDataStreamHandlerArgs`, `WebSocketConnectionInfo`
 - **Classes**: `ExchangeError`
 
-## Собственные классы trade-engine (3.4.0)
+**НЕ реэкспортируются** (внутренние компоненты exchange-engine — потребители не должны их использовать): `Exchange` (factory), `formatWebSocketConnectionsReport`. Внешние приложения работают только через `@solncebro/trade-engine`.
+
+## Собственные классы trade-engine (3.4.0–3.5.0)
 
 - **`PositionManager`** (`src/core/positionManager.ts`) — высокоуровневый семантический API; доступ через `ExchangeConnector.positionManager`.
-- **Экспорт из entry** (`src/index.ts`) — типы из `positionManager.types.ts`: `Direction`, `StopOrderType`, `OpenPositionLimitArgs`, `OpenPositionMarketArgs`, `ClosePositionLimitArgs`, `ClosePositionMarketArgs`, `PlaceStopLossArgs`, `PlaceTakeProfitArgs`, `CancelOrderArgs`, `CancelBatchOrdersArgs`, `SpotMarketBuyByQuoteArgs`, `SetLeverageArgs`, `SetMarginModeArgs`.
-- **Внутренние типы** того же файла (без реэкспорта из entry): `PlaceConditionalArgs`, `BuildOrderParamsInput`, `ApplyFuturesSetupArgs`.
+- **`RateLimitedRequestQueue`** (`src/core/RateLimitedRequestQueue.ts`, 3.5.0) — sliding-window очередь с RPS-лимитом.
+- **`KlineSubscriptionWatchdog`** (`src/services/klineSubscriptionWatchdog.ts`, 3.5.0) — мониторинг и автовосстановление kline-подписок.
+- **`withRetryOn429`** / **`withReadRetry`** (`src/core/withRetryOn429.ts`, 3.5.0) — функциональные retry-обёртки.
+- **`PremiumIndexCalculator`** (`src/services/premiumIndexCalculator.ts`) — per-symbol EMA «премии» (`midPrice − markPrice`, окно 30s) для подачи `premiumAvg` в `OrderCalculator.calculatePriceLimitBounds`; не auto-wired.
+- **Экспорт из entry** (`src/index.ts`) — типы из `positionManager.types.ts`: `Direction`, `StopOrderType`, `OpenPositionLimitArgs`, `OpenPositionMarketArgs`, `OpenPositionBatchLimitArgs`, `OpenPositionBatchLimitItem`, `OpenPositionBatchLimitResult`, `ClosePositionLimitArgs`, `ClosePositionMarketArgs`, `ClosePositionBatchLimitArgs`, `ClosePositionBatchLimitItem`, `ClosePositionBatchLimitResult`, `PositionBatchLimitItemResult`, `PlaceStopLossArgs`, `PlaceTakeProfitArgs`, `CancelOrderArgs`, `CancelBatchOrdersArgs`, `CancelAllOrdersArgs`, `PositionManagerModifyOrderArgs`, `PositionManagerModifyBatchOrdersArgs`, `PositionManagerModifyBatchOrderItem`, `ReadPositionStateArgs`, `ReadAllPositionsArgs`, `PositionStateResult`, `PositionAbsenceReason`, `PositionAmbiguityReason`, `SpotMarketBuyByQuoteArgs`, `SetLeverageArgs`, `SetMarginModeArgs`.
+- **Внутренние типы** `positionManager.types.ts` (без реэкспорта из entry): `PlaceConditionalArgs`, `BuildOrderParamsInput`, `ApplyFuturesSetupArgs`.
+- **Внутренние типы 3.5.0** для reliability-инфраструктуры: `KlineSubscriptionWatchdogArgs`, `KlineSubscriptionWatchdogConfig`, `KlineSubscriptionWatchdogDiagnostic`, `KlineSubscriptionLastEntry`, `KlineSubscriptionOverdueEntry`, `KlineSubscriptionRecoveryState`, `RateLimitedRequestQueueArgs`, `WithReadRetryArgs`, `WithRetryOn429Args`, `RateLimitConfig` (из `exchangeConnector.ts`).
 
 ## Основные типы
 
@@ -204,11 +211,27 @@ interface PositionUpdateEvent {
 type OrderUpdateHandler = (event: OrderUpdateEvent) => void;
 type PositionUpdateHandler = (event: PositionUpdateEvent) => void;
 
+interface BalanceUpdateEvent {
+  balanceList: BalanceUpdateItem[];
+  timestamp: number;
+}
+
+interface BalanceUpdateItem {
+  asset: string;
+  free: number;
+  locked: number;
+}
+
+type BalanceUpdateHandler = (event: BalanceUpdateEvent) => void;
+
 interface UserDataStreamHandlerArgs {
   onOrderUpdate: OrderUpdateHandler;
   onPositionUpdate: PositionUpdateHandler;
+  onBalanceUpdate?: BalanceUpdateHandler; // Binance Spot WS API, событие outboundAccountPosition (exchange-engine d93c52a)
 }
 // Используется в ExchangeClient.connectUserDataStream(handler)
+// Binance Spot user-data теперь идёт через WebSocket API (класс BinanceSpotUserDataStream);
+// listenKey REST удалён биржей 2026-02-20, баланс эмитится через onBalanceUpdate.
 ```
 
 ### Ценовые лимиты (`priceLimit.ts`)
@@ -218,6 +241,7 @@ interface PriceLimitBoundsArgs {
   tradeSymbol: TradeSymbol;
   markPrice: number;
   indexPrice?: number;
+  premiumAvg?: number; // Bybit premium-член: EMA(midPrice − mark, 30s); при отсутствии трактуется как 0 (см. PremiumIndexCalculator)
 }
 
 interface PriceLimitBounds {

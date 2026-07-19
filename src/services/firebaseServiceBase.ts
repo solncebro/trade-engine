@@ -13,6 +13,30 @@ import {
 } from '../types/firebase';
 import { SettingConfigBase } from '../types/telegramCommandHandler';
 
+function flattenForFirestoreUpdate(value: unknown, prefix = ''): Record<string, unknown> {
+  const result: Record<string, unknown> = {};
+
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+    if (prefix) {
+      result[prefix] = value;
+    }
+
+    return result;
+  }
+
+  for (const [key, nested] of Object.entries(value as Record<string, unknown>)) {
+    const path = prefix ? `${prefix}.${key}` : key;
+
+    if (nested !== null && typeof nested === 'object' && !Array.isArray(nested)) {
+      Object.assign(result, flattenForFirestoreUpdate(nested, path));
+    } else {
+      result[path] = nested;
+    }
+  }
+
+  return result;
+}
+
 export interface FirebaseServiceBaseArgs<T> {
   documentPath: string;
   defaultData: T;
@@ -104,9 +128,11 @@ export class FirebaseServiceBase<T> extends EventEmitter implements Notifiable {
 
   public async updateData(data: Partial<T>): Promise<void> {
     try {
-      await this.documentReference.update(data);
+      const flatData = flattenForFirestoreUpdate(data);
 
-      logger.info({ data }, 'Updated data in Firebase');
+      await this.documentReference.update(flatData);
+
+      logger.info({ data: flatData }, 'Updated data in Firebase');
     } catch (error) {
       logger.error({ error, data }, 'Failed to update data in Firebase');
 

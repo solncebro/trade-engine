@@ -37,16 +37,39 @@ jest.mock('@solncebro/exchange-engine', () => {
         priceToPrecision: (_s: string, p: number) => p,
         createOrderWebSocket: jest.fn().mockResolvedValue({ id: 'oid', symbol: 'BTCUSDT' }),
         cancelOrder: jest.fn().mockResolvedValue(undefined),
-        cancelBatchOrders: jest.fn().mockResolvedValue(undefined),
+        cancelBatchOrders: jest.fn().mockImplementation(async (_symbol: string, orderIdList: string[]) =>
+          orderIdList.map(orderId => ({ orderId, isSuccess: true, errorCode: null, errorText: null }))
+        ),
+        cancelAllOrders: jest.fn().mockResolvedValue(undefined),
+        modifyOrder: jest.fn().mockImplementation(async (params: { orderId: string }) => ({
+          id: params.orderId,
+          symbol: 'BTCUSDT',
+        })),
+        modifyBatchOrders: jest.fn().mockImplementation(async (orderList: Array<{ orderId: string }>) =>
+          orderList.map(({ orderId }) => ({ orderId, isSuccess: true, errorCode: null, errorText: null }))
+        ),
         setLeverage: jest.fn().mockResolvedValue(undefined),
         setMarginMode: jest.fn().mockResolvedValue(undefined),
+        fetchPositionSnapshot: jest.fn().mockResolvedValue(null),
+        fetchPositionList: jest.fn().mockResolvedValue([]),
+        fetchAllPositions: jest.fn().mockResolvedValue([]),
       },
       spot: {
         amountToPrecision: (_s: string, a: number) => a,
         priceToPrecision: (_s: string, p: number) => p,
         createOrderWebSocket: jest.fn().mockResolvedValue({ id: 'oid', symbol: 'BTCUSDT' }),
         cancelOrder: jest.fn().mockResolvedValue(undefined),
-        cancelBatchOrders: jest.fn().mockResolvedValue(undefined),
+        cancelBatchOrders: jest.fn().mockImplementation(async (_symbol: string, orderIdList: string[]) =>
+          orderIdList.map(orderId => ({ orderId, isSuccess: true, errorCode: null, errorText: null }))
+        ),
+        cancelAllOrders: jest.fn().mockResolvedValue(undefined),
+        modifyOrder: jest.fn().mockImplementation(async (params: { orderId: string }) => ({
+          id: params.orderId,
+          symbol: 'BTCUSDT',
+        })),
+        modifyBatchOrders: jest.fn().mockImplementation(async (orderList: Array<{ orderId: string }>) =>
+          orderList.map(({ orderId }) => ({ orderId, isSuccess: true, errorCode: null, errorText: null }))
+        ),
       },
       close: jest.fn(),
     })),
@@ -759,5 +782,506 @@ describe('PositionManager — cancel routing', () => {
     });
 
     expect(futSpy).not.toHaveBeenCalled();
+  });
+});
+
+describe('PositionManager — cancelBatchOrders return type + counts', () => {
+  it('returns CancelBatchOrdersResult mapped from client response', async () => {
+    const conn = createConnector(ExchangeNameEnum.Bybit, PositionModeEnum.OneWay);
+    const futSpy = conn.futures.cancelBatchOrders as jest.Mock;
+    futSpy.mockReset();
+    futSpy.mockResolvedValueOnce([
+      { orderId: 'o1', isSuccess: true, errorCode: null, errorText: null },
+      { orderId: 'o2', isSuccess: false, errorCode: -2011, errorText: 'Unknown order sent.' },
+      { orderId: 'o3', isSuccess: true, errorCode: null, errorText: null },
+    ]);
+
+    const result = await conn.positionManager.cancelBatchOrders({
+      symbol: 'BTCUSDT',
+      marketType: MarketTypeEnum.Futures,
+      orderIdList: ['o1', 'o2', 'o3'],
+    });
+
+    expect(result).toHaveLength(3);
+    expect(result.filter(item => item.isSuccess).length).toBe(2);
+    expect(result.filter(item => !item.isSuccess)[0].errorCode).toBe(-2011);
+  });
+});
+
+describe('PositionManager — cancelAllOrders', () => {
+  it('routes to futures client for marketType=Futures', async () => {
+    const conn = createConnector(ExchangeNameEnum.Bybit, PositionModeEnum.OneWay);
+    const futSpy = conn.futures.cancelAllOrders as jest.Mock;
+    futSpy.mockClear();
+
+    await conn.positionManager.cancelAllOrders({
+      symbol: 'BTCUSDT',
+      marketType: MarketTypeEnum.Futures,
+    });
+
+    expect(futSpy).toHaveBeenCalledWith('BTCUSDT');
+  });
+});
+
+describe('PositionManager — createOrder does NOT retry on 429', () => {
+  it('createOrder propagates 429 throw without retry (not idempotent)', async () => {
+    const conn = createConnector(ExchangeNameEnum.Bybit, PositionModeEnum.OneWay);
+    const futCreate = conn.futures.createOrderWebSocket as jest.Mock;
+    futCreate.mockReset();
+    const axiosError = Object.assign(new Error('429'), { response: { status: 429, headers: { 'retry-after': '0' } } });
+    futCreate.mockRejectedValue(axiosError);
+
+    const result = await conn.positionManager.openPositionMarket({
+      symbol: 'BTCUSDT',
+      marketType: MarketTypeEnum.Futures,
+      direction: 'long',
+      amount: 1,
+    });
+
+    expect(futCreate).toHaveBeenCalledTimes(1);
+    expect(result.errorText).toBeDefined();
+  });
+});
+
+describe('PositionManager — modifyOrder', () => {
+  it('routes to futures client for marketType=Futures', async () => {
+    const conn = createConnector(ExchangeNameEnum.Bybit, PositionModeEnum.OneWay);
+    const futSpy = conn.futures.modifyOrder as jest.Mock;
+    const spotSpy = conn.spot.modifyOrder as jest.Mock;
+    futSpy.mockClear();
+    spotSpy.mockClear();
+
+    await conn.positionManager.modifyOrder({
+      symbol: 'BTCUSDT',
+      marketType: MarketTypeEnum.Futures,
+      orderId: 'oid1',
+      price: 105,
+      amount: 2,
+    });
+
+    expect(futSpy).toHaveBeenCalledWith({
+      symbol: 'BTCUSDT',
+      orderId: 'oid1',
+      price: 105,
+      amount: 2,
+      triggerPrice: undefined,
+    });
+    expect(spotSpy).not.toHaveBeenCalled();
+  });
+
+  it('routes to spot client for marketType=Spot', async () => {
+    const conn = createConnector(ExchangeNameEnum.Bybit, PositionModeEnum.OneWay);
+    const futSpy = conn.futures.modifyOrder as jest.Mock;
+    const spotSpy = conn.spot.modifyOrder as jest.Mock;
+    futSpy.mockClear();
+    spotSpy.mockClear();
+
+    await conn.positionManager.modifyOrder({
+      symbol: 'BTCUSDT',
+      marketType: MarketTypeEnum.Spot,
+      orderId: 'oid2',
+      price: 95,
+    });
+
+    expect(spotSpy).toHaveBeenCalledWith({
+      symbol: 'BTCUSDT',
+      orderId: 'oid2',
+      price: 95,
+      amount: undefined,
+      triggerPrice: undefined,
+    });
+    expect(futSpy).not.toHaveBeenCalled();
+  });
+
+  it('passes triggerPrice when provided (for conditional orders)', async () => {
+    const conn = createConnector(ExchangeNameEnum.Bybit, PositionModeEnum.OneWay);
+    const futSpy = conn.futures.modifyOrder as jest.Mock;
+    futSpy.mockClear();
+
+    await conn.positionManager.modifyOrder({
+      symbol: 'BTCUSDT',
+      marketType: MarketTypeEnum.Futures,
+      orderId: 'sl-oid',
+      triggerPrice: 90,
+    });
+
+    expect(futSpy).toHaveBeenCalledWith({
+      symbol: 'BTCUSDT',
+      orderId: 'sl-oid',
+      price: undefined,
+      amount: undefined,
+      triggerPrice: 90,
+    });
+  });
+
+  it('returns Order from client', async () => {
+    const conn = createConnector(ExchangeNameEnum.Bybit, PositionModeEnum.OneWay);
+    const futSpy = conn.futures.modifyOrder as jest.Mock;
+    futSpy.mockReset();
+    futSpy.mockResolvedValueOnce({ id: 'returnedId', symbol: 'BTCUSDT', side: OrderSideEnum.Buy });
+
+    const result = await conn.positionManager.modifyOrder({
+      symbol: 'BTCUSDT',
+      marketType: MarketTypeEnum.Futures,
+      orderId: 'oid1',
+      price: 101,
+    });
+
+    expect(result.id).toBe('returnedId');
+  });
+});
+
+describe('PositionManager — modifyBatchOrders', () => {
+  it('routes to futures client for marketType=Futures', async () => {
+    const conn = createConnector(ExchangeNameEnum.Bybit, PositionModeEnum.OneWay);
+    const futSpy = conn.futures.modifyBatchOrders as jest.Mock;
+    const spotSpy = conn.spot.modifyBatchOrders as jest.Mock;
+    futSpy.mockClear();
+    spotSpy.mockClear();
+
+    await conn.positionManager.modifyBatchOrders({
+      marketType: MarketTypeEnum.Futures,
+      orderList: [
+        { symbol: 'BTCUSDT', orderId: 'o1', side: OrderSideEnum.Buy, price: 100 },
+      ],
+    });
+
+    expect(futSpy).toHaveBeenCalledTimes(1);
+    expect(spotSpy).not.toHaveBeenCalled();
+  });
+
+  it('maps PositionManagerModifyBatchOrderItem to ModifyBatchOrderArgs (all fields)', async () => {
+    const conn = createConnector(ExchangeNameEnum.Bybit, PositionModeEnum.OneWay);
+    const futSpy = conn.futures.modifyBatchOrders as jest.Mock;
+    futSpy.mockClear();
+
+    await conn.positionManager.modifyBatchOrders({
+      marketType: MarketTypeEnum.Futures,
+      orderList: [
+        {
+          symbol: 'BTCUSDT',
+          orderId: 'o1',
+          side: OrderSideEnum.Buy,
+          price: 100,
+          amount: 0.1,
+          triggerPrice: 95,
+          clientOrderId: 'cid-1',
+        },
+        {
+          symbol: 'ETHUSDT',
+          orderId: 'o2',
+          side: OrderSideEnum.Sell,
+          price: 200,
+        },
+      ],
+    });
+
+    expect(futSpy).toHaveBeenCalledWith([
+      {
+        symbol: 'BTCUSDT',
+        orderId: 'o1',
+        side: OrderSideEnum.Buy,
+        price: 100,
+        amount: 0.1,
+        triggerPrice: 95,
+        clientOrderId: 'cid-1',
+      },
+      {
+        symbol: 'ETHUSDT',
+        orderId: 'o2',
+        side: OrderSideEnum.Sell,
+        price: 200,
+        amount: undefined,
+        triggerPrice: undefined,
+        clientOrderId: undefined,
+      },
+    ]);
+  });
+
+  it('is no-op on empty orderList (returns empty array)', async () => {
+    const conn = createConnector(ExchangeNameEnum.Bybit, PositionModeEnum.OneWay);
+    const futSpy = conn.futures.modifyBatchOrders as jest.Mock;
+    futSpy.mockClear();
+
+    const result = await conn.positionManager.modifyBatchOrders({
+      marketType: MarketTypeEnum.Futures,
+      orderList: [],
+    });
+
+    expect(result).toEqual([]);
+    expect(futSpy).not.toHaveBeenCalled();
+  });
+
+  it('returns ModifyBatchOrdersResult from client (mixed success/error)', async () => {
+    const conn = createConnector(ExchangeNameEnum.Bybit, PositionModeEnum.OneWay);
+    const futSpy = conn.futures.modifyBatchOrders as jest.Mock;
+    futSpy.mockReset();
+    futSpy.mockResolvedValueOnce([
+      { orderId: 'o1', isSuccess: true, errorCode: null, errorText: null },
+      { orderId: 'o2', isSuccess: false, errorCode: -2011, errorText: 'Unknown order sent.' },
+    ]);
+
+    const result = await conn.positionManager.modifyBatchOrders({
+      marketType: MarketTypeEnum.Futures,
+      orderList: [
+        { symbol: 'BTCUSDT', orderId: 'o1', side: OrderSideEnum.Buy, price: 100 },
+        { symbol: 'BTCUSDT', orderId: 'o2', side: OrderSideEnum.Sell, price: 105 },
+      ],
+    });
+
+    expect(result).toHaveLength(2);
+    expect(result.filter(item => item.isSuccess).length).toBe(1);
+    expect(result.filter(item => !item.isSuccess)[0].errorCode).toBe(-2011);
+  });
+
+  it('propagates spot Not-supported error from client', async () => {
+    const conn = createConnector(ExchangeNameEnum.Binance, PositionModeEnum.OneWay);
+    const spotSpy = conn.spot.modifyBatchOrders as jest.Mock;
+    spotSpy.mockReset();
+    spotSpy.mockRejectedValueOnce(new Error('Not supported for spot market'));
+
+    await expect(
+      conn.positionManager.modifyBatchOrders({
+        marketType: MarketTypeEnum.Spot,
+        orderList: [{ symbol: 'BTCUSDT', orderId: 'o1', side: OrderSideEnum.Buy, price: 100 }],
+      })
+    ).rejects.toThrow('Not supported for spot market');
+  });
+});
+
+describe('PositionManager — readPositionState', () => {
+  function makeSnapshot(overrides: Partial<{ contracts: number; side: PositionSideEnum; positionIdx: number; entryPrice: number }> = {}) {
+    return {
+      symbol: 'BTCUSDT',
+      side: PositionSideEnum.Long,
+      contracts: 1,
+      entryPrice: 100,
+      markPrice: 100,
+      unrealizedPnl: 0,
+      leverage: 10,
+      marginMode: MarginModeEnum.Isolated,
+      liquidationPrice: 50,
+      info: {},
+      ...overrides,
+    };
+  }
+
+  it('throws for Spot marketType', async () => {
+    const conn = createConnector(ExchangeNameEnum.Bybit, PositionModeEnum.OneWay);
+
+    await expect(
+      conn.positionManager.readPositionState({
+        symbol: 'BTCUSDT',
+        marketType: MarketTypeEnum.Spot,
+        direction: 'long',
+      }),
+    ).rejects.toThrow('readPositionState supports MarketTypeEnum.Futures only');
+  });
+
+  it('hedge mode: passes positionIdx=1 for direction=long', async () => {
+    const conn = createConnector(ExchangeNameEnum.Bybit, PositionModeEnum.Hedge);
+    const snapshotSpy = conn.futures.fetchPositionSnapshot as jest.Mock;
+    snapshotSpy.mockResolvedValueOnce(makeSnapshot({ contracts: 5, side: PositionSideEnum.Long, positionIdx: 1 }));
+
+    const result = await conn.positionManager.readPositionState({
+      symbol: 'BTCUSDT',
+      marketType: MarketTypeEnum.Futures,
+      direction: 'long',
+    });
+
+    expect(snapshotSpy).toHaveBeenCalledWith('BTCUSDT', 1);
+    expect(result.kind).toBe('present');
+  });
+
+  it('hedge mode: passes positionIdx=2 for direction=short', async () => {
+    const conn = createConnector(ExchangeNameEnum.Bybit, PositionModeEnum.Hedge);
+    const snapshotSpy = conn.futures.fetchPositionSnapshot as jest.Mock;
+    snapshotSpy.mockResolvedValueOnce(makeSnapshot({ contracts: 3, side: PositionSideEnum.Short, positionIdx: 2 }));
+
+    await conn.positionManager.readPositionState({
+      symbol: 'BTCUSDT',
+      marketType: MarketTypeEnum.Futures,
+      direction: 'short',
+    });
+
+    expect(snapshotSpy).toHaveBeenCalledWith('BTCUSDT', 2);
+  });
+
+  it('oneWay mode: passes positionIdx=undefined', async () => {
+    const conn = createConnector(ExchangeNameEnum.Bybit, PositionModeEnum.OneWay);
+    const snapshotSpy = conn.futures.fetchPositionSnapshot as jest.Mock;
+    snapshotSpy.mockResolvedValueOnce(makeSnapshot({ side: PositionSideEnum.Both, contracts: 0 }));
+
+    await conn.positionManager.readPositionState({
+      symbol: 'BTCUSDT',
+      marketType: MarketTypeEnum.Futures,
+      direction: 'long',
+    });
+
+    expect(snapshotSpy).toHaveBeenCalledWith('BTCUSDT', undefined);
+  });
+
+  it('returns absent/confirmed with reason=no_record when snapshot is null', async () => {
+    const conn = createConnector(ExchangeNameEnum.Bybit, PositionModeEnum.Hedge);
+    (conn.futures.fetchPositionSnapshot as jest.Mock).mockResolvedValueOnce(null);
+
+    const result = await conn.positionManager.readPositionState({
+      symbol: 'BTCUSDT',
+      marketType: MarketTypeEnum.Futures,
+      direction: 'long',
+    });
+
+    expect(result.kind).toBe('absent');
+    expect(result.kind === 'absent' && result.confidence).toBe('confirmed');
+    expect(result.kind === 'absent' && result.reason).toBe('no_record');
+  });
+
+  it('returns absent/confirmed with reason=zero_contracts when contracts=0 (GMTUSDT scenario)', async () => {
+    const conn = createConnector(ExchangeNameEnum.Bybit, PositionModeEnum.Hedge);
+    (conn.futures.fetchPositionSnapshot as jest.Mock).mockResolvedValueOnce(
+      makeSnapshot({ contracts: 0, side: PositionSideEnum.Both, positionIdx: 1 }),
+    );
+
+    const result = await conn.positionManager.readPositionState({
+      symbol: 'BTCUSDT',
+      marketType: MarketTypeEnum.Futures,
+      direction: 'long',
+    });
+
+    expect(result.kind).toBe('absent');
+    expect(result.kind === 'absent' && result.confidence).toBe('confirmed');
+    expect(result.kind === 'absent' && result.reason).toBe('zero_contracts');
+  });
+
+  it('returns present when position has contracts and matches side', async () => {
+    const conn = createConnector(ExchangeNameEnum.Bybit, PositionModeEnum.Hedge);
+    (conn.futures.fetchPositionSnapshot as jest.Mock).mockResolvedValueOnce(
+      makeSnapshot({ contracts: 7, side: PositionSideEnum.Long, positionIdx: 1, entryPrice: 100 }),
+    );
+
+    const result = await conn.positionManager.readPositionState({
+      symbol: 'BTCUSDT',
+      marketType: MarketTypeEnum.Futures,
+      direction: 'long',
+    });
+
+    expect(result.kind).toBe('present');
+    expect(result.kind === 'present' && result.position.contracts).toBe(7);
+  });
+
+  it('hedge mode: returns ambiguous when positionIdx does not match', async () => {
+    const conn = createConnector(ExchangeNameEnum.Bybit, PositionModeEnum.Hedge);
+    (conn.futures.fetchPositionSnapshot as jest.Mock).mockResolvedValueOnce(
+      makeSnapshot({ contracts: 5, side: PositionSideEnum.Short, positionIdx: 2 }),
+    );
+
+    const result = await conn.positionManager.readPositionState({
+      symbol: 'BTCUSDT',
+      marketType: MarketTypeEnum.Futures,
+      direction: 'long',
+    });
+
+    expect(result.kind).toBe('ambiguous');
+    expect(result.kind === 'ambiguous' && result.reason).toBe('idx_mismatch');
+  });
+
+  it('hedge mode: returns ambiguous side_mismatch when positionIdx matches but side is wrong (defence-in-depth)', async () => {
+    const conn = createConnector(ExchangeNameEnum.Bybit, PositionModeEnum.Hedge);
+    (conn.futures.fetchPositionSnapshot as jest.Mock).mockResolvedValueOnce(
+      makeSnapshot({ contracts: 5, side: PositionSideEnum.Short, positionIdx: 1 }),
+    );
+
+    const result = await conn.positionManager.readPositionState({
+      symbol: 'BTCUSDT',
+      marketType: MarketTypeEnum.Futures,
+      direction: 'long',
+    });
+
+    expect(result.kind).toBe('ambiguous');
+    expect(result.kind === 'ambiguous' && result.reason).toBe('side_mismatch');
+  });
+
+  it('oneWay mode: returns ambiguous when side is opposite with contracts>0', async () => {
+    const conn = createConnector(ExchangeNameEnum.Bybit, PositionModeEnum.OneWay);
+    (conn.futures.fetchPositionSnapshot as jest.Mock).mockResolvedValueOnce(
+      makeSnapshot({ contracts: 5, side: PositionSideEnum.Short }),
+    );
+
+    const result = await conn.positionManager.readPositionState({
+      symbol: 'BTCUSDT',
+      marketType: MarketTypeEnum.Futures,
+      direction: 'long',
+    });
+
+    expect(result.kind).toBe('ambiguous');
+    expect(result.kind === 'ambiguous' && result.reason).toBe('side_mismatch');
+  });
+
+  it('returns absent/unconfirmed with reason=fetch_error on exception', async () => {
+    const conn = createConnector(ExchangeNameEnum.Bybit, PositionModeEnum.OneWay);
+    (conn.futures.fetchPositionSnapshot as jest.Mock).mockRejectedValueOnce(new Error('network timeout'));
+
+    const result = await conn.positionManager.readPositionState({
+      symbol: 'BTCUSDT',
+      marketType: MarketTypeEnum.Futures,
+      direction: 'long',
+    });
+
+    expect(result.kind).toBe('absent');
+    expect(result.kind === 'absent' && result.confidence).toBe('unconfirmed');
+    expect(result.kind === 'absent' && result.reason).toBe('fetch_error');
+    expect(result.kind === 'absent' && result.errorText).toBe('network timeout');
+  });
+});
+
+describe('PositionManager — readAllPositions', () => {
+  it('throws for Spot marketType', async () => {
+    const conn = createConnector(ExchangeNameEnum.Bybit, PositionModeEnum.OneWay);
+
+    await expect(
+      conn.positionManager.readAllPositions({ marketType: MarketTypeEnum.Spot }),
+    ).rejects.toThrow('readAllPositions supports MarketTypeEnum.Futures only');
+  });
+
+  it('delegates to fetchAllPositions and returns array', async () => {
+    const conn = createConnector(ExchangeNameEnum.Bybit, PositionModeEnum.OneWay);
+    const samplePosition = {
+      symbol: 'BTCUSDT',
+      side: PositionSideEnum.Long,
+      direction: 'long' as const,
+      contracts: 1,
+      entryPrice: 100,
+      markPrice: 101,
+      unrealizedPnl: 0,
+      leverage: 10,
+      marginMode: MarginModeEnum.Isolated,
+      liquidationPrice: 50,
+      info: {},
+    };
+    (conn.futures.fetchAllPositions as jest.Mock).mockResolvedValueOnce([samplePosition]);
+
+    const result = await conn.positionManager.readAllPositions({ marketType: MarketTypeEnum.Futures });
+
+    expect(conn.futures.fetchAllPositions).toHaveBeenCalledTimes(1);
+    expect(result).toHaveLength(1);
+    expect(result[0].symbol).toBe('BTCUSDT');
+  });
+
+  it('returns empty array when no positions', async () => {
+    const conn = createConnector(ExchangeNameEnum.Bybit, PositionModeEnum.OneWay);
+    (conn.futures.fetchAllPositions as jest.Mock).mockResolvedValueOnce([]);
+
+    const result = await conn.positionManager.readAllPositions({ marketType: MarketTypeEnum.Futures });
+
+    expect(result).toEqual([]);
+  });
+
+  it('propagates exception from fetchAllPositions', async () => {
+    const conn = createConnector(ExchangeNameEnum.Bybit, PositionModeEnum.OneWay);
+    (conn.futures.fetchAllPositions as jest.Mock).mockRejectedValueOnce(new Error('rate limit'));
+
+    await expect(
+      conn.positionManager.readAllPositions({ marketType: MarketTypeEnum.Futures }),
+    ).rejects.toThrow('rate limit');
   });
 });

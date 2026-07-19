@@ -5,6 +5,67 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.5.0] - 2026-05-17
+
+### Added
+
+**Reliability-инфраструктура**:
+- **`RateLimitedRequestQueue`** (`src/core/RateLimitedRequestQueue.ts`) — sliding-window очередь для write-операций с заданным RPS. Args: `{ rateLimit, intervalMs?, loggerLabel? }`. Логирует первый throttle.
+- **`withRetryOn429`** и **`withReadRetry`** (`src/core/withRetryOn429.ts`) — функциональные retry-обёртки на 429/5xx с exponential backoff и поддержкой `Retry-After`. Args: `{ fn, contextLabel, maxRetries?, baseDelayMs? }`.
+- **`KlineSubscriptionWatchdog`** (`src/services/klineSubscriptionWatchdog.ts`) — мониторинг и автоматическое восстановление потерянных kline-подписок. Periodic scan → resubscribe → REST refetch + replay user handler. API диагностики `getDiagnosticInfo()`.
+
+**ExchangeConnector**:
+- 5-й и 6-й аргументы конструктора: `klineWatchdogConfig?: KlineSubscriptionWatchdogConfig` (опциональный мониторинг) и `rateLimitConfig?: RateLimitConfig | null` (override rate limit).
+- При `initialize()` динамически опрашивает `getOrderRateLimit()` и создаёт `RateLimitedRequestQueue` для write-операций (используется через `PositionManager`).
+- `loadTradeSymbols` и `fetchTickers` теперь обёрнуты в `withReadRetry`.
+- Геттеры `spot` и `futures` возвращают Proxy с watchdog-обёрткой `subscribeKlines`/`unsubscribeKlines` (если watchdog включён).
+
+**PositionManager** (расширения 3.5.0):
+- **`cancelAllOrders(args: CancelAllOrdersArgs)`** — высокоуровневая обёртка над `client.cancelAllOrders(symbol)` с queue+retry.
+- **`cancelBatchOrders(args)`** теперь возвращает `Promise<CancelBatchOrdersResult>` (per-order результаты `{ orderId, isSuccess, errorCode, errorText }`).
+- **`modifyOrder(args: PositionManagerModifyOrderArgs)`** — высокоуровневая модификация одного ордера (price/amount/triggerPrice).
+- **`modifyBatchOrders(args: PositionManagerModifyBatchOrdersArgs)`** — массовая модификация ордеров (Binance Futures REST chunk=5, Bybit linear=20 / spot=10; Bybit через WS если подключён). На Binance Spot бросает `Not supported for spot market`.
+- Все write-операции (open/close/cancel/modify/setLeverage/setMarginMode) теперь идут через `withRetryOn429` и write-очередь.
+- Constructor принимает опциональный `queue?: RateLimitedRequestQueue`. Если не передан, очередь берётся у `ExchangeConnector` (`getWriteQueue()`) **на каждый вызов** — гарантирует актуальный RPS из `initialize()` (раньше очередь фиксировалась при первом обращении к `positionManager` и могла навсегда остаться на fallback).
+
+**FirebaseServiceBase**:
+- `updateData(data)` теперь корректно обрабатывает вложенные объекты через внутреннюю утилиту `flattenForFirestoreUpdate()` — превращает `{ a: { b: 1 } }` в `{ "a.b": 1 }` (dot-notation, как требует Firestore `documentReference.update()`).
+
+**Type re-exports** (из `@solncebro/exchange-engine` 0.14.0):
+- `CancelBatchOrdersResult`, `CancelOrderItemResult`
+- `OrderRateLimit`, `OrderRateLimitSource`
+- `ModifyBatchOrderArgs`, `ModifyBatchOrdersResult`, `ModifyOrderItemResult`
+- `MarkPriceHandler`, `PriceLimitRisk`, `LeverageFilter`, `TradingFunding`
+- `BalanceUpdateEvent`, `BalanceUpdateItem`, `BalanceUpdateHandler` (commit `d93c52a` — Binance Spot user-data через WebSocket API; событие `outboundAccountPosition → onBalanceUpdate`)
+
+**Export из entry** (`src/index.ts`) — новые типы PositionManager: `PositionManagerModifyOrderArgs`, `PositionManagerModifyBatchOrdersArgs`, `PositionManagerModifyBatchOrderItem`, `CancelAllOrdersArgs`. Также: `RateLimitedRequestQueue` + `RateLimitedRequestQueueArgs`, `KlineSubscriptionWatchdog` + `KlineSubscriptionWatchdog*` типы, `withRetryOn429`, `withReadRetry` + `WithRetryOn429Args`, `WithReadRetryArgs`, `RateLimitConfig`.
+
+### Changed
+
+- **Upgraded `@solncebro/exchange-engine` from 0.13.0 to 0.14.0** (commit `d93c52a` — Binance Spot user-data перестроен на WebSocket API; установлено локально через `"file:../exchange-engine"`; не из npm registry — версия копится для будущей публикации).
+- `ExchangeClient.cancelBatchOrders` теперь возвращает `Promise<CancelBatchOrdersResult>` (`CancelOrderItemResult[]`) вместо `Promise<void>` (BREAKING в exchange-engine 0.14.0; миграция не требуется для consumers, игнорирующих возврат).
+- **Принцип единой точки входа**: класс `Exchange` (factory) и утилита `formatWebSocketConnectionsReport` из `@solncebro/exchange-engine` НЕ реэкспортируются — внешние приложения работают только через `@solncebro/trade-engine`.
+
+### Fixed (релиз-ревью 3.5.0)
+
+- **`KlineSubscriptionWatchdog.stop()`** очищает все внутренние коллекции (`subscribedHandlerByKey`, `subscribedIntervalByKey`, `lastKlineByKey`, `recoveryStateByKey`, `suppressedKeySet`) — ранее `subscribedHandlerByKey`/`subscribedIntervalByKey`/`lastKlineByKey` оставались, и после `stop()`+`start()` старые подписки сразу считались overdue и реплеились в устаревшие хендлеры.
+- **`PositionManager`** больше не фиксирует write-очередь при первом обращении: берёт её у `ExchangeConnector.getWriteQueue()` на каждый вызов, поэтому write-операции, выполненные до завершения `initialize()`, после него используют актуальный RPS (раньше могли навсегда остаться на fallback).
+- **`withRetryOn429`** учитывает заголовок `Retry-After` не только на `429`, но и на `5xx` (биржевые maintenance-окна отдают `Retry-After` на `503`) — раньше на `5xx` всегда применялся exponential backoff.
+- **`ExchangeConnector`** пропускает тик `updateTickers`, если предыдущий ещё не завершился (защита от наложения параллельных обновлений при медленном `withReadRetry`).
+- **`RateLimitedRequestQueue`** логирует throttling по скользящему окну (60s) вместо одного раза за весь процесс — восстановлена наблюдаемость повторных эпизодов троттлинга.
+
+### Notes on exchange-engine 0.14.0 (commit `d93c52a`)
+
+- `ExchangeClient.getOrderRateLimit()` → `Promise<OrderRateLimit>` — per-UID write RPS (Binance: парсится из `/exchangeInfo` rateLimits; Bybit: hardcoded 20 RPS из документации V5; fallback 15 RPS).
+- Bybit V5 publicTrade/orderbook подписки (`subscribeOrderbook`, `subscribePublicTrades`) — Binance бросает `Not supported`.
+- Типы `OrderBookUpdate`, `OrderBookHandler`, `PublicTradeHandler`, `SubscribeOrderbookArgs`, `SubscribePublicTradesArgs`.
+- `ExchangeClient.awaitWebSocketConnectionsReady()` — дождаться готовности WS после subscribe (Binance Futures multi-connection).
+- `ExchangeClient.modifyBatchOrders(orderList)` → `Promise<ModifyBatchOrdersResult>` — REST для всех бирж + WS для Bybit. Binance Futures chunk=5, Bybit linear=20 / spot=10. На Binance Spot — `Not supported`. Типы `ModifyBatchOrderArgs`, `ModifyOrderItemResult`, `ModifyBatchOrdersResult`.
+- BREAKING: тип возврата `cancelBatchOrders` (см. Changed выше).
+- Commit `d93c52a` поверх релиза 0.14.0: Binance Spot user-data перестроен на WebSocket API (listenKey REST удалён биржей 2026-02-20); новый класс `BinanceSpotUserDataStream`, типы `BalanceUpdateEvent`/`BalanceUpdateItem`/`BalanceUpdateHandler`, опциональный `UserDataStreamHandlerArgs.onBalanceUpdate`.
+
+См. полный changelog: `/Users/sol/dev/solncebro/exchange-engine/CHANGELOG.md`.
+
 ## [3.4.0] - 2026-04-30
 
 ### Added

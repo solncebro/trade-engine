@@ -1,4 +1,4 @@
-import type { ExchangeNameEnum } from '@solncebro/exchange-engine';
+import type { ExchangeNameEnum, OrderRateLimitSnapshot } from '@solncebro/exchange-engine';
 
 import { ExtensibleRecord } from './common';
 import { OrderParams } from './orders';
@@ -38,6 +38,7 @@ export interface ExchangeResponseData extends ExtensibleRecord {
     currency?: string;
     cost?: number;
   };
+  rateLimit?: OrderRateLimitSnapshot;
 }
 
 export interface ErrorResultBase {

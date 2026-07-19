@@ -1,10 +1,25 @@
 import * as crypto from 'crypto';
 
 import { ExchangeError, Exchange as ExchangeInstance, ExchangeNameEnum, OrderSideEnum, PositionModeEnum, PositionSideEnum, TimeInForceEnum, TradeSymbolTypeEnum } from '@solncebro/exchange-engine';
-import type { CreateOrderWebSocketArgs, ExchangeClient, MarkPriceUpdate, Ticker, TickerBySymbol } from '@solncebro/exchange-engine';
+import type { CreateOrderWebSocketArgs, ExchangeClient, KlineHandler, MarkPriceHandler, MarkPriceUpdate, OrderBookHandler, OrderRateLimit, PublicTradeHandler, SubscribeKlinesArgs, SubscribeOrderbookArgs, SubscribePublicTradesArgs, Ticker, TickerBySymbol } from '@solncebro/exchange-engine';
+
+import { KlineSubscriptionWatchdog } from './klineSubscriptionWatchdog';
+import type { KlineSubscriptionWatchdogConfig } from './klineSubscriptionWatchdog.types';
+import { StreamSubscriptionWatchdog } from './streamSubscriptionWatchdog';
+import type { StreamHealthEvent, StreamSubscriptionWatchdogConfig, StreamWatchdogCallbacks } from './streamSubscriptionWatchdog.types';
+import {
+  buildOrderbookWatchdogKey,
+  buildPublicTradeWatchdogKey,
+  MARK_PRICE_WATCHDOG_KEY,
+  MarkPriceWatchdogStrategy,
+  OrderbookWatchdogStrategy,
+  PublicTradeWatchdogStrategy,
+} from './streamWatchdogStrategies';
 
 import { logger } from '../core/logger';
 import { PositionManager } from '../core/positionManager';
+import { RateLimitedRequestQueue } from '../core/RateLimitedRequestQueue';
+import { withReadRetry } from '../core/withRetryOn429';
 import {
   ExchangeConfig,
   MarketTypeEnum,
@@ -15,6 +30,38 @@ import {
 import { formatErrorMessage } from '../utils/errorFormatter.utils';
 import { isSpot } from '../utils/order.utils';
 import { normalizeSymbol } from '../utils/symbol.utils';
+
+export interface RateLimitConfig {
+  writeRequestsPerSecond: number;
+  intervalMs?: number;
+}
+
+// Per-stream watchdog config for the non-kline public streams. Each stream type
+// is OFF by default (isEnabled must be set true to activate), so publishing the
+// library changes nothing until a consumer opts in. Health-event callbacks are
+// invoked with the marketType injected by ExchangeConnector (the watchdog itself
+// is per-marketType and stream-type-agnostic).
+export interface StreamWatchdogStreamConfig extends StreamSubscriptionWatchdogConfig {
+  onStale?: (marketType: MarketTypeEnum, event: StreamHealthEvent) => void;
+  onRecovered?: (marketType: MarketTypeEnum, event: StreamHealthEvent) => void;
+  onRecoveryFailed?: (marketType: MarketTypeEnum, event: StreamHealthEvent) => void;
+  onNotify?: (message: string) => void | Promise<void>;
+}
+
+export interface StreamWatchdogConfigMap {
+  orderbook?: StreamWatchdogStreamConfig;
+  publicTrade?: StreamWatchdogStreamConfig;
+  markPrice?: StreamWatchdogStreamConfig;
+}
+
+interface StreamWatchdogBundle {
+  kline: KlineSubscriptionWatchdog | null;
+  orderbook: StreamSubscriptionWatchdog | null;
+  publicTrade: StreamSubscriptionWatchdog | null;
+  markPrice: StreamSubscriptionWatchdog | null;
+}
+
+const FALLBACK_WRITE_REQUESTS_PER_SECOND = 10;
 
 function readReduceOnly(orderParams: OrderParams): boolean {
   if (orderParams.reduceOnly === true) {
@@ -38,11 +85,19 @@ export class ExchangeConnector {
   private exchangeName: ExchangeNameEnum;
   private tickersByMarketTypeAndSymbol: Map<string, Ticker> = new Map();
   private isWatchingTickers: boolean = false;
+  private isUpdatingTickers: boolean = false;
   private tickerUpdateIntervalId: NodeJS.Timeout | null = null;
   private markPriceByFuturesSymbol: Map<string, MarkPriceUpdate> = new Map();
   private isWatchingMarkPrices: boolean = false;
   private _positionManager: PositionManager | null = null;
   public readonly futuresPositionMode: PositionModeEnum;
+
+  private readonly futuresStreamBundle: StreamWatchdogBundle;
+  private readonly spotStreamBundle: StreamWatchdogBundle;
+  private _futuresProxy: ExchangeClient | null = null;
+  private _spotProxy: ExchangeClient | null = null;
+  private readonly rateLimitConfigOverride: RateLimitConfig | null | undefined;
+  private writeQueue: RateLimitedRequestQueue | null = null;
 
   private readonly markPriceHandler = (list: MarkPriceUpdate[]): void => {
     for (const update of list) {
@@ -57,37 +112,304 @@ export class ExchangeConnector {
     exchangeName: ExchangeNameEnum,
     config: ExchangeConfig,
     onNotify?: (message: string) => void | Promise<void>,
-    futuresPositionMode: PositionModeEnum = PositionModeEnum.OneWay
+    futuresPositionMode: PositionModeEnum = PositionModeEnum.OneWay,
+    klineWatchdogConfig?: KlineSubscriptionWatchdogConfig,
+    rateLimitConfig?: RateLimitConfig | null,
+    streamWatchdogConfig?: StreamWatchdogConfigMap
   ) {
     this.exchangeName = exchangeName;
     this.futuresPositionMode = futuresPositionMode;
+    this.rateLimitConfigOverride = rateLimitConfig;
 
     this.exchange = new ExchangeInstance(exchangeName, {
       config,
       logger,
       onNotify,
     });
+
+    const exchangeLabel = exchangeName.charAt(0).toUpperCase() + exchangeName.slice(1);
+
+    this.futuresStreamBundle = this.buildStreamBundle(
+      MarketTypeEnum.Futures,
+      this.exchange.futures,
+      `${exchangeLabel} Futures`,
+      klineWatchdogConfig,
+      streamWatchdogConfig,
+      onNotify
+    );
+    this.spotStreamBundle = this.buildStreamBundle(
+      MarketTypeEnum.Spot,
+      this.exchange.spot,
+      `${exchangeLabel} Spot`,
+      klineWatchdogConfig,
+      streamWatchdogConfig,
+      onNotify
+    );
+
+    this.startStreamBundle(this.futuresStreamBundle);
+    this.startStreamBundle(this.spotStreamBundle);
+  }
+
+  private buildStreamBundle(
+    marketType: MarketTypeEnum,
+    client: ExchangeClient,
+    clientLabel: string,
+    klineWatchdogConfig: KlineSubscriptionWatchdogConfig | undefined,
+    streamWatchdogConfig: StreamWatchdogConfigMap | undefined,
+    onNotify: ((message: string) => void | Promise<void>) | undefined
+  ): StreamWatchdogBundle {
+    // Kline watchdog stays ON by default (preserves pre-existing behaviour).
+    const kline = klineWatchdogConfig?.isEnabled !== false
+      ? new KlineSubscriptionWatchdog({ client, clientLabel, config: klineWatchdogConfig, onNotify })
+      : null;
+
+    const orderbook = streamWatchdogConfig?.orderbook?.isEnabled === true
+      ? new StreamSubscriptionWatchdog({
+        clientLabel,
+        strategy: new OrderbookWatchdogStrategy(client, clientLabel),
+        config: streamWatchdogConfig.orderbook,
+        callbacks: this.buildStreamCallbacks(marketType, streamWatchdogConfig.orderbook, onNotify),
+      })
+      : null;
+
+    const publicTrade = streamWatchdogConfig?.publicTrade?.isEnabled === true
+      ? new StreamSubscriptionWatchdog({
+        clientLabel,
+        strategy: new PublicTradeWatchdogStrategy(client, clientLabel),
+        config: streamWatchdogConfig.publicTrade,
+        callbacks: this.buildStreamCallbacks(marketType, streamWatchdogConfig.publicTrade, onNotify),
+      })
+      : null;
+
+    // Mark price exists only on the futures stream (Bybit has no spot mark price).
+    const markPrice = marketType === MarketTypeEnum.Futures && streamWatchdogConfig?.markPrice?.isEnabled === true
+      ? new StreamSubscriptionWatchdog({
+        clientLabel,
+        strategy: new MarkPriceWatchdogStrategy(client, clientLabel),
+        config: streamWatchdogConfig.markPrice,
+        callbacks: this.buildStreamCallbacks(marketType, streamWatchdogConfig.markPrice, onNotify),
+      })
+      : null;
+
+    return { kline, orderbook, publicTrade, markPrice };
+  }
+
+  private buildStreamCallbacks(
+    marketType: MarketTypeEnum,
+    streamConfig: StreamWatchdogStreamConfig,
+    onNotify: ((message: string) => void | Promise<void>) | undefined
+  ): StreamWatchdogCallbacks {
+    return {
+      onNotify: streamConfig.onNotify ?? onNotify,
+      onStreamStale: (event: StreamHealthEvent): void => streamConfig.onStale?.(marketType, event),
+      onStreamRecovered: (event: StreamHealthEvent): void => streamConfig.onRecovered?.(marketType, event),
+      onStreamRecoveryFailed: (event: StreamHealthEvent): void => streamConfig.onRecoveryFailed?.(marketType, event),
+    };
+  }
+
+  private startStreamBundle(bundle: StreamWatchdogBundle): void {
+    bundle.kline?.start();
+    bundle.orderbook?.start();
+    bundle.publicTrade?.start();
+    bundle.markPrice?.start();
+  }
+
+  private stopStreamBundle(bundle: StreamWatchdogBundle): void {
+    bundle.kline?.stop();
+    bundle.orderbook?.stop();
+    bundle.publicTrade?.stop();
+    bundle.markPrice?.stop();
+  }
+
+  private hasAnyWatchdog(bundle: StreamWatchdogBundle): boolean {
+    return bundle.kline !== null || bundle.orderbook !== null || bundle.publicTrade !== null || bundle.markPrice !== null;
   }
 
   public get spot(): ExchangeClient {
-    return this.exchange.spot;
+    if (!this.hasAnyWatchdog(this.spotStreamBundle)) {
+      return this.exchange.spot;
+    }
+
+    if (this._spotProxy === null) {
+      this._spotProxy = this.createWatchdogClientProxy(this.exchange.spot, this.spotStreamBundle);
+    }
+
+    return this._spotProxy;
   }
 
   public get futures(): ExchangeClient {
-    return this.exchange.futures;
+    if (!this.hasAnyWatchdog(this.futuresStreamBundle)) {
+      return this.exchange.futures;
+    }
+
+    if (this._futuresProxy === null) {
+      this._futuresProxy = this.createWatchdogClientProxy(this.exchange.futures, this.futuresStreamBundle);
+    }
+
+    return this._futuresProxy;
+  }
+
+  // Wraps subscribe*/unsubscribe* so every enabled watchdog sees handler activity.
+  // For the heartbeat streams (orderbook/publicTrade/markPrice) the wrapped handler
+  // ref is tracked per original handler so unsubscribe removes the SAME ref the
+  // underlying stream stored by-reference (otherwise the topic would leak). Kline
+  // wrapping is left exactly as before for back-compat.
+  private createWatchdogClientProxy(client: ExchangeClient, bundle: StreamWatchdogBundle): ExchangeClient {
+    // Wrapped-handler refs are keyed by the watchdog KEY (topic-unique), not by the
+    // original handler, because a consumer may share one handler ref across many
+    // symbols (coin-listing does). Keying by handler would overwrite and leak every
+    // topic but the last on unsubscribe.
+    const klineWrappedByKey = new Map<string, KlineHandler>();
+    const orderbookWrappedByKey = new Map<string, OrderBookHandler>();
+    const publicTradeWrappedByKey = new Map<string, PublicTradeHandler>();
+    const markPriceWrappedByKey = new Map<string, MarkPriceHandler>();
+
+    return new Proxy(client, {
+      get(target, prop): unknown {
+        const klineWatchdog = bundle.kline;
+
+        if (klineWatchdog !== null && prop === 'subscribeKlines') {
+          return (args: SubscribeKlinesArgs): void => {
+            const key = `${args.symbol}_${args.interval}`;
+            const wrappedHandler = klineWatchdog.wrapHandler(args.symbol, args.interval, args.handler);
+            klineWrappedByKey.set(key, wrappedHandler);
+            target.subscribeKlines({ symbol: args.symbol, interval: args.interval, handler: wrappedHandler });
+          };
+        }
+
+        if (klineWatchdog !== null && prop === 'unsubscribeKlines') {
+          return (args: SubscribeKlinesArgs): void => {
+            const key = `${args.symbol}_${args.interval}`;
+            klineWatchdog.unregisterHandler(args.symbol, args.interval);
+            // Pass the SAME wrapped ref that subscribe registered — the underlying
+            // stream stores handlers by reference, so unsubscribing with the original
+            // (unwrapped) handler would silently leave the topic subscribed (leak).
+            const wrapped = klineWrappedByKey.get(key) ?? args.handler;
+            klineWrappedByKey.delete(key);
+            target.unsubscribeKlines({ symbol: args.symbol, interval: args.interval, handler: wrapped });
+          };
+        }
+
+        const orderbookWatchdog = bundle.orderbook;
+
+        if (orderbookWatchdog !== null && prop === 'subscribeOrderbook') {
+          return (args: SubscribeOrderbookArgs): void => {
+            const key = buildOrderbookWatchdogKey(args.symbol, args.depth);
+            orderbookWatchdog.registerKey(key);
+            const wrapped: OrderBookHandler = (symbol: string, update): void => {
+              orderbookWatchdog.recordFreshness(key, Date.now());
+
+              if (orderbookWatchdog.isSuppressed(key)) {
+                return;
+              }
+
+              args.handler(symbol, update);
+            };
+            orderbookWrappedByKey.set(key, wrapped);
+            target.subscribeOrderbook({ symbol: args.symbol, depth: args.depth, handler: wrapped });
+          };
+        }
+
+        if (orderbookWatchdog !== null && prop === 'unsubscribeOrderbook') {
+          return (args: SubscribeOrderbookArgs): void => {
+            const key = buildOrderbookWatchdogKey(args.symbol, args.depth);
+            orderbookWatchdog.unregisterKey(key);
+            const wrapped = orderbookWrappedByKey.get(key) ?? args.handler;
+            orderbookWrappedByKey.delete(key);
+            target.unsubscribeOrderbook({ symbol: args.symbol, depth: args.depth, handler: wrapped });
+          };
+        }
+
+        const publicTradeWatchdog = bundle.publicTrade;
+
+        if (publicTradeWatchdog !== null && prop === 'subscribePublicTrades') {
+          return (args: SubscribePublicTradesArgs): void => {
+            const key = buildPublicTradeWatchdogKey(args.symbol);
+            publicTradeWatchdog.registerKey(key);
+            const wrapped: PublicTradeHandler = (symbol: string, tradeList): void => {
+              publicTradeWatchdog.recordFreshness(key, Date.now());
+
+              if (publicTradeWatchdog.isSuppressed(key)) {
+                return;
+              }
+
+              args.handler(symbol, tradeList);
+            };
+            publicTradeWrappedByKey.set(key, wrapped);
+            target.subscribePublicTrades({ symbol: args.symbol, handler: wrapped });
+          };
+        }
+
+        if (publicTradeWatchdog !== null && prop === 'unsubscribePublicTrades') {
+          return (args: SubscribePublicTradesArgs): void => {
+            const key = buildPublicTradeWatchdogKey(args.symbol);
+            publicTradeWatchdog.unregisterKey(key);
+            const wrapped = publicTradeWrappedByKey.get(key) ?? args.handler;
+            publicTradeWrappedByKey.delete(key);
+            target.unsubscribePublicTrades({ symbol: args.symbol, handler: wrapped });
+          };
+        }
+
+        const markPriceWatchdog = bundle.markPrice;
+
+        if (markPriceWatchdog !== null && prop === 'subscribeMarkPrices') {
+          return (handler: MarkPriceHandler): void => {
+            markPriceWatchdog.registerKey(MARK_PRICE_WATCHDOG_KEY);
+            const wrapped: MarkPriceHandler = (markPriceList): void => {
+              markPriceWatchdog.recordFreshness(MARK_PRICE_WATCHDOG_KEY, Date.now());
+
+              if (markPriceWatchdog.isSuppressed(MARK_PRICE_WATCHDOG_KEY)) {
+                return;
+              }
+
+              handler(markPriceList);
+            };
+            markPriceWrappedByKey.set(MARK_PRICE_WATCHDOG_KEY, wrapped);
+            target.subscribeMarkPrices(wrapped);
+          };
+        }
+
+        if (markPriceWatchdog !== null && prop === 'unsubscribeMarkPrices') {
+          return (handler: MarkPriceHandler): void => {
+            markPriceWatchdog.unregisterKey(MARK_PRICE_WATCHDOG_KEY);
+            const wrapped = markPriceWrappedByKey.get(MARK_PRICE_WATCHDOG_KEY) ?? handler;
+            markPriceWrappedByKey.delete(MARK_PRICE_WATCHDOG_KEY);
+            target.unsubscribeMarkPrices(wrapped);
+          };
+        }
+
+        return Reflect.get(target, prop, target);
+      },
+    });
   }
 
   public get positionManager(): PositionManager {
     if (this._positionManager === null) {
       this._positionManager = new PositionManager(this);
     }
+
     return this._positionManager;
+  }
+
+  public getWriteQueue(): RateLimitedRequestQueue | null {
+    if (this.rateLimitConfigOverride === null) {
+      return null;
+    }
+
+    return this.getOrCreateWriteQueue();
   }
 
   public async initialize(): Promise<void> {
     try {
-      await this.exchange.futures.loadTradeSymbols();
-      await this.exchange.spot.loadTradeSymbols();
+      await withReadRetry({
+        fn: () => this.exchange.futures.loadTradeSymbols(),
+        contextLabel: `loadTradeSymbols futures ${this.exchangeName}`,
+      });
+      await withReadRetry({
+        fn: () => this.exchange.spot.loadTradeSymbols(),
+        contextLabel: `loadTradeSymbols spot ${this.exchangeName}`,
+      });
+      await this.resolveWriteQueueOnInitialize();
       this.startWatchingTickers();
     } catch (error) {
       logger.error(
@@ -97,6 +419,98 @@ export class ExchangeConnector {
 
       throw error;
     }
+  }
+
+  private async resolveWriteQueueOnInitialize(): Promise<void> {
+    if (this.rateLimitConfigOverride === null) {
+      logger.info(
+        { exchange: this.exchangeName },
+        `[ExchangeConnector] ${this.exchangeName} rate-limit override=null — write queue disabled (single-request semantics retained for unit tests)`
+      );
+      return;
+    }
+
+    if (this.rateLimitConfigOverride !== undefined) {
+      const intervalMs = this.rateLimitConfigOverride.intervalMs ?? 1000;
+      this.writeQueue = new RateLimitedRequestQueue({
+        rateLimit: this.rateLimitConfigOverride.writeRequestsPerSecond,
+        intervalMs,
+        loggerLabel: `[RateLimit:${this.exchangeName}:write]`,
+      });
+      logger.info(
+        {
+          exchange: this.exchangeName,
+          writeRequestsPerSecond: this.rateLimitConfigOverride.writeRequestsPerSecond,
+          intervalMs,
+        },
+        `[ExchangeConnector] ${this.exchangeName} rate-limit override applied — writeRequestsPerSecond=${this.rateLimitConfigOverride.writeRequestsPerSecond} intervalMs=${intervalMs}`
+      );
+      return;
+    }
+
+    const resolvedRateLimit = await this.resolveDynamicWriteRequestsPerSecond();
+    this.writeQueue = new RateLimitedRequestQueue({
+      rateLimit: resolvedRateLimit,
+      intervalMs: 1000,
+      loggerLabel: `[RateLimit:${this.exchangeName}:write]`,
+    });
+  }
+
+  private async resolveDynamicWriteRequestsPerSecond(): Promise<number> {
+    let rateLimit: OrderRateLimit;
+
+    try {
+      rateLimit = await this.exchange.futures.getOrderRateLimit();
+    } catch (error) {
+      logger.warn(
+        { error, exchange: this.exchangeName },
+        `[ExchangeConnector] ${this.exchangeName} dynamic rate-limit read failed — using fallback ${FALLBACK_WRITE_REQUESTS_PER_SECOND} RPS`
+      );
+      return FALLBACK_WRITE_REQUESTS_PER_SECOND;
+    }
+
+    const effectiveLimit = Math.max(1, Math.floor(rateLimit.writeRequestsPerSecond));
+    logger.info(
+      {
+        exchange: this.exchangeName,
+        rateLimit,
+        effectiveLimit,
+      },
+      `[ExchangeConnector] ${this.exchangeName} dynamic write rate-limit: ${effectiveLimit} RPS (source: ${rateLimit.source})`
+    );
+    return effectiveLimit;
+  }
+
+  private getOrCreateWriteQueue(): RateLimitedRequestQueue {
+    if (this.writeQueue !== null) {
+      return this.writeQueue;
+    }
+
+    if (this.rateLimitConfigOverride !== undefined && this.rateLimitConfigOverride !== null) {
+      this.writeQueue = new RateLimitedRequestQueue({
+        rateLimit: this.rateLimitConfigOverride.writeRequestsPerSecond,
+        intervalMs: this.rateLimitConfigOverride.intervalMs ?? 1000,
+        loggerLabel: `[RateLimit:${this.exchangeName}:write]`,
+      });
+
+      return this.writeQueue;
+    }
+
+    // Sync fallback for callers accessing positionManager before initialize() finishes
+    // resolveDynamicWriteRequestsPerSecond. The dynamic read is async (calls
+    // futures.getOrderRateLimit() on Binance), so we cannot await it here.
+    // Initialize() will replace this.writeQueue with the dynamic-read value when ready.
+    logger.warn(
+      { exchange: this.exchangeName, fallbackRps: FALLBACK_WRITE_REQUESTS_PER_SECOND },
+      `[ExchangeConnector] ${this.exchangeName} writeQueue accessed before initialize() completed dynamic rate-limit read — using sync fallback ${FALLBACK_WRITE_REQUESTS_PER_SECOND} RPS`
+    );
+    this.writeQueue = new RateLimitedRequestQueue({
+      rateLimit: FALLBACK_WRITE_REQUESTS_PER_SECOND,
+      intervalMs: 1000,
+      loggerLabel: `[RateLimit:${this.exchangeName}:write:fallback]`,
+    });
+
+    return this.writeQueue;
   }
 
   private async startWatchingTickers(): Promise<void> {
@@ -109,20 +523,39 @@ export class ExchangeConnector {
 
     this.tickerUpdateIntervalId = setInterval(async () => {
       if (!this.isWatchingTickers) {
-        clearInterval(this.tickerUpdateIntervalId!);
-        this.tickerUpdateIntervalId = null;
+        if (this.tickerUpdateIntervalId !== null) {
+          clearInterval(this.tickerUpdateIntervalId);
+          this.tickerUpdateIntervalId = null;
+        }
 
         return;
       }
-      await this.updateTickers();
+
+      if (this.isUpdatingTickers) {
+        return;
+      }
+
+      this.isUpdatingTickers = true;
+
+      try {
+        await this.updateTickers();
+      } finally {
+        this.isUpdatingTickers = false;
+      }
     }, 30000);
   }
 
   private async updateTickers(): Promise<void> {
     try {
       const [futuresTickerBySymbol, spotTickerBySymbol] = await Promise.all([
-        this.exchange.futures.fetchTickers(),
-        this.exchange.spot.fetchTickers(),
+        withReadRetry({
+          fn: () => this.exchange.futures.fetchTickers(),
+          contextLabel: `fetchTickers futures ${this.exchangeName}`,
+        }),
+        withReadRetry({
+          fn: () => this.exchange.spot.fetchTickers(),
+          contextLabel: `fetchTickers spot ${this.exchangeName}`,
+        }),
       ]);
       this.processTickerList(futuresTickerBySymbol, MarketTypeEnum.Futures);
       this.processTickerList(spotTickerBySymbol, MarketTypeEnum.Spot);
@@ -210,7 +643,9 @@ export class ExchangeConnector {
     this.isWatchingMarkPrices = true;
 
     try {
-      this.exchange.futures.subscribeMarkPrices(this.markPriceHandler);
+      // Route through the proxied futures getter so the mark-price watchdog (when
+      // enabled) wraps this handler; passthrough to the raw client when disabled.
+      this.futures.subscribeMarkPrices(this.markPriceHandler);
     } catch (error) {
       logger.error(
         { error, exchange: this.exchangeName },
@@ -228,7 +663,7 @@ export class ExchangeConnector {
     this.isWatchingMarkPrices = false;
 
     try {
-      this.exchange.futures.unsubscribeMarkPrices(this.markPriceHandler);
+      this.futures.unsubscribeMarkPrices(this.markPriceHandler);
     } catch (error) {
       logger.warn(
         { error, exchange: this.exchangeName },
@@ -261,7 +696,12 @@ export class ExchangeConnector {
         ...resultBase,
         orderId: order.id,
         actualExchangeParams: { ...wsArgs },
-        responseData: { id: order.id, orderId: order.id, symbol: order.symbol },
+        responseData: {
+          id: order.id,
+          orderId: order.id,
+          symbol: order.symbol,
+          rateLimit: order.rateLimit,
+        },
       };
     } catch (error) {
       const errorMessage = formatErrorMessage({
@@ -281,6 +721,68 @@ export class ExchangeConnector {
         errorCode,
         actualExchangeParams: undefined,
       };
+    }
+  }
+
+  public async createBatchOrders(orderParamsList: OrderParams[]): Promise<OrderResult[]> {
+    if (orderParamsList.length === 0) {
+      return [];
+    }
+
+    const firstParams = orderParamsList[0];
+    const client = isSpot(firstParams.marketType) ? this.exchange.spot : this.exchange.futures;
+
+    const wsArgsList = orderParamsList.map(params => this.buildCreateOrderArgs(params, client));
+    const baseResultList: OrderResult[] = orderParamsList.map((orderParams, index) => ({
+      exchangeName: this.exchangeName,
+      orderParams,
+      actualExchangeParams: { ...wsArgsList[index] },
+    }));
+
+    try {
+      const orderList = await client.createBatchOrders(wsArgsList);
+
+      return baseResultList.map((base, index) => {
+        const order = orderList[index];
+        const orderId = order?.id ?? '';
+        const isSuccess = orderId !== '' && orderId !== 'undefined';
+
+        if (!isSuccess) {
+          return {
+            ...base,
+            errorText: 'Order creation failed in batch',
+          };
+        }
+
+        return {
+          ...base,
+          orderId,
+          responseData: {
+            id: orderId,
+            orderId,
+            symbol: order.symbol,
+            rateLimit: order.rateLimit,
+          },
+        };
+      });
+    } catch (error) {
+      const errorMessage = formatErrorMessage({
+        customMessage: 'Failed to create batch orders',
+        error,
+      });
+      const errorCode = error instanceof ExchangeError ? error.code : undefined;
+
+      logger.error(
+        { error, count: orderParamsList.length, exchange: this.exchangeName },
+        errorMessage
+      );
+
+      return baseResultList.map(base => ({
+        ...base,
+        errorText: errorMessage,
+        errorCode,
+        actualExchangeParams: undefined,
+      }));
     }
   }
 
@@ -445,6 +947,13 @@ export class ExchangeConnector {
     return isSpot(marketType) ? this.exchange.spot : this.exchange.futures;
   }
 
+  // Watchdog-proxied client for a market type (vs getClient → raw client). Stream
+  // consumers that want subscription-health recovery (orderbook/publicTrade) must
+  // subscribe through this so the watchdog wraps their handlers.
+  public getStreamClient(marketType: MarketTypeEnum): ExchangeClient {
+    return isSpot(marketType) ? this.spot : this.futures;
+  }
+
   public getExchangeName(): ExchangeNameEnum {
     return this.exchangeName;
   }
@@ -469,6 +978,9 @@ export class ExchangeConnector {
   public async disconnect(): Promise<void> {
     this.isWatchingTickers = false;
     this.stopWatchingMarkPrices();
+
+    this.stopStreamBundle(this.futuresStreamBundle);
+    this.stopStreamBundle(this.spotStreamBundle);
 
     if (this.tickerUpdateIntervalId) {
       clearInterval(this.tickerUpdateIntervalId);

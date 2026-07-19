@@ -132,7 +132,7 @@ describeIfCredentials(
             MarginModeEnum.Isolated,
             BYBIT_FUTURES_TEST_SYMBOL
           )
-        ).rejects.toThrow();
+        ).resolves.toBeUndefined();
       });
 
       test('futures.fetchPosition throws on non-existent symbol', async () => {

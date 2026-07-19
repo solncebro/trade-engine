@@ -126,16 +126,17 @@ describeIfCredentials(ExchangeNameEnum.Bybit, 'Bybit Multiple Symbols Integratio
 
       const symbolToTradeList = BYBIT_FUTURES_TEST_SYMBOL_LIST.slice(0, 2);
       const orderPromiseList = symbolToTradeList.map(symbol => {
-        const ticker = connector.getTicker(symbol, MarketTypeEnum.Futures);
+        const resolvedSymbol = connector.resolveSymbolWithPrefix(symbol, MarketTypeEnum.Futures);
+        const ticker = connector.getTicker(resolvedSymbol, MarketTypeEnum.Futures);
 
         if (!ticker?.lastPrice) {
-          throw new Error(`No ticker for ${symbol}`);
+          throw new Error(`No ticker for ${resolvedSymbol}`);
         }
 
         return connector.createOrder({
-          symbol,
+          symbol: resolvedSymbol,
           side: OrderSideEnum.Buy,
-          amount: calculateTestAmount(connector, symbol, ticker.lastPrice),
+          amount: calculateTestAmount(connector, resolvedSymbol, ticker.lastPrice),
           price: ticker.lastPrice,
           type: OrderTypeEnum.Market,
           marketType: MarketTypeEnum.Futures,
@@ -150,19 +151,21 @@ describeIfCredentials(ExchangeNameEnum.Bybit, 'Bybit Multiple Symbols Integratio
       });
 
       const closePromiseList = symbolToTradeList.map(symbol => {
-        const ticker = connector.getTicker(symbol, MarketTypeEnum.Futures);
+        const resolvedSymbol = connector.resolveSymbolWithPrefix(symbol, MarketTypeEnum.Futures);
+        const ticker = connector.getTicker(resolvedSymbol, MarketTypeEnum.Futures);
 
         if (!ticker?.lastPrice) {
-          throw new Error(`No ticker for closing ${symbol}`);
+          throw new Error(`No ticker for closing ${resolvedSymbol}`);
         }
 
         return connector.createOrder({
-          symbol,
+          symbol: resolvedSymbol,
           side: OrderSideEnum.Sell,
-          amount: calculateTestAmount(connector, symbol, ticker.lastPrice),
+          amount: calculateTestAmount(connector, resolvedSymbol, ticker.lastPrice),
           price: ticker.lastPrice,
           type: OrderTypeEnum.Market,
           marketType: MarketTypeEnum.Futures,
+          params: { reduceOnly: true },
         });
       });
 

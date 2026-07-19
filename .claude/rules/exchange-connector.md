@@ -4,27 +4,41 @@
 
 ## Зависимость
 
-Использует `@solncebro/exchange-engine` 0.13.0+. Все низкоуровневые операции делегируются этой библиотеке.
+Использует `@solncebro/exchange-engine` 0.14.0 (установлено локально через `file:../exchange-engine`). Все низкоуровневые операции делегируются этой библиотеке. **Прямые импорты из `@solncebro/exchange-engine` сторонними потребителями запрещены** — единая точка входа `@solncebro/trade-engine`.
 
 ## Инициализация
 
 ```typescript
-import { ExchangeNameEnum, PositionModeEnum } from '@solncebro/exchange-engine';
+import { ExchangeNameEnum, PositionModeEnum } from '@solncebro/trade-engine';
 
 const connector = new ExchangeConnector(
   ExchangeNameEnum.Binance,
   { apiKey: '...', secret: '...', isDemoMode: true },
   message => logger.warn(message),
   PositionModeEnum.Hedge,
+  klineWatchdogConfig,   // 5-й — опционально (3.5.0)
+  rateLimitConfig,       // 6-й — опционально (3.5.0)
+  streamWatchdogConfig   // 7-й — опционально (3.6.0): orderbook/publicTrade/markPrice watchdog
 );
 await connector.initialize();
-// → загружает futures символы, затем spot символы
-// → запускает периодическое обновление тикеров (30 сек)
+// → loadTradeSymbols (futures + spot) обёрнут в withReadRetry
+// → fetchTickers через withReadRetry, периодическое обновление каждые 30 сек
+// → getOrderRateLimit() → создаётся RateLimitedRequestQueue (если rateLimitConfig не null)
+// → klineWatchdog запускается (если включён)
 ```
 
 Третий параметр `onNotify` — опциональный callback для получения критических уведомлений от биржи. Начиная с `exchange-engine` 0.9.0, обработчик CRITICAL-сообщений **не вызывает `process.exit(1)` автоматически** — потребитель должен реализовать собственную логику завершения при необходимости.
 
 Четвёртый параметр `futuresPositionMode` (по умолчанию `PositionModeEnum.OneWay`) задаёт режим для логики `positionSide` при создании **futures**-ордеров; значение доступно как публичное поле `connector.futuresPositionMode`.
+
+**Пятый параметр `klineWatchdogConfig`** (3.5.0, опционально, `KlineSubscriptionWatchdogConfig`) — настройки `KlineSubscriptionWatchdog`. Если задан, методы `subscribeKlines`/`unsubscribeKlines` оборачиваются Proxy для отслеживания timestamp каждой подписки. Default: `isEnabled: true`. См. `src/services/klineSubscriptionWatchdog.ts`.
+
+**Шестой параметр `rateLimitConfig`** (3.5.0, опционально, `RateLimitConfig | null`):
+- `null` — не использовать rate limit вообще.
+- `{ writeRequestsPerSecond, intervalMs? }` — статически переопределить.
+- `undefined` (default) — динамически читать с биржи через `getOrderRateLimit()` в `initialize()`.
+
+**Седьмой параметр `streamWatchdogConfig`** (3.6.0, опционально, `StreamWatchdogConfigMap`) — per-stream настройки `StreamSubscriptionWatchdog` для **не-kline** публичных потоков: `{ orderbook?, publicTrade?, markPrice? }`, каждый — `StreamWatchdogStreamConfig` (`isEnabled` + grace/cooldown + callbacks `onStale/onRecovered/onRecoveryFailed/onNotify`, вызываемые с инъекцией `marketType`). **Все три по умолчанию OFF** (`isEnabled` нужно явно выставить `true`) — публикация ничего не меняет, пока потребитель не включит. При `isEnabled=true` соответствующие `subscribe*/unsubscribe*` оборачиваются Proxy (обёрнутый handler-ref трекается по watchdog-key, не по handler — корректный unsubscribe при shared handler ref). `markPrice` доступен только на futures (Bybit). `startWatchingMarkPrices` маршрутизируется через проксированный `this.futures`, чтобы markPrice-watchdog видел внутренний handler. Каждый стрим-тип — собственный `StreamSubscriptionWatchdog` с per-stream стратегией (`OrderbookWatchdogStrategy` и т.д., `src/services/streamWatchdogStrategies.ts`): heartbeat-staleness + resubscribe-recovery (orderbook/publicTrade/markPrice). См. раздел `StreamSubscriptionWatchdog` ниже.
 
 ## Demo Trading
 
@@ -92,31 +106,42 @@ connector.getClient(marketType).amountToPrecision(symbol, amount);
 - `fetchFundingInfo(symbol)` → `FundingInfo` — текущая информация о финансировании
 
 **Ордера:**
-- `createOrderWebSocket(args: CreateOrderWebSocketArgs)` — создание ордера через WebSocket
-- `cancelOrder(orderId, symbol)` — отмена ордера
-- `getOrder(orderId, symbol)` → `Order` — получение ордера
+- `createOrderWebSocket(args: CreateOrderWebSocketArgs)` → `Order` — создание ордера через WebSocket
+- `cancelOrder(symbol, orderId)` → `Order` — отмена ордера
+- `getOrder(symbol, orderId)` → `Order` — получение ордера
 - `fetchOpenOrders(symbol)` → `Order[]` — открытые ордера
 - `fetchOrderHistory(symbol)` → `Order[]` — история ордеров
-- `modifyOrder(args: ModifyOrderArgs)` — модификация ордера
-- `cancelAllOrders(symbol)` — отмена всех ордеров
-- `createBatchOrders(orderList)` — пакетное создание ордеров
-- `cancelBatchOrders(orderIdList, symbol)` — пакетная отмена ордеров
+- `modifyOrder(args: ModifyOrderArgs)` → `Order` — модификация ордера (single)
+- `cancelAllOrders(symbol)` → `void` — отмена всех ордеров
+- `createBatchOrders(orderList: CreateOrderWebSocketArgs[])` → `Order[]` — пакетное создание ордеров (Binance Futures chunk=5, Bybit linear=20 / spot=10; Bybit идёт через WS если подключён)
+- `cancelBatchOrders(symbol, orderIdList)` → `CancelBatchOrdersResult` (= `CancelOrderItemResult[]`) — пакетная отмена с per-order результатами (тип возврата изменён в 0.14.0, был `void`)
+- `modifyBatchOrders(orderList: ModifyBatchOrderArgs[])` → `ModifyBatchOrdersResult` (= `ModifyOrderItemResult[]`) — пакетная модификация (0.14.0). Binance Futures REST chunk=5, Bybit linear=20 / spot=10; Bybit идёт через WS если подключён. На Binance Spot бросает `Not supported for spot market`.
+
+**Rate Limit (0.14.0):**
+- `getOrderRateLimit()` → `Promise<OrderRateLimit>` — `{ writeRequestsPerSecond, source: 'binance-exchange-info' | 'bybit-documented' | 'fallback' }`. Binance: парсится из `/exchangeInfo` rateLimits → минимум RPS среди ORDERS-ограничений. Bybit: hardcoded 20 RPS (документация V5).
 
 **Аккаунт:**
 - `fetchFeeRate(symbol)` → `FeeRate` — комиссии
 - `fetchIncome(symbol)` → `Income[]` — доходы/расходы
 - `fetchClosedPnl(symbol)` → `ClosedPnl[]` — закрытые PnL
 
+**Public stream (0.14.0, Bybit only — Binance бросает `Not supported`):**
+- `subscribeOrderbook(args: SubscribeOrderbookArgs)` / `unsubscribeOrderbook(args)` — Bybit V5 топик `orderbook.{depth}.{symbol}`.
+- `subscribePublicTrades(args: SubscribePublicTradesArgs)` / `unsubscribePublicTrades(args)` — Bybit V5 топик `publicTrade.{symbol}`.
+
 **Precision:**
-- `amountToPrecision(symbol, amount)` → `string` — округление количества
-- `priceToPrecision(symbol, price)` → `string` — округление цены
+- `amountToPrecision(symbol, amount)` → `number` — округление количества
+- `priceToPrecision(symbol, price)` → `number` — округление цены
 - `getMinOrderQty(symbol)` → `number` — минимальный объём ордера
 - `getMinNotional(symbol)` → `number` — минимальный notional
 
 **WebSocket:**
-- `isTradeWebSocketConnected()` → `boolean` — статус WS-соединения
+- `isTradeWebSocketConnected()` → `boolean` — статус торгового WS
 - `connectTradeWebSocket()` — подключение торгового WebSocket
 - `getWebSocketConnectionInfoList()` → `WebSocketConnectionInfo[]` — информация о WS-соединениях
+- `awaitWebSocketConnectionsReady()` → `Promise<void>` (0.13.0+) — дождаться готовности всех WS после подписок (Binance Futures multi-connection; на других стримах сразу resolve).
+
+**User Data Stream — Binance Spot через WebSocket API (exchange-engine d93c52a):** Binance Spot user-data теперь идёт через WebSocket API (класс `BinanceSpotUserDataStream`; listenKey REST удалён биржей 2026-02-20). `UserDataStreamHandlerArgs.onBalanceUpdate?` (опциональный) эмитит баланс по событию `outboundAccountPosition` через типы `BalanceUpdateEvent` / `BalanceUpdateItem`.
 
 ## Mark Price (real-time)
 
@@ -189,10 +214,73 @@ const result = await connector.createOrder({
 | `createOrder(params)` | `Promise<OrderResult>` | Создание ордера |
 | `getFuturesSymbols()` | `Promise<string[]>` | Список фьючерсных символов |
 | `getSpotSymbols()` | `Promise<string[]>` | Список спотовых символов |
-| `getClient(marketType)` | `ExchangeClient` | Динамический выбор клиента по marketType |
+| `getClient(marketType)` | `ExchangeClient` | **Raw** клиент по marketType (без watchdog-прокси) |
+| `getStreamClient(marketType)` | `ExchangeClient` | **Проксированный** клиент по marketType (3.6.0): stream-консьюмеры подписываются через него, чтобы `StreamSubscriptionWatchdog` оборачивал их handler'ы |
 | `getExchangeName()` | `ExchangeNameEnum` | Имя биржи |
 | `getAccountId()` | `string` | SHA256 хеш API-ключа (16 символов) |
 | `disconnect()` | `Promise<void>` | Остановка тикеров, mark price, закрытие соединения |
+
+## Rate Limiting (3.5.0)
+
+`ExchangeConnector` при `initialize()` опрашивает `getOrderRateLimit()` и создаёт `RateLimitedRequestQueue` с лимитом RPS из биржевого ответа. Эта очередь применяется ко всем write-операциям `PositionManager` (создание/отмена/модификация ордеров, setLeverage/setMarginMode).
+
+**Параметр конструктора `rateLimitConfig`**:
+- `null` — не использовать rate limit вообще (очередь не создаётся).
+- `{ writeRequestsPerSecond: 10, intervalMs: 1000 }` — статически переопределить (не запрашивать у биржи).
+- `undefined` (default) — динамически читать с биржи в `initialize()`.
+
+В случае ошибки `getOrderRateLimit()` используется fallback (15 RPS, source: `'fallback'`).
+
+См. `src/core/RateLimitedRequestQueue.ts`.
+
+## PositionManager — методы
+
+`connector.positionManager` — lazy-init высокоуровневый API (файл `src/core/positionManager.ts`). Помимо одиночных open/close/SL/TP/cancel/modify (см. таблицу выше и `CLAUDE.md`), доступны batch- и read-методы:
+
+| Метод | Возвращает | Описание |
+|-------|-----------|----------|
+| `openPositionBatchLimit(args: OpenPositionBatchLimitArgs)` | `Promise<OpenPositionBatchLimitResult>` | Пакетное открытие лимитных позиций по одному символу (`itemList`); применяет `applyFuturesSetup` (leverage/marginMode) один раз; пустой `itemList` → `[]` |
+| `closePositionBatchLimit(args: ClosePositionBatchLimitArgs)` | `Promise<ClosePositionBatchLimitResult>` | Пакетное закрытие лимитными `reduceOnly`-ордерами по одному символу (`itemList`); пустой `itemList` → `[]` |
+| `readPositionState(args: ReadPositionStateArgs)` | `Promise<PositionStateResult>` | **Только futures** (иначе throws). Возвращает discriminated union: `{ kind: 'present', position }` / `{ kind: 'absent', confidence, reason }` / `{ kind: 'ambiguous', reason, position }`. Учитывает Hedge/OneWay (`positionIdx`, `side`) |
+| `readAllPositions(args: ReadAllPositionsArgs)` | `Promise<Position[]>` | **Только futures** (иначе throws). `connector.futures.fetchAllPositions()`; при ошибке re-throws |
+
+- `OpenPositionBatchLimitResult` / `ClosePositionBatchLimitResult` = `PositionBatchLimitItemResult[]`, где `PositionBatchLimitItemResult = { isSuccess, orderId: string | null, errorText: string | null }`.
+- `PositionStateResult` reasons: `PositionAbsenceReason = 'no_record' | 'zero_contracts' | 'fetch_error'`, `PositionAmbiguityReason = 'side_mismatch' | 'idx_mismatch'`.
+
+## Kline Subscription Watchdog (3.5.0)
+
+Опциональный мониторинг kline-подписок для автоматического восстановления потерянных подписок. Активируется через 5-й аргумент конструктора `klineWatchdogConfig?: KlineSubscriptionWatchdogConfig`.
+
+Если включён, методы `subscribeKlines`/`unsubscribeKlines` на `connector.spot`/`connector.futures` оборачиваются Proxy — каждый incoming kline-handler регистрируется в watchdog, который отслеживает timestamp последнего полученного события для пары `(symbol, interval)`.
+
+**Алгоритм восстановления**:
+1. Periodic scan каждые `checkIntervalMs` (default 30 сек) — ищет overdue подписки (нет событий дольше `graceMs`).
+2. Для каждой overdue → отправка уведомления через `onNotify`, попытка `resubscribeKlines`.
+3. Если переподписка не восстановила поток → REST refetch последних `restRefetchLimit` свечей + replay user-handler.
+4. Cooldown между восстановлениями: `recoveryCooldownMs` (default 120 сек), `recoveryFailCooldownMs` (default 600 сек после `recoveryFailCountThreshold` неудач).
+
+Диагностика: `KlineSubscriptionWatchdog.getDiagnosticInfo()` → `{ totalSubscriptions, overdueCount, inProgressCount, suppressedCount, tickCount, lastTickTimestamp }`.
+
+См. `src/services/klineSubscriptionWatchdog.ts`.
+
+## Stream Subscription Watchdog (3.6.0)
+
+Обобщённый `StreamSubscriptionWatchdog` (`src/services/streamSubscriptionWatchdog.ts`) — единый, stream-type-agnostic мониторинг здоровья WS-подписок для **не-kline** публичных потоков (orderbook / publicTrade / markPrice). Общее ядро (scan loop, cooldown/fail-escalation, suppression, parallel-batch recovery, heartbeat, notify + структурные события) идентично для всех типов; различия инкапсулированы в `StreamWatchdogStrategy` (`src/services/streamWatchdogStrategies.ts`):
+
+- **`computeAgeMs(entry, now)`** — для orderbook/publicTrade/markPrice это flat heartbeat-age (`now − freshnessTimestamp`); для kline (будущая миграция) — interval-projection.
+- **`recover(key)`** — orderbook → `resubscribeOrderbook`; publicTrade → `resubscribePublicTrades`; markPrice → `resubscribeMarkPrices` (resubscribe-only, без REST-replay → `suppressDuringRecovery=false`).
+
+Watchdog handler-агностичен: примитивы `registerKey/recordFreshness/isSuppressed/unregisterKey`. Оборачивание конкретного handler'а (запись freshness + проверка suppression) делает Proxy в `ExchangeConnector.createWatchdogClientProxy` — там же известен тип handler'а. Активируется per-stream через 7-й аргумент конструктора `streamWatchdogConfig` (см. выше), **default OFF**.
+
+**События** (`StreamWatchdogCallbacks`): `onStreamStale` (fires на детекте overdue, до recovery — потребитель может инвалидировать кэш, напр. coin-listing обнуляет bestAsk), `onStreamRecovered`, `onStreamRecoveryFailed`, `onNotify` (Telegram-сводка). ExchangeConnector инъектирует `marketType` в события (watchdog per-marketType).
+
+Диагностика: `StreamSubscriptionWatchdog.getDiagnosticInfo()` → `{ streamType, totalSubscriptions, overdueCount, inProgressCount, suppressedCount, tickCount, lastTickTimestamp }`.
+
+> **Дублирование с KlineSubscriptionWatchdog (TODO):** kline-watchdog пока отдельный класс с собственной (overlapping) машинерией + богатым interval-grouped Telegram-форматированием. Целевое состояние — мигрировать kline в `StreamSubscriptionWatchdog` как `KlineWatchdogStrategy` (interval-projection staleness + resubscribe+fetchKlines+replay recovery), оставив `KlineSubscriptionWatchdog` тонким back-compat shim. Отложено (затрагивает живой ma-chaser; чисто внутренний DRY без функционального изменения).
+
+## Read Retry (3.5.0)
+
+В `initialize()` и `updateTickers()` вызовы `loadTradeSymbols` / `fetchTickers` обёрнуты в `withReadRetry()` — retry с exponential backoff на сетевых ошибках и 429/5xx. См. `src/core/withRetryOn429.ts`.
 
 ## Обработка ошибок
 
