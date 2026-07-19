@@ -299,7 +299,7 @@ export class KlineSubscriptionWatchdog {
           suppressedCount,
         }, `${LOG_PREFIX} ${this.clientLabel} alive — tick #${this.tickCount}, ${totalSubscriptions} subs, ${inProgressCount} in recovery, ${suppressedCount} suppressed`);
       }
-    }, this.checkIntervalMs);
+    }, this.checkIntervalMs).unref();
 
     logger.info({ checkIntervalMs: this.checkIntervalMs, graceMs: this.graceMs }, `${LOG_PREFIX} ${this.clientLabel} started — checkIntervalMs=${this.checkIntervalMs}, graceMs=${this.graceMs}`);
   }
@@ -715,7 +715,7 @@ export class KlineSubscriptionWatchdog {
     let isAttemptSuccessful = false;
 
     try {
-      logger.info({ symbol, interval }, `${LOG_PREFIX} ${this.clientLabel} ${symbol} resubscribeKlines request [${interval}]`);
+      logger.debug({ symbol, interval }, `${LOG_PREFIX} ${this.clientLabel} ${symbol} resubscribeKlines request [${interval}]`);
 
       try {
         this.client.resubscribeKlines({ symbol, interval });
@@ -723,7 +723,7 @@ export class KlineSubscriptionWatchdog {
         logger.warn({ error, symbol, interval }, `${LOG_PREFIX} ${this.clientLabel} ${symbol} resubscribeKlines failed — proceeding to REST refetch [${interval}]`);
       }
 
-      logger.info({ symbol, interval, restRefetchLimit: this.restRefetchLimit }, `${LOG_PREFIX} ${this.clientLabel} ${symbol} fetchKlines request limit=${this.restRefetchLimit} [${interval}]`);
+      logger.debug({ symbol, interval, restRefetchLimit: this.restRefetchLimit }, `${LOG_PREFIX} ${this.clientLabel} ${symbol} fetchKlines request limit=${this.restRefetchLimit} [${interval}]`);
 
       let restKlineList: Kline[];
 
@@ -740,7 +740,7 @@ export class KlineSubscriptionWatchdog {
         return { symbol, interval, status: 'failed', replayedCount: 0, errorText: `REST: ${errorMessage}` };
       }
 
-      logger.info({ symbol, interval, klineCount: restKlineList.length }, `${LOG_PREFIX} ${this.clientLabel} ${symbol} fetchKlines response klineCount=${restKlineList.length} [${interval}]`);
+      logger.debug({ symbol, interval, klineCount: restKlineList.length }, `${LOG_PREFIX} ${this.clientLabel} ${symbol} fetchKlines response klineCount=${restKlineList.length} [${interval}]`);
 
       if (restKlineList.length === 0) {
         logger.warn({ symbol, interval }, `${LOG_PREFIX} ${this.clientLabel} ${symbol} fetchKlines returned empty list — aborting replay [${interval}]`);
@@ -774,7 +774,7 @@ export class KlineSubscriptionWatchdog {
       const lastRestKline = restKlineList[restKlineList.length - 1];
       this.lastKlineByKey.set(key, { openTimestamp: lastRestKline.openTimestamp, receivedAtMs: Date.now() });
 
-      logger.info({ symbol, interval, replayedCount, skippedCount, totalCount: restKlineList.length }, `${LOG_PREFIX} ${this.clientLabel} ${symbol} recovery complete — replayed ${replayedCount} fresh kline(s), skipped ${skippedCount} already-known kline(s) [${interval}]`);
+      logger.debug({ symbol, interval, replayedCount, skippedCount, totalCount: restKlineList.length }, `${LOG_PREFIX} ${this.clientLabel} ${symbol} recovery complete — replayed ${replayedCount} fresh kline(s), skipped ${skippedCount} already-known kline(s) [${interval}]`);
 
       isAttemptSuccessful = true;
 

@@ -163,7 +163,7 @@ interface ExchangeResponseData {
 
 ```typescript
 // telegram.ts
-interface TelegramNotifierArgs { botToken: string; chatId: string }
+interface TelegramNotifierArgs { botToken: string; chatId: string | string[] }  // string[] — рассылка во все чаты
 interface TelegramMessageListenerArgs { apiId: number; apiHash: string; appSession: string }
 
 // telegramCommandHandler.ts

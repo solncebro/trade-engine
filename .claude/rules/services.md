@@ -6,24 +6,24 @@ Telegraf-бот для отправки уведомлений и регистр
 
 ```typescript
 class TelegramNotifier {
-  constructor(args: { botToken: string; chatId: string })
+  constructor(args: { botToken: string; chatId: string | string[] })  // один чат или список для рассылки
   registerCommand(config: SpecialCommandConfig): void
   start(): Promise<void>           // запуск с dropPendingUpdates
   sendMessage(message: string, isLogOnly?: boolean): Promise<void>
   sendFormattedMessage(message: string, isLogOnly?: boolean): Promise<void>  // MarkdownV2 с escaping
   sendError(customMessage: string, error: unknown): Promise<void>
   stop(): void
-  getChatId(): string
+  getChatId(): string              // главный (первый) чат — back-compat
+  getChatIdList(): string[]        // все чаты рассылки
   getBot(): Telegraf
 }
 ```
 
-- Авторизация по chatId (только авторизованный чат)
-- `sendMessage` — Markdown parse mode
-- `sendFormattedMessage` — MarkdownV2 с автоматическим экранированием через `@solncebro/telegram-engine`
-- `sendError` использует `sendFormattedMessage` для отправки ошибок
-- Автоматическая настройка menu button со списком команд
-- Обёртка обработчиков с try/catch
+- **Multi-chat рассылка.** `chatId` принимает строку ИЛИ массив строк. Список нормализуется (trim + отброс пустых; нужен ≥1, иначе конструктор бросает). Все `sendMessage`/`sendFormattedMessage`/`sendError` **рассылаются в каждый чат**; одиночная строка = список из одного (полная обратная совместимость).
+- **Централизация на telegram-engine (нет своего отправителя/устаревшего Markdown).** Внутри — `createSender` + `createBroadcaster` из `@solncebro/telegram-engine`; рассылка идёт через `broadcaster.sendToAll`, изоляция ошибок по каждому чату. Формат единый — MarkdownV2 через `escapeMarkdownV2WithFormatting` (legacy `parse_mode: 'Markdown'` убран): и `sendMessage`, и `sendFormattedMessage` экранируют и шлют V2.
+- Авторизация по принадлежности к списку чатов (`isAuthorizedChat` → `chatIdList.includes(...)`).
+- `sendError` использует `sendFormattedMessage`.
+- Автоматическая настройка menu button со списком команд; обёртка обработчиков с try/catch.
 
 ## TelegramCommandHandler<T> (`src/services/telegramCommandHandler.ts`)
 
@@ -77,7 +77,7 @@ class FirebaseServiceBase<T> extends EventEmitter implements Notifiable {
     defaultData: T;
     telegramNotifier: TelegramNotifier;
   })
-  initialize(): Promise<void>         // init Firebase app + подписка
+  initialize(): Promise<void>         // init Firebase app + создание/дозаполнение документа defaults + подписка
   getData(): T                        // текущие данные
   updateData(data: Partial<T>): Promise<void>
   getDocumentReference(): DocumentReference
@@ -90,8 +90,12 @@ class FirebaseServiceBase<T> extends EventEmitter implements Notifiable {
 ```
 
 - Firebase Admin SDK с credential cert
-- Env vars: `FIREBASE_PROJECT_ID`, `FIREBASE_CLIENT_EMAIL`, `FIREBASE_PRIVATE_KEY`
+- Credentials (только если приложение ещё не вызвало `initializeApp`): если задана `FIREBASE_SERVICE_ACCOUNT_PATH` — учётные данные читаются из этого service-account JSON-файла (`admin.credential.cert(path)`); иначе fallback на три отдельные переменные `FIREBASE_PROJECT_ID`, `FIREBASE_CLIENT_EMAIL`, `FIREBASE_PRIVATE_KEY`. Это позволяет приложению не держать `firebase-admin` в своих зависимостях — инициализация и доступ к Firestore (`getFirestore()`) полностью на стороне базового класса.
 - `onSnapshot()` для real-time обновлений
+- **Самозаполнение defaults при `initialize()`:**
+  - документа нет → создаётся целиком через `documentReference.set(defaultData)`;
+  - документ есть → дописываются (`documentReference.update()` в dot-notation) **только отсутствующие** ключи defaults; существующие значения пользователя НИКОГДА не перетираются. Вложенные пропуски (`nested.y`) дозаполняются без затирания соседей (`nested.x`). Если ничего не пропущено — записи в Firestore нет.
+  - Расчёт пропусков — `collectMissingDefaults(defaults, stored)` (рекурсивно), затем `flattenForFirestoreUpdate` в dot-notation. `updateData` использует `update()` и требует существующий документ — поэтому первичное создание возможно только через ветку `set()`.
 - Данные мержатся с defaults: `{ ...defaultData, ...fetchedData }`
 - Event `dataChanged` с `{ current, previous }`
 - Сравнение массивов через `JSON.stringify`, примитивов — по значению
@@ -160,6 +164,30 @@ class PremiumIndexCalculator {
 
 Экспортируется из `@solncebro/trade-engine` (`src/index.ts`).
 
+## TradifiSymbolGate (`src/services/tradifiSymbolGate.ts`, 3.12.0)
+
+Переиспользуемый хранитель «универса без TradFi» (токенизированные акции/ETF/сырьё). Загружает список фьючерсов через `connector.getFuturesSymbols({ excludeTradifi })`, отвечает `isAllowed(symbol)`, классифицирует незнакомый символ через `classify(symbol)` (одна общая перезагрузка кэша символов на всех одновременных новичков — кулдаун коннектора бережёт REST; отрицательный вердикт помнится час через `BLOCKED_CLASSIFICATION_TTL_MS`).
+
+```typescript
+class TradifiSymbolGate {
+  constructor(args: { connector: TradifiSymbolGateConnector; shouldAllowTradifi?: boolean })  // default false
+  initialize(): Promise<void>              // грузит универс, throws если пусто
+  loadUniverse(): Promise<string[]>        // читает кэш коннектора без REST-обновления
+  reloadUniverse(): Promise<string[]>      // refreshFuturesTradeSymbols() + loadUniverse()
+  isAllowed(symbol): boolean
+  isBlocked(symbol): boolean
+  classify(symbol): Promise<boolean>
+  classifyInBackground(symbol): void
+  getAllowedSymbolList(): string[]
+  filterSymbolList(symbolList): string[]
+}
+```
+
+- **`shouldAllowTradifi`** (3.13.0, опционально, default `false`): при `false` (как раньше) вызывает `getFuturesSymbols({ excludeTradifi: true })` — TradFi отфильтрован. При `true` вызывает `getFuturesSymbols({ excludeTradifi: false })` — фильтр снят, TradFi-символы допускаются в `isAllowed`/`classify`/`filterSymbolList`. Приложение должно явно передать `true`, чтобы изменить поведение.
+- Потребители: `market-data-feeder` (универс фида) и `rubber` (собственный фильтр входящего фида — вторая линия защиты).
+
+Экспортируется из `@solncebro/trade-engine` (`src/index.ts`): `TradifiSymbolGate`, `TradifiSymbolGateArgs`, `TradifiSymbolGateConnector`.
+
 ## ConfigManager (`src/core/config.ts`)
 
 ```typescript
@@ -187,6 +215,30 @@ const logger: Logger  // lazy singleton через Proxy
 Транспорты: console (pino-pretty), file (pino-pretty без цвета), BetterStack (@logtail/pino). BetterStack-транспорт добавляется только если заданы оба значения: `betterStackToken` и `betterStackEndpoint`. Для endpoint поддерживаются и полный URL (`https://...`/`http://...`), и хост без схемы — в этом случае автоматически добавляется `https://`.
 
 Error serializer: `pino.stdSerializers.wrapErrorSerializer` расширяет стандартную сериализацию, сохраняя поля `code` и `exchange` из объекта ошибки.
+
+## PersistentTradeJournal (`src/services/tradeJournal/persistentTradeJournal.ts`, 3.10.0)
+
+Обобщённый буферизованный журнал сделок. Владеет клиентами Supabase и Google Sheets; проект-потребитель описывает только структуру таблиц через `TradeJournalSchema` (имена таблиц `trades`/`events`/`paperState`, `summaryKeyColumn`, `statusColumn`, `terminalStatusList`, `modeColumn`, `reconcileTimeColumn` + `reconcileTimeIsIsoString`, `updatedAtColumn`, `paperStateKeyColumn`, списки колонок/дат/процентов для зеркала, `event.{tradeKeyColumn, seqColumn}`) и передаёт данные строками `Record<string, unknown>`.
+
+```ts
+class PersistentTradeJournal {
+  constructor(config: PersistentTradeJournalConfig)   // schema + supabase/sheets creds + flushIntervalMs?/sheetSyncDebounceMs?/liveSheetMirror?
+  initialize(): Promise<void>                          // Sheets header/format + flush timer
+  isEnabled(): boolean
+  putSummary(id, row): void                            // create/replace RAM summary, mark dirty
+  patchSummary(id, partialRow): void                   // merge fields (+updatedAt), scream on unknown id
+  enqueueEvent(tradeId, eventRow): void                // batched insert; auto seq when schema.event.seqColumn
+  flushSummaryNow(id): Promise<boolean>                // immediate single upsert; false when no RAM summary
+  rehydrateSummaries(ids): Promise<void>               // reload summaries into RAM after restart
+  markOrphaned(args: MarkOrphanedArgs): Promise<void>
+  savePaperState(row) / loadPaperStateList() / removePaperState(key)
+  reconcileSheetsFromSupabase(lookbackDays) / fullSyncToSheet()
+  insertRow(table, row) / updateRows(args) / selectRows(args)   // generic auxiliary-table access with retries
+  shutdown(): Promise<void>
+}
+```
+
+Надёжность: сводки и события копятся в RAM и сливаются пачками (`flushIntervalMs`, дефолт 3с); при сбое БД **только неудавшаяся часть** возвращается в очередь (раздельно сводки/события — без дублей событий), следующий тик повторяет. Терминальные сводки (`statusColumn` ∈ `terminalStatusList`) выгружаются из RAM после успешного слива. Зеркало в Sheets: живой слив с антидребезгом (`liveSheetMirror`) и/или периодическая пересинхронизация из Supabase. Все каналы опциональны (null-креды → канал выключен). Зависит от `@supabase/supabase-js`, `@googleapis/sheets`. Единственная точка взаимодействия с Supabase/Sheets — проекты (rubber и др.) прямых зависимостей не держат.
 
 ## Reliability-инфраструктура (3.5.0)
 
@@ -228,4 +280,3 @@ Defaults: `maxRetries = 3`, `baseDelayMs = 1000`, exponential `delay * 2^(attemp
 | `errorFormatter.utils.ts` | `formatErrorMessage(args)` — с error code |
 | `readline.utils.ts` | `ReadlineHelper` — stdin/stdout промпт |
 | `telegramCommand.utils.ts` | `getCommandFromKey(key)` — camelCase → SCREAMING_SNAKE |
-| `websocketEmulator.utils.ts` | Standalone CLI-скрипт, не импортировать |

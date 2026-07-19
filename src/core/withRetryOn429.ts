@@ -1,6 +1,7 @@
 import { logger } from './logger';
 import type {
   WithReadRetryArgs,
+  WithResultRetryArgs,
   WithRetryOn429Args,
 } from './withRetryOn429.types';
 
@@ -69,13 +70,34 @@ function isRetryableStatus(status: number | null): boolean {
   return status === 429 || status >= 500;
 }
 
-interface ExecuteWithRetryArgs<T> {
+interface RetryPolicy {
+  isRetryable: (error: unknown) => boolean;
+  computeBackoffMs: (attempt: number, error: unknown) => number;
+}
+
+interface ExecuteWithRetryArgs<T> extends RetryPolicy {
   fn: () => Promise<T>;
   contextLabel: string;
   maxRetries: number;
-  baseDelayMs: number;
 }
 
+interface ResultWithError {
+  error: { message: string } | null;
+}
+
+// Thrown internally by withResultRetry so the shared throw-based core can drive result-shaped clients
+// (Supabase returns `{ error }` instead of throwing). Carries the last result to hand back on exhaustion.
+class RetryableResultError extends Error {
+  readonly result: unknown;
+
+  constructor(result: unknown, message: string) {
+    super(message);
+    this.result = result;
+  }
+}
+
+// Shared backoff-retry core. The caller supplies WHAT counts as retryable and HOW long to wait, so the
+// same loop serves the exchange (retry on thrown 429/5xx) and the journal (retry on a returned error).
 async function executeWithRetry<T>(args: ExecuteWithRetryArgs<T>): Promise<T> {
   let lastError: unknown;
 
@@ -84,26 +106,24 @@ async function executeWithRetry<T>(args: ExecuteWithRetryArgs<T>): Promise<T> {
       return await args.fn();
     } catch (error) {
       lastError = error;
-      const status = extractStatus(error);
 
-      if (!isRetryableStatus(status)) {
+      if (!args.isRetryable(error)) {
         throw error;
       }
 
       if (attempt === args.maxRetries) {
         logger.warn(
-          { error, contextLabel: args.contextLabel, attempt, maxRetries: args.maxRetries, status },
-          `[Retry] ${args.contextLabel} exhausted ${args.maxRetries} retries on status=${status}`
+          { error, contextLabel: args.contextLabel, attempt, maxRetries: args.maxRetries },
+          `[Retry] ${args.contextLabel} exhausted ${args.maxRetries} retries`
         );
         throw error;
       }
 
-      const retryAfterMs = extractRetryAfterMs(error);
-      const backoffMs = retryAfterMs ?? args.baseDelayMs * Math.pow(2, attempt - 1);
+      const backoffMs = args.computeBackoffMs(attempt, error);
 
       logger.info(
-        { contextLabel: args.contextLabel, attempt, maxRetries: args.maxRetries, status, backoffMs },
-        `[Retry] ${args.contextLabel} attempt ${attempt}/${args.maxRetries} after ${backoffMs}ms (status=${status})`
+        { contextLabel: args.contextLabel, attempt, maxRetries: args.maxRetries, backoffMs },
+        `[Retry] ${args.contextLabel} attempt ${attempt}/${args.maxRetries} after ${backoffMs}ms`
       );
 
       await sleep(backoffMs);
@@ -113,12 +133,19 @@ async function executeWithRetry<T>(args: ExecuteWithRetryArgs<T>): Promise<T> {
   throw lastError;
 }
 
+function buildExchangeRetryPolicy(baseDelayMs: number): RetryPolicy {
+  return {
+    isRetryable: (error) => isRetryableStatus(extractStatus(error)),
+    computeBackoffMs: (attempt, error) => extractRetryAfterMs(error) ?? baseDelayMs * Math.pow(2, attempt - 1),
+  };
+}
+
 export async function withRetryOn429<T>(args: WithRetryOn429Args<T>): Promise<T> {
   return executeWithRetry({
     fn: args.fn,
     contextLabel: args.contextLabel,
     maxRetries: args.maxRetries ?? DEFAULT_MAX_RETRIES,
-    baseDelayMs: args.baseDelayMs ?? DEFAULT_BASE_DELAY_MS,
+    ...buildExchangeRetryPolicy(args.baseDelayMs ?? DEFAULT_BASE_DELAY_MS),
   });
 }
 
@@ -127,6 +154,37 @@ export async function withReadRetry<T>(args: WithReadRetryArgs<T>): Promise<T> {
     fn: args.fn,
     contextLabel: args.contextLabel,
     maxRetries: args.maxRetries ?? DEFAULT_MAX_RETRIES,
-    baseDelayMs: args.baseDelayMs ?? DEFAULT_BASE_DELAY_MS,
+    ...buildExchangeRetryPolicy(args.baseDelayMs ?? DEFAULT_BASE_DELAY_MS),
   });
+}
+
+// Retry a client that RETURNS `{ error }` instead of throwing (Supabase). Retries while `error` is
+// non-null; on exhaustion returns the last result (error included) rather than throwing — a journal
+// write must never crash its caller. Same backoff core as the exchange retry (linear delay here).
+export async function withResultRetry<T extends ResultWithError>(args: WithResultRetryArgs<T>): Promise<T> {
+  const baseDelayMs = args.baseDelayMs ?? DEFAULT_BASE_DELAY_MS;
+
+  try {
+    return await executeWithRetry({
+      fn: async () => {
+        const result = await args.fn();
+
+        if (result.error !== null) {
+          throw new RetryableResultError(result, result.error.message);
+        }
+
+        return result;
+      },
+      contextLabel: args.contextLabel,
+      maxRetries: args.maxRetries ?? DEFAULT_MAX_RETRIES,
+      isRetryable: (error) => error instanceof RetryableResultError,
+      computeBackoffMs: (attempt) => baseDelayMs * attempt,
+    });
+  } catch (error) {
+    if (error instanceof RetryableResultError) {
+      return error.result as T;
+    }
+
+    throw error;
+  }
 }

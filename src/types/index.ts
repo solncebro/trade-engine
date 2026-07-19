@@ -87,3 +87,4 @@ export * from './orders';
 export * from './priceLimit';
 export * from './telegram';
 export * from './telegramCommandHandler';
+export * from './strategy';

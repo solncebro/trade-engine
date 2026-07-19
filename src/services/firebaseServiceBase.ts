@@ -37,6 +37,43 @@ function flattenForFirestoreUpdate(value: unknown, prefix = ''): Record<string, 
   return result;
 }
 
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+/**
+ * Returns a partial of `defaults` holding only the keys (recursively) that are
+ * absent from `stored`. Keys already present in `stored` are never included, so
+ * an update built from this result backfills missing defaults without ever
+ * overwriting values the user already has.
+ */
+function collectMissingDefaults(
+  defaults: Record<string, unknown>,
+  stored: Record<string, unknown>,
+): Record<string, unknown> {
+  const missing: Record<string, unknown> = {};
+
+  for (const [key, defaultValue] of Object.entries(defaults)) {
+    const storedValue = stored[key];
+
+    if (storedValue === undefined) {
+      missing[key] = defaultValue;
+
+      continue;
+    }
+
+    if (isPlainObject(defaultValue) && isPlainObject(storedValue)) {
+      const nestedMissing = collectMissingDefaults(defaultValue, storedValue);
+
+      if (Object.keys(nestedMissing).length > 0) {
+        missing[key] = nestedMissing;
+      }
+    }
+  }
+
+  return missing;
+}
+
 export interface FirebaseServiceBaseArgs<T> {
   documentPath: string;
   defaultData: T;
@@ -63,13 +100,19 @@ export class FirebaseServiceBase<T> extends EventEmitter implements Notifiable {
     this.onError = telegramNotifier.sendError.bind(telegramNotifier);
 
     if (!admin.apps.length) {
-      admin.initializeApp({
-        credential: admin.credential.cert({
-          projectId: process.env.FIREBASE_PROJECT_ID,
-          clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
-          privateKey: process.env.FIREBASE_PRIVATE_KEY?.replace(/\\n/g, '\n'),
-        }),
-      });
+      const serviceAccountPath = process.env.FIREBASE_SERVICE_ACCOUNT_PATH;
+
+      // Prefer a service-account JSON file when FIREBASE_SERVICE_ACCOUNT_PATH is set;
+      // otherwise fall back to the discrete FIREBASE_PROJECT_ID/CLIENT_EMAIL/PRIVATE_KEY vars.
+      const credential = serviceAccountPath
+        ? admin.credential.cert(serviceAccountPath)
+        : admin.credential.cert({
+            projectId: process.env.FIREBASE_PROJECT_ID,
+            clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
+            privateKey: process.env.FIREBASE_PRIVATE_KEY?.replace(/\\n/g, '\n'),
+          });
+
+      admin.initializeApp({ credential });
     }
 
     this.firestore = admin.firestore();
@@ -82,9 +125,26 @@ export class FirebaseServiceBase<T> extends EventEmitter implements Notifiable {
 
       if (document.exists) {
         const data = document.data() as T;
+
+        // Backfill only the default keys missing from the stored document via a
+        // dot-notation update — existing values are never overwritten.
+        const missingDefaults = collectMissingDefaults(
+          this.defaultData as Record<string, unknown>,
+          data as Record<string, unknown>,
+        );
+        const flatMissingDefaults = flattenForFirestoreUpdate(missingDefaults);
+
+        if (Object.keys(flatMissingDefaults).length > 0) {
+          await this.documentReference.update(flatMissingDefaults);
+          await this.onNotify('Backfilled missing default keys in Firebase');
+        }
+
         this.updateCurrentData(data);
       } else {
-        await this.onNotify('No data found in Firebase, using defaults');
+        // Persist the defaults so the document exists from now on — subsequent
+        // runs load real data instead of silently falling back to defaults again.
+        await this.documentReference.set(this.defaultData as admin.firestore.DocumentData);
+        await this.onNotify('No data found in Firebase — created document with defaults');
       }
 
       this.subscribeToDataChanges();

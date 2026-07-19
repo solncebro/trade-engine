@@ -57,6 +57,7 @@ npx jest --config jest.integration.config.js --runInBand --testPathPatterns=<pat
 | [`.claude/rules/services.md`](.claude/rules/services.md) | Telegram, Firebase, Logger, утилиты |
 | [`.claude/rules/testing.md`](.claude/rules/testing.md) | Тестирование: команды, паттерны, хелперы, символы |
 | [`.claude/rules/code-conventions.md`](.claude/rules/code-conventions.md) | Конвенции: форматирование, импорты, именование, паттерны |
+| [`.claude/rules/strategy-trading.md`](.claude/rules/strategy-trading.md) | Слой стратегической торговли: `OrderManager`, базовый `PositionMonitor` (+ хуки, порты `PositionStore`/`MarketDataSource`), подключаемый `GenericPnlMonitor` (opt-in PnL-бот позиций), `ChartGenerator`, модель `MonitoredPosition`, утилиты слоя |
 
 ### Ключевые модули
 
@@ -66,10 +67,19 @@ npx jest --config jest.integration.config.js --runInBand --testPathPatterns=<pat
 - **`src/core/withRetryOn429.ts`** (3.5.0) — `withRetryOn429` + `withReadRetry` — retry-обёртки с exponential backoff на 429/5xx.
 - **`src/services/klineSubscriptionWatchdog.ts`** (3.5.0) — мониторинг и автоматическое восстановление потерянных kline-подписок.
 - **`src/services/premiumIndexCalculator.ts`** — `PremiumIndexCalculator`, per-symbol EMA «премии» (`midPrice − markPrice`, окно 30s) для подачи `premiumAvg` в `OrderCalculator.calculatePriceLimitBounds`; не auto-wired. → [подробнее](.claude/rules/services.md)
+- **`src/services/tradifiSymbolGate.ts`** (3.12.0) — `TradifiSymbolGate`, переиспользуемый хранитель «универса без TradFi» (`isAllowed`/`classify`/`filterSymbolList`); опциональный `shouldAllowTradifi` (3.13.0, default `false`) снимает фильтр по явному согласию потребителя. → [подробнее](.claude/rules/services.md)
 - **`src/core/orderCalculator.ts`** — статические методы расчёта ордеров, маппинг символов, кредитное плечо, spot fallback. `calculateCloseOrder` сохраняет `positionSide` из исходного `orderParams`. → [подробнее](.claude/rules/order-calculator.md)
 - **`src/core/orderExecutor.ts`** — базовый класс исполнения ордеров с TP/SL и аварийным выходом (legacy путь; новые проекты — через `PositionManager`).
 - **`src/services/telegram*.ts`** — Telegram-бот (Telegraf) + MTProto-слушатель. → [подробнее](.claude/rules/services.md)
 - **`src/services/firebaseServiceBase.ts`** — базовый класс Firestore CRUD с real-time подпиской; `updateData` использует `flattenForFirestoreUpdate` (3.5.0). → [подробнее](.claude/rules/services.md)
+
+#### Слой стратегической торговли (влит из бывшего `@solncebro/ma-trading-core`)
+
+- **`src/core/OrderManager.ts`** — фоновый исполнитель всех ордерных операций (cancel/replace/place/close, batch) с WS+REST verify, retry, per-position FIFO, sub-batch splitting ≤10, RAM-only. → [подробнее](.claude/rules/strategy-trading.md)
+- **`src/core/PositionMonitor.ts`** — базовый headless-класс мониторинга позиций: poll-цикл, SL/TP, реконсиляция внешнего закрытия, drain multi-entry, WS-хендлеры, protected-хуки для подклассов; порты `PositionStore` (`positionStore.types.ts`) и `MarketDataSource` (`marketDataSource.types.ts`). → [подробнее](.claude/rules/strategy-trading.md)
+- **`src/core/GenericPnlMonitor.ts`** — `extends PositionMonitor`; подключаемый **opt-in** PnL-слой со своим Telegram-ботом позиций (profit/loss alerts, trailing SL, auto-close, SOS halve-at-breakeven, Split-TP, импорт/эфемерные). Пороги через callback `getPnlConfig(): PnlConfig`; app-специфика — через protected-хуки (`onLossThresholdReached`, `onCancelSos`, `resolveInsuranceViewState`, `registerInsuranceCallbackHandlers`, …). Без chaser/insurance-связности. → [подробнее](.claude/rules/strategy-trading.md)
+- **`src/chart/ChartGenerator.ts`** — candlestick-PNG через ECharts SSR + resvg (`generateChart` / `generateVolumeMontageChart`). → [подробнее](.claude/rules/strategy-trading.md)
+- **`src/types/strategy.ts`** — модель `MonitoredPosition` / `MaValues` / `MaLevel` + константы `VOLUME_SMA_PERIOD`, `MA_LEVEL_LIST`, `ALL_SUPPORTED_INTERVAL_LIST`. → [подробнее](.claude/rules/strategy-trading.md)
 
 ### Ключевые принципы
 

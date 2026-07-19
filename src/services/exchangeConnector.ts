@@ -63,6 +63,12 @@ interface StreamWatchdogBundle {
 
 const FALLBACK_WRITE_REQUESTS_PER_SECOND = 10;
 
+// Min gap between on-demand full futures trade-symbol reloads (triggered by a missing
+// symbol). Trade symbols load once at initialize(); a symbol listed afterwards is absent
+// until reloaded. This cooldown guards the instruments-info REST endpoint from being
+// hammered when a chaser is created for a symbol that genuinely does not exist.
+const FUTURES_TRADE_SYMBOLS_RELOAD_COOLDOWN_MS = 60_000;
+
 function readReduceOnly(orderParams: OrderParams): boolean {
   if (orderParams.reduceOnly === true) {
     return true;
@@ -98,6 +104,11 @@ export class ExchangeConnector {
   private _spotProxy: ExchangeClient | null = null;
   private readonly rateLimitConfigOverride: RateLimitConfig | null | undefined;
   private writeQueue: RateLimitedRequestQueue | null = null;
+
+  // On-demand futures trade-symbol reload state: a shared in-flight promise so concurrent
+  // callers join one REST round-trip, plus the last reload timestamp for the cooldown.
+  private futuresTradeSymbolsReloadInFlight: Promise<void> | null = null;
+  private lastFuturesTradeSymbolsReloadMs: number = 0;
 
   private readonly markPriceHandler = (list: MarkPriceUpdate[]): void => {
     for (const update of list) {
@@ -542,7 +553,7 @@ export class ExchangeConnector {
       } finally {
         this.isUpdatingTickers = false;
       }
-    }, 30000);
+    }, 30000).unref();
   }
 
   private async updateTickers(): Promise<void> {
@@ -690,7 +701,36 @@ export class ExchangeConnector {
 
     try {
       const wsArgs = this.buildCreateOrderArgs(orderParams, client);
+
+      logger.info(
+        {
+          exchange: this.exchangeName,
+          symbol: wsArgs.symbol,
+          side: wsArgs.side,
+          type: wsArgs.type,
+          marketType: orderParams.marketType,
+          amount: wsArgs.amount,
+          price: wsArgs.price,
+          stopPrice: wsArgs.stopPrice,
+          reduceOnly: wsArgs.reduceOnly,
+          positionSide: wsArgs.positionSide,
+          clientOrderId: wsArgs.clientOrderId,
+        },
+        `[ExchangeConnector] ${wsArgs.symbol} createOrder request ${wsArgs.side} ${wsArgs.type} amount=${wsArgs.amount}`
+      );
+
       const order = await client.createOrderWebSocket(wsArgs);
+
+      logger.info(
+        {
+          exchange: this.exchangeName,
+          symbol: wsArgs.symbol,
+          orderId: order.id,
+          amount: wsArgs.amount,
+          clientOrderId: wsArgs.clientOrderId,
+        },
+        `[ExchangeConnector] ${wsArgs.symbol} createOrder ok orderId=${order.id} amount=${wsArgs.amount}`
+      );
 
       return {
         ...resultBase,
@@ -738,6 +778,23 @@ export class ExchangeConnector {
       orderParams,
       actualExchangeParams: { ...wsArgsList[index] },
     }));
+
+    logger.info(
+      {
+        exchange: this.exchangeName,
+        symbol: firstParams.symbol,
+        marketType: firstParams.marketType,
+        count: wsArgsList.length,
+        orderList: wsArgsList.map(wsArgs => ({
+          side: wsArgs.side,
+          type: wsArgs.type,
+          amount: wsArgs.amount,
+          price: wsArgs.price,
+          clientOrderId: wsArgs.clientOrderId,
+        })),
+      },
+      `[ExchangeConnector] ${firstParams.symbol} createBatchOrders request count=${wsArgsList.length}`
+    );
 
     try {
       const orderList = await client.createBatchOrders(wsArgsList);
@@ -883,12 +940,18 @@ export class ExchangeConnector {
     return args;
   }
 
-  public async getFuturesSymbols(): Promise<string[]> {
+  // Callers that want crypto perpetuals only pass { excludeTradifi: true }: tokenized TradFi
+  // perpetuals (stocks, ETFs, commodities/metals) are dropped via TradeSymbol.isTradifi — the
+  // exchange-specific markers (Binance contractType TRADIFI_PERPETUAL, Bybit symbolType
+  // stock/commodity) are normalized into that flag by exchange-engine.
+  public async getFuturesSymbols(options?: { excludeTradifi?: boolean }): Promise<string[]> {
     try {
       const tradeSymbolBySymbol = this.exchange.futures.tradeSymbols;
+      const excludeTradifi = options?.excludeTradifi === true;
 
       const filteredSymbolList = [...tradeSymbolBySymbol.values()]
         .filter(m => m.isActive && (m.type === TradeSymbolTypeEnum.Swap || m.type === TradeSymbolTypeEnum.Future) && m.isLinear)
+        .filter(m => !excludeTradifi || !m.isTradifi)
         .map(m =>
           this.exchangeName === ExchangeNameEnum.Bybit ? normalizeSymbol(m.symbol) : m.symbol
         );
@@ -910,6 +973,95 @@ export class ExchangeConnector {
       );
 
       return [];
+    }
+  }
+
+  /**
+   * Ensure the futures trade-symbol spec (price/qty step, min/max filters) for `symbol`
+   * is loaded before the caller sizes or places an order. Trade symbols load once at
+   * initialize(); a symbol listed afterwards is absent until reloaded, and without its
+   * spec amountToPrecision/priceToPrecision silently return un-stepped raw values the
+   * exchange rejects. Returns true when the spec is present (already, or after an
+   * on-demand reload), false when the symbol is still absent after a reload (genuinely
+   * delisted / not yet listed).
+   *
+   * Fast path: a present spec returns immediately with NO REST call. A missing spec
+   * triggers a single shared full reload (concurrent callers await the same promise); a
+   * cooldown skips the reload for a symbol that does not exist so the instruments-info
+   * endpoint is not hammered. The membership check uses `symbol` verbatim — the same key
+   * priceToPrecision/getMinOrderQty resolve against — so the check matches actual use.
+   */
+  public async ensureFuturesTradeSymbolLoaded(symbol: string): Promise<boolean> {
+    if (this.exchange.futures.tradeSymbols.has(symbol)) {
+      return true;
+    }
+
+    await this.reloadFuturesTradeSymbolsOnDemand(symbol);
+
+    return this.exchange.futures.tradeSymbols.has(symbol);
+  }
+
+  private async reloadFuturesTradeSymbolsOnDemand(symbol: string): Promise<void> {
+    await this.reloadFuturesTradeSymbols(`${symbol} futures trade-symbol missing`);
+  }
+
+  /**
+   * Refresh the futures trade-symbol cache from the exchange. getFuturesSymbols() reads a
+   * cache that otherwise loads once at initialize(), so any periodic listing/delisting
+   * sync (e.g. market-data-feeder's hourly symbol sync) must call this first — without it
+   * the sync compares the cached list against itself and never sees a change. Shares the
+   * single-flight reload and cooldown with the on-demand spec reload; a failed reload is
+   * logged and swallowed so the caller keeps the previous cache (stale is better than
+   * empty).
+   */
+  public async refreshFuturesTradeSymbols(): Promise<void> {
+    await this.reloadFuturesTradeSymbols(`periodic futures trade-symbol refresh`);
+  }
+
+  private async reloadFuturesTradeSymbols(reasonLabel: string): Promise<void> {
+    // Join an in-flight reload — concurrent callers share one REST round-trip.
+    if (this.futuresTradeSymbolsReloadInFlight !== null) {
+      await this.futuresTradeSymbolsReloadInFlight;
+
+      return;
+    }
+
+    // Cooldown: a recent reload already refreshed the full list — skip another REST hit
+    // until the cooldown elapses.
+    const sinceLastReloadMs = Date.now() - this.lastFuturesTradeSymbolsReloadMs;
+
+    if (this.lastFuturesTradeSymbolsReloadMs > 0 && sinceLastReloadMs < FUTURES_TRADE_SYMBOLS_RELOAD_COOLDOWN_MS) {
+      logger.warn(
+        { exchange: this.exchangeName, reasonLabel, sinceLastReloadMs },
+        `[ExchangeConnector] ${reasonLabel} but reload on cooldown (${Math.round(sinceLastReloadMs / 1000)}s since last) — skipping reload`
+      );
+
+      return;
+    }
+
+    const reloadPromise = (async (): Promise<void> => {
+      logger.info(
+        { exchange: this.exchangeName, reasonLabel },
+        `[ExchangeConnector] ${reasonLabel} — reloading all futures trade symbols`
+      );
+      await withReadRetry({
+        fn: () => this.exchange.futures.loadTradeSymbols(),
+        contextLabel: `reload futures trade symbols (${reasonLabel}) ${this.exchangeName}`,
+      });
+    })();
+
+    this.futuresTradeSymbolsReloadInFlight = reloadPromise;
+
+    try {
+      await reloadPromise;
+    } catch (error) {
+      logger.error(
+        { error, exchange: this.exchangeName, reasonLabel },
+        `[ExchangeConnector] futures trade-symbol reload failed (${reasonLabel})`
+      );
+    } finally {
+      this.lastFuturesTradeSymbolsReloadMs = Date.now();
+      this.futuresTradeSymbolsReloadInFlight = null;
     }
   }
 

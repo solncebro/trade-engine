@@ -32,8 +32,8 @@ interface PremiumState {
  * no prior history to blend with.
  *
  * Public API is sync and lock-free: `feed` is called from the orderbook hot
- * path, `getPremiumAvg` is called by `OrderCalculator.calculatePriceLimitBounds`
- * consumers and other order-construction sites.
+ * path, `getPremiumAvg` is called by price-limit-bound calculation consumers
+ * and other order-construction sites.
  */
 export class PremiumIndexCalculator {
   private readonly stateBySymbol: Map<string, PremiumState> = new Map();

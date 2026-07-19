@@ -141,7 +141,7 @@ export class StreamSubscriptionWatchdog {
           suppressedCount: this.suppressedKeySet.size,
         }, `${LOG_PREFIX} ${this.streamLabel} alive — tick #${this.tickCount}, ${this.lastEntryByKey.size} subs, ${this.countInProgress()} in recovery`);
       }
-    }, this.checkIntervalMs);
+    }, this.checkIntervalMs).unref();
 
     logger.info({ checkIntervalMs: this.checkIntervalMs, graceMs: this.graceMs }, `${LOG_PREFIX} ${this.streamLabel} started — checkIntervalMs=${this.checkIntervalMs}, graceMs=${this.graceMs}`);
   }

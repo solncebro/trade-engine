@@ -6,5 +6,7 @@ export interface TelegramMessageListenerArgs {
 
 export interface TelegramNotifierArgs {
   botToken: string;
-  chatId: string;
+  // A single chat id, or a list of chat ids to broadcast every message to. A bare string
+  // keeps full backward compatibility (treated as a one-element list).
+  chatId: string | string[];
 }

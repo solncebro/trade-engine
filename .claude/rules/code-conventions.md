@@ -6,6 +6,10 @@
 - Declarations (`*.d.ts`) генерируются при сборке
 - Source maps включены
 
+## Требование к среде выполнения
+
+- Node.js **>= 22.0.0** — задано полем `engines` в `package.json` (как в `@solncebro/exchange-engine`). Отдельного `.nvmrc`/volta нет.
+
 ## Форматирование (Prettier)
 
 - Single quotes, 2 пробела, trailing comma ES5
@@ -16,7 +20,7 @@
 
 Порядок групп с пустыми строками между ними:
 1. `builtin` (node:path, node:crypto)
-2. `external` (ws, dotenv, telegraf)
+2. `external` (telegraf, dayjs, pino)
 3. `internal` (../../src/...)
 4. `sibling` (./helpers/...)
 5. `parent` (../)

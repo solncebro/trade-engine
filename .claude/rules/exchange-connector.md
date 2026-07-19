@@ -212,7 +212,7 @@ const result = await connector.createOrder({
 | `stopWatchingMarkPrices()` | `void` | Отписка и очистка кэша mark price |
 | `getMarkPrice(symbol)` | `MarkPriceUpdate \| undefined` | Последний mark price из кэша |
 | `createOrder(params)` | `Promise<OrderResult>` | Создание ордера |
-| `getFuturesSymbols()` | `Promise<string[]>` | Список фьючерсных символов |
+| `getFuturesSymbols({ excludeTradifi? })` | `Promise<string[]>` | Список фьючерсных символов; `excludeTradifi: true` отсеивает токенизированные TradFi-перпы (акции/ETF/сырьё) по нормализованному `TradeSymbol.isTradifi` (Binance `contractType: TRADIFI_PERPETUAL`, Bybit `symbolType: stock/commodity`; exchange-engine ≥ 0.18.0) |
 | `getSpotSymbols()` | `Promise<string[]>` | Список спотовых символов |
 | `getClient(marketType)` | `ExchangeClient` | **Raw** клиент по marketType (без watchdog-прокси) |
 | `getStreamClient(marketType)` | `ExchangeClient` | **Проксированный** клиент по marketType (3.6.0): stream-консьюмеры подписываются через него, чтобы `StreamSubscriptionWatchdog` оборачивал их handler'ы |

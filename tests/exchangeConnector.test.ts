@@ -3,8 +3,9 @@ import {
   ExchangeNameEnum,
   PositionModeEnum,
   PositionSideEnum,
+  TradeSymbolTypeEnum,
 } from '@solncebro/exchange-engine';
-import type { MarkPriceHandler, MarkPriceUpdate } from '@solncebro/exchange-engine';
+import type { MarkPriceHandler, MarkPriceUpdate, TradeSymbol } from '@solncebro/exchange-engine';
 
 import { ExchangeConnector } from '../src/services/exchangeConnector';
 import { ExchangeConfig, MarketTypeEnum, OrderSideEnum, OrderTypeEnum } from '../src/types';
@@ -418,5 +419,69 @@ describe('ExchangeConnector dynamic write rate-limit on initialize', () => {
     expect(queue).not.toBeNull();
     expect(queue!.getRateLimit()).toBe(1); // Math.max(1, floor(0)=0) → 1
     await connector.disconnect();
+  });
+});
+
+describe('ExchangeConnector.getFuturesSymbols TRADIFI filter', () => {
+  function buildConnectorWithSymbols(): ExchangeConnector {
+    const connector = new ExchangeConnector(ExchangeNameEnum.Binance, {
+      apiKey: 'k',
+      secret: 's',
+    } as ExchangeConfig);
+
+    const tradeSymbols = new Map<string, TradeSymbol>([
+      ['BTCUSDT', { symbol: 'BTCUSDT', isActive: true, type: TradeSymbolTypeEnum.Swap, isLinear: true, contractType: 'PERPETUAL', isTradifi: false } as TradeSymbol],
+      ['ETHUSDT', { symbol: 'ETHUSDT', isActive: true, type: TradeSymbolTypeEnum.Swap, isLinear: true, contractType: 'PERPETUAL', isTradifi: false } as TradeSymbol],
+      ['AAPLUSDT', { symbol: 'AAPLUSDT', isActive: true, type: TradeSymbolTypeEnum.Swap, isLinear: true, contractType: 'TRADIFI_PERPETUAL', isTradifi: true } as TradeSymbol],
+    ]);
+    (connector.futures as unknown as { tradeSymbols: typeof tradeSymbols }).tradeSymbols = tradeSymbols;
+
+    return connector;
+  }
+
+  // Bybit lists tokenized TradFi perpetuals with the ordinary 'LinearPerpetual' contractType —
+  // only the normalized isTradifi flag (from Bybit symbolType stock/commodity) tells them apart.
+  function buildBybitConnectorWithSymbols(): ExchangeConnector {
+    const connector = new ExchangeConnector(ExchangeNameEnum.Bybit, {
+      apiKey: 'k',
+      secret: 's',
+    } as ExchangeConfig);
+
+    const tradeSymbols = new Map<string, TradeSymbol>([
+      ['BTCUSDT', { symbol: 'BTCUSDT', isActive: true, type: TradeSymbolTypeEnum.Swap, isLinear: true, contractType: 'LinearPerpetual', isTradifi: false } as TradeSymbol],
+      ['IBMUSDT', { symbol: 'IBMUSDT', isActive: true, type: TradeSymbolTypeEnum.Swap, isLinear: true, contractType: 'LinearPerpetual', isTradifi: true } as TradeSymbol],
+      ['XAUUSDT', { symbol: 'XAUUSDT', isActive: true, type: TradeSymbolTypeEnum.Swap, isLinear: true, contractType: 'LinearPerpetual', isTradifi: true } as TradeSymbol],
+    ]);
+    (connector.futures as unknown as { tradeSymbols: typeof tradeSymbols }).tradeSymbols = tradeSymbols;
+
+    return connector;
+  }
+
+  it('excludes TRADIFI_PERPETUAL contracts when excludeTradifi is true', async () => {
+    const connector = buildConnectorWithSymbols();
+
+    const symbolList = await connector.getFuturesSymbols({ excludeTradifi: true });
+
+    expect(symbolList).toEqual(['BTCUSDT', 'ETHUSDT']);
+  });
+
+  it('includes TRADIFI_PERPETUAL contracts by default (backward compatible)', async () => {
+    const connector = buildConnectorWithSymbols();
+
+    const symbolList = await connector.getFuturesSymbols();
+
+    expect(symbolList).toEqual(['BTCUSDT', 'ETHUSDT', 'AAPLUSDT']);
+  });
+
+  it('excludes Bybit tokenized stocks and commodities when excludeTradifi is true', async () => {
+    const symbolList = await buildBybitConnectorWithSymbols().getFuturesSymbols({ excludeTradifi: true });
+
+    expect(symbolList).toEqual(['BTCUSDT']);
+  });
+
+  it('includes Bybit tradifi symbols by default', async () => {
+    const symbolList = await buildBybitConnectorWithSymbols().getFuturesSymbols();
+
+    expect(symbolList).toEqual(['BTCUSDT', 'IBMUSDT', 'XAUUSDT']);
   });
 });
