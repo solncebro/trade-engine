@@ -97,7 +97,12 @@ export class TelegramNotifier {
 
   public async start(): Promise<void> {
     await this.setupMenuButton();
-    this.bot.launch({ dropPendingUpdates: true });
+    // launch() is intentionally not awaited (polling runs for the process lifetime). Catch its
+    // rejection so a transient getUpdates 409 (restart overlap with a previous instance's still-
+    // open long-poll) does not surface as an unhandled rejection and crash the consumer.
+    this.bot.launch({ dropPendingUpdates: true }).catch(error => {
+      logger.error({ error }, 'Telegram bot polling stopped');
+    });
 
     logger.info({ chatIdList: this.chatIdList }, 'Telegram bot started');
   }
