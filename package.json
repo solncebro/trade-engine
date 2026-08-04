@@ -1,6 +1,6 @@
 {
   "name": "@solncebro/trade-engine",
-  "version": "3.13.0",
+  "version": "3.14.0",
   "description": "Universal trading engine library for cryptocurrency exchanges with Telegram integration and Firebase support",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -61,7 +61,7 @@
     "@googleapis/sheets": "^9.0.0",
     "@logtail/pino": "^0.4.0",
     "@resvg/resvg-js": "^2.6.2",
-    "@solncebro/exchange-engine": "0.18.0",
+    "@solncebro/exchange-engine": "0.18.3",
     "@solncebro/telegram-engine": "^0.4.0",
     "@supabase/supabase-js": "^2.106.2",
     "dayjs": "^1.11.18",

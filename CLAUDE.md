@@ -58,6 +58,7 @@ npx jest --config jest.integration.config.js --runInBand --testPathPatterns=<pat
 | [`.claude/rules/testing.md`](.claude/rules/testing.md) | Тестирование: команды, паттерны, хелперы, символы |
 | [`.claude/rules/code-conventions.md`](.claude/rules/code-conventions.md) | Конвенции: форматирование, импорты, именование, паттерны |
 | [`.claude/rules/strategy-trading.md`](.claude/rules/strategy-trading.md) | Слой стратегической торговли: `OrderManager`, базовый `PositionMonitor` (+ хуки, порты `PositionStore`/`MarketDataSource`), подключаемый `GenericPnlMonitor` (opt-in PnL-бот позиций), `ChartGenerator`, модель `MonitoredPosition`, утилиты слоя |
+| [`.claude/rules/trend.md`](.claude/rules/trend.md) | Определение тренда: `TrendCalculator` (структура рынка — вершины/впадины, направление, слом, сила 0–100), `TrendMonitor` (живой наблюдатель + событие смены тренда), `formatTrendSummaryMessage` |
 
 ### Ключевые модули
 
@@ -69,6 +70,7 @@ npx jest --config jest.integration.config.js --runInBand --testPathPatterns=<pat
 - **`src/services/premiumIndexCalculator.ts`** — `PremiumIndexCalculator`, per-symbol EMA «премии» (`midPrice − markPrice`, окно 30s) для подачи `premiumAvg` в `OrderCalculator.calculatePriceLimitBounds`; не auto-wired. → [подробнее](.claude/rules/services.md)
 - **`src/services/tradifiSymbolGate.ts`** (3.12.0) — `TradifiSymbolGate`, переиспользуемый хранитель «универса без TradFi» (`isAllowed`/`classify`/`filterSymbolList`); опциональный `shouldAllowTradifi` (3.13.0, default `false`) снимает фильтр по явному согласию потребителя. → [подробнее](.claude/rules/services.md)
 - **`src/core/orderCalculator.ts`** — статические методы расчёта ордеров, маппинг символов, кредитное плечо, spot fallback. `calculateCloseOrder` сохраняет `positionSide` из исходного `orderParams`. → [подробнее](.claude/rules/order-calculator.md)
+- **`src/core/trendCalculator.ts` + `src/core/TrendMonitor.ts`** (3.14.0) — определение тренда актива по структуре рынка (вершины/впадины). `TrendCalculator` — статический расчёт направления (рост/падение/боковик), слома тренда по закрытию и силы 0–100. `TrendMonitor` — живой наблюдатель поверх `MarketDataSource`: вердикт по каждому интервалу + сводка, событие `trendChanged` при смене направления, чистое снятие подписок. `formatTrendSummaryMessage` — текст сводки для Telegram. Не торгует и не шлёт сам. → [подробнее](.claude/rules/trend.md)
 - **`src/core/orderExecutor.ts`** — базовый класс исполнения ордеров с TP/SL и аварийным выходом (legacy путь; новые проекты — через `PositionManager`).
 - **`src/services/telegram*.ts`** — Telegram-бот (Telegraf) + MTProto-слушатель. → [подробнее](.claude/rules/services.md)
 - **`src/services/firebaseServiceBase.ts`** — базовый класс Firestore CRUD с real-time подпиской; `updateData` использует `flattenForFirestoreUpdate` (3.5.0). → [подробнее](.claude/rules/services.md)

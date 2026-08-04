@@ -23,6 +23,7 @@ export interface KlineSubscriptionWatchdogConfig {
   recoveryFailCooldownMs?: number;
   recoveryFailCountThreshold?: number;
   restInterCallMs?: number;
+  graceScaledIntervalList?: KlineInterval[];
   symbolMarker?: (symbol: string, interval: KlineInterval) => string;
   // Structured health hooks (fired alongside onNotify). Consumers (e.g. ma-chaser)
   // hook onStreamRecoveryFailed to escalate after persistent recovery failure.

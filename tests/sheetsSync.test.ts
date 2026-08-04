@@ -1,6 +1,6 @@
 import { sheets_v4 } from '@googleapis/sheets';
 
-import { ensureSheetHeader, syncRecordListToSheet, toSheetsSerialDate } from '../src/services/tradeJournal/sheetsSync';
+import { ensureSheetHeader, fullReplaceSheet, syncRecordListToSheet, toSheetsSerialDate } from '../src/services/tradeJournal/sheetsSync';
 
 interface SheetsMock {
   sheets: sheets_v4.Sheets;
@@ -8,6 +8,8 @@ interface SheetsMock {
   update: jest.Mock;
   append: jest.Mock;
   batchUpdate: jest.Mock;
+  clear: jest.Mock;
+  formatBatchUpdate: jest.Mock;
 }
 
 function makeSheets(existingRowList: string[][] | null, isResolvable = true): SheetsMock {
@@ -15,15 +17,22 @@ function makeSheets(existingRowList: string[][] | null, isResolvable = true): Sh
   const update = jest.fn().mockResolvedValue({});
   const append = jest.fn().mockResolvedValue({});
   const batchUpdate = jest.fn().mockResolvedValue({});
+  const clear = jest.fn().mockResolvedValue({});
+  const formatBatchUpdate = jest.fn().mockResolvedValue({});
 
   const sheets = {
     spreadsheets: {
       get: jest.fn().mockResolvedValue({ data: { sheets: isResolvable ? [{ properties: { sheetId: 0, title: 'trades', index: 0 } }] : [] } }),
-      values: { get, update, append, batchUpdate },
+      batchUpdate: formatBatchUpdate,
+      values: { get, update, append, batchUpdate, clear },
     },
   } as unknown as sheets_v4.Sheets;
 
-  return { sheets, get, update, append, batchUpdate };
+  return { sheets, get, update, append, batchUpdate, clear, formatBatchUpdate };
+}
+
+function firstNumberFormat(formatBatchUpdate: jest.Mock): sheets_v4.Schema$Request {
+  return formatBatchUpdate.mock.calls[0][0].requestBody.requests[0] as sheets_v4.Schema$Request;
 }
 
 describe('toSheetsSerialDate', () => {
@@ -95,7 +104,11 @@ describe('syncRecordListToSheet', () => {
 
     const appendedRow = mock.append.mock.calls[0][0].requestBody.values[0];
 
-    expect(appendedRow).toEqual(['BTCUSDT', String(toSheetsSerialDate(entryTimeMs)), String(12.34 / 100), 'A']);
+    // Numbers go in as numbers, NOT as text: with USER_ENTERED a "46233.04" string is parsed in the
+    // spreadsheet's own locale, and a comma-decimal locale (ru_RU) turns it into a text cell.
+    expect(appendedRow).toEqual(['BTCUSDT', toSheetsSerialDate(entryTimeMs), 0.1234, 'A']);
+    expect(typeof appendedRow[1]).toBe('number');
+    expect(typeof appendedRow[2]).toBe('number');
   });
 
   it('updates an existing row when its values changed', async () => {
@@ -132,5 +145,121 @@ describe('syncRecordListToSheet', () => {
     const readRange = mock.get.mock.calls[0][0].range;
 
     expect(readRange).toContain('A:AB');
+  });
+
+  // Rows arriving through append land as freshly inserted rows and do NOT carry the date format applied
+  // to the column at startup — without this pass the sheet shows a bare serial number instead of a date.
+  it('re-applies the date format after appending rows', async () => {
+    const mock = makeSheets([columnList]);
+
+    await syncRecordListToSheet({
+      sheets: mock.sheets,
+      spreadsheetId: 'id',
+      columnList,
+      keyColumn: 'id',
+      dateColumnList,
+      percentColumnList,
+      recordList: [{ symbol: 'BTCUSDT', entry_time: Date.UTC(2021, 0, 1), pnl_percent: 1, id: 'A' }],
+    });
+
+    expect(mock.formatBatchUpdate).toHaveBeenCalledTimes(1);
+
+    const request = firstNumberFormat(mock.formatBatchUpdate);
+
+    expect(request.repeatCell?.range).toEqual({ sheetId: 0, startRowIndex: 1, startColumnIndex: 1, endColumnIndex: 2 });
+    expect(request.repeatCell?.cell?.userEnteredFormat?.numberFormat?.type).toBe('DATE_TIME');
+  });
+
+  it('leaves the date format alone when nothing was appended', async () => {
+    const mock = makeSheets([columnList, ['BTCUSDT', '', '', 'A']]);
+
+    await syncRecordListToSheet({
+      sheets: mock.sheets,
+      spreadsheetId: 'id',
+      columnList,
+      keyColumn: 'id',
+      dateColumnList,
+      percentColumnList,
+      recordList: [{ symbol: 'BTCUSDT', entry_time: 0, pnl_percent: 5, id: 'A' }],
+    });
+
+    expect(mock.formatBatchUpdate).not.toHaveBeenCalled();
+  });
+
+  // -2.83 / 100 is 0.028300000000000002 in binary arithmetic; a report cell must read -0.0283.
+  it('writes a percent without the floating-point tail', async () => {
+    const mock = makeSheets([columnList]);
+
+    await syncRecordListToSheet({
+      sheets: mock.sheets,
+      spreadsheetId: 'id',
+      columnList,
+      keyColumn: 'id',
+      dateColumnList,
+      percentColumnList,
+      recordList: [{ symbol: 'BTCUSDT', entry_time: 0, pnl_percent: -2.83, id: 'A' }],
+    });
+
+    expect(mock.append.mock.calls[0][0].requestBody.values[0][2]).toBe(-0.0283);
+  });
+
+  it('keeps a genuinely long number intact', async () => {
+    const priceColumnList = ['symbol', 'entry_price', 'id'];
+    const mock = makeSheets([priceColumnList]);
+
+    await syncRecordListToSheet({
+      sheets: mock.sheets,
+      spreadsheetId: 'id',
+      columnList: priceColumnList,
+      keyColumn: 'id',
+      dateColumnList: [],
+      percentColumnList: [],
+      recordList: [{ symbol: 'BTCUSDT', entry_price: 0.00619640833333333, id: 'A' }],
+    });
+
+    expect(mock.append.mock.calls[0][0].requestBody.values[0][1]).toBe(0.00619640833333333);
+  });
+
+  // A row already carrying today's values must not be rewritten: the sheet returns typed cells, the
+  // mirror builds typed cells, and comparing them as text is what keeps the two sides equal.
+  it('leaves an unchanged row alone when the sheet holds it as a number', async () => {
+    const entryTimeMs = Date.UTC(2021, 0, 1, 13, 7);
+    // The sheet holds what the mirror last wrote — the serial trimmed to 15 significant digits.
+    const serial = Number.parseFloat(toSheetsSerialDate(entryTimeMs).toPrecision(15));
+    const mock = makeSheets([columnList, ['BTCUSDT', String(serial), '0.1234', 'A']]);
+
+    await syncRecordListToSheet({
+      sheets: mock.sheets,
+      spreadsheetId: 'id',
+      columnList,
+      keyColumn: 'id',
+      dateColumnList,
+      percentColumnList,
+      recordList: [{ symbol: 'BTCUSDT', entry_time: entryTimeMs, pnl_percent: 12.34, id: 'A' }],
+    });
+
+    expect(mock.append).not.toHaveBeenCalled();
+    expect(mock.batchUpdate).not.toHaveBeenCalled();
+  });
+});
+
+describe('fullReplaceSheet', () => {
+  it('applies the date format after rewriting the sheet', async () => {
+    const columnList = ['symbol', 'entry_time', 'id'];
+    const mock = makeSheets([columnList]);
+
+    await fullReplaceSheet({
+      sheets: mock.sheets,
+      spreadsheetId: 'id',
+      columnList,
+      keyColumn: 'id',
+      dateColumnList: ['entry_time'],
+      percentColumnList: [],
+      recordList: [{ symbol: 'BTCUSDT', entry_time: Date.UTC(2021, 0, 1), id: 'A' }],
+    });
+
+    expect(mock.clear).toHaveBeenCalledTimes(1);
+    expect(mock.update).toHaveBeenCalledTimes(1);
+    expect(firstNumberFormat(mock.formatBatchUpdate).repeatCell?.cell?.userEnteredFormat?.numberFormat?.type).toBe('DATE_TIME');
   });
 });

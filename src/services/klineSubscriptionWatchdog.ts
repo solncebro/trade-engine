@@ -176,6 +176,7 @@ export class KlineSubscriptionWatchdog {
   private readonly recoveryFailCooldownMs: number;
   private readonly recoveryFailCountThreshold: number;
   private readonly restInterCallMs: number;
+  private readonly graceScaledIntervalSet: Set<KlineInterval>;
   private readonly symbolMarker: ((symbol: string, interval: KlineInterval) => string) | undefined;
   private readonly onStreamStale: ((event: KlineWatchdogHealthEvent) => void) | undefined;
   private readonly onStreamRecovered: ((event: KlineWatchdogHealthEvent) => void) | undefined;
@@ -208,6 +209,7 @@ export class KlineSubscriptionWatchdog {
     this.recoveryFailCooldownMs = config.recoveryFailCooldownMs ?? DEFAULT_RECOVERY_FAIL_COOLDOWN_MS;
     this.recoveryFailCountThreshold = config.recoveryFailCountThreshold ?? DEFAULT_RECOVERY_FAIL_COUNT_THRESHOLD;
     this.restInterCallMs = config.restInterCallMs ?? DEFAULT_REST_INTER_CALL_MS;
+    this.graceScaledIntervalSet = new Set(config.graceScaledIntervalList ?? []);
     this.symbolMarker = config.symbolMarker;
     this.onStreamStale = config.onStreamStale;
     this.onStreamRecovered = config.onStreamRecovered;
@@ -301,7 +303,13 @@ export class KlineSubscriptionWatchdog {
       }
     }, this.checkIntervalMs).unref();
 
-    logger.info({ checkIntervalMs: this.checkIntervalMs, graceMs: this.graceMs }, `${LOG_PREFIX} ${this.clientLabel} started — checkIntervalMs=${this.checkIntervalMs}, graceMs=${this.graceMs}`);
+    const graceScaledIntervalList = Array.from(this.graceScaledIntervalSet);
+
+    logger.info({
+      checkIntervalMs: this.checkIntervalMs,
+      graceMs: this.graceMs,
+      graceScaledIntervalList,
+    }, `${LOG_PREFIX} ${this.clientLabel} started — checkIntervalMs=${this.checkIntervalMs}, graceMs=${this.graceMs}, graceScaledIntervalList=[${graceScaledIntervalList.join(', ')}]`);
   }
 
   public stop(): void {
@@ -532,7 +540,7 @@ export class KlineSubscriptionWatchdog {
       const expectedNextOpenTimestamp = entry.openTimestamp + intervalMs;
       const ageMs = nowMs - expectedNextOpenTimestamp;
 
-      if (ageMs <= this.graceMs) {
+      if (ageMs <= this.calcGraceMs(interval)) {
         continue;
       }
 
@@ -549,6 +557,14 @@ export class KlineSubscriptionWatchdog {
     overdueList.sort((a, b) => b.ageMs - a.ageMs);
 
     return overdueList;
+  }
+
+  private calcGraceMs(interval: KlineInterval): number {
+    if (!this.graceScaledIntervalSet.has(interval)) {
+      return this.graceMs;
+    }
+
+    return getIntervalMs(interval) + this.graceMs;
   }
 
   private parseSymbolFromKey(key: string): string {

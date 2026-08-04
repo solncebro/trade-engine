@@ -1,4 +1,8 @@
-export { ExchangeError, formatWebSocketConnectionsReport, TriggerByEnum } from '@solncebro/exchange-engine';
+export {
+  ExchangeError,
+  formatWebSocketConnectionsReport,
+  TriggerByEnum,
+} from '@solncebro/exchange-engine';
 export type { FormatWebSocketConnectionsReportArgs } from '@solncebro/exchange-engine';
 
 export { ExchangeConnector } from './services/exchangeConnector';
@@ -43,7 +47,10 @@ export { TelegramCommandHandler } from './services/telegramCommandHandler';
 export { TelegramMessageListener } from './services/telegramMessageListener';
 export { TelegramNotifier } from './services/telegramNotifier';
 export { TradifiSymbolGate } from './services/tradifiSymbolGate';
-export type { TradifiSymbolGateArgs, TradifiSymbolGateConnector } from './services/tradifiSymbolGate.types';
+export type {
+  TradifiSymbolGateArgs,
+  TradifiSymbolGateConnector,
+} from './services/tradifiSymbolGate.types';
 export { PersistentTradeJournal } from './services/tradeJournal/persistentTradeJournal';
 export type {
   TradeJournalSchema,
@@ -94,7 +101,29 @@ export type {
 } from './core/positionManager.types';
 export { RateLimitedRequestQueue } from './core/RateLimitedRequestQueue';
 export type { RateLimitedRequestQueueArgs } from './core/RateLimitedRequestQueue.types';
-export { withReadRetry, withResultRetry, withRetryOn429 } from './core/withRetryOn429';
+export { TrendCalculator } from './core/trendCalculator';
+export type {
+  AssessTrendArgs,
+  ComputePivotListArgs,
+  TrendAssessment,
+  TrendAssessmentResult,
+  TrendCalculatorConfig,
+  TrendDirection,
+  TrendPivot,
+  TrendStrengthComponents,
+} from './core/trendCalculator.types';
+export { TrendMonitor } from './core/TrendMonitor';
+export type {
+  TrendChangedEvent,
+  TrendChangedListener,
+  TrendMonitorArgs,
+  TrendSummary,
+} from './core/TrendMonitor.types';
+export {
+  withReadRetry,
+  withResultRetry,
+  withRetryOn429,
+} from './core/withRetryOn429';
 export type {
   WithReadRetryArgs,
   WithRetryOn429Args,
@@ -164,6 +193,8 @@ export type {
   PositionRemovedExternallyMessageArgs,
 } from './telegram/pnlMessageTemplates.types';
 export * from './telegram/pnlMessageFormatHelpers';
+export { formatTrendSummaryMessage } from './telegram/trendMessageTemplates';
+export type { FormatTrendSummaryMessageArgs } from './telegram/trendMessageTemplates.types';
 export * from './utils/tpSplit';
 export * from './utils/tpSplit.types';
 export * from './utils/orderSize';

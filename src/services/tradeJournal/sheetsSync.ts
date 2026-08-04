@@ -6,6 +6,10 @@ const MS_PER_DAY = 86_400_000;
 const SHEETS_EPOCH_OFFSET_DAYS = 25_569;
 const DATE_TIME_PATTERN = 'yyyy-mm-dd hh:mm:ss';
 const SHEETS_SCOPE = 'https://www.googleapis.com/auth/spreadsheets';
+// Doubles carry ~15-17 significant digits; the last two are where binary arithmetic leaves its litter
+// (2.83 / 100 → 0.028300000000000002). Re-reading a value at 15 digits drops the litter and keeps every
+// genuinely long number intact (a weighted average entry price uses 15 digits and survives untouched).
+const SIGNIFICANT_DIGIT_LIMIT = 15;
 
 export interface SheetSyncArgs {
   sheets: sheets_v4.Sheets;
@@ -90,7 +94,18 @@ function sheetRange(title: string, cells: string): string {
   return `'${title.replace(/'/g, "''")}'!${cells}`;
 }
 
-function formatCell(value: unknown, options: CellFormatOptions = {}): string {
+// Drop floating-point litter and keep the value round-trip stable. The sheet is a human-facing report:
+// a cell reading -0.028300000000000002 instead of -0.0283 is noise, not precision. 15 digits also
+// survive the write → read comparison unchanged, so a row is never rewritten just for its own tail.
+function toCleanNumber(value: number): number {
+  return Number.parseFloat(value.toPrecision(SIGNIFICANT_DIGIT_LIMIT));
+}
+
+// A cell value is written TYPED: numbers as numbers, everything else as text. Never hand Sheets a
+// number formatted into a string — with valueInputOption USER_ENTERED it parses the text in the
+// SPREADSHEET's locale, and in a comma-decimal locale (ru_RU) "46233.04" is not a number at all, so the
+// cell silently becomes text: dates stop rendering as dates and the raw digits show through.
+function formatCell(value: unknown, options: CellFormatOptions = {}): string | number {
   if (value === null || value === undefined || value === '') {
     return '';
   }
@@ -101,20 +116,30 @@ function formatCell(value: unknown, options: CellFormatOptions = {}): string {
     const numericValue = Number(value);
     const timestampMs = Number.isFinite(numericValue) ? numericValue : createDate(String(value)).getTime();
 
-    return timestampMs > 0 ? String(toSheetsSerialDate(timestampMs)) : '';
+    return timestampMs > 0 ? toCleanNumber(toSheetsSerialDate(timestampMs)) : '';
   }
 
   if (options.isPercent) {
     const percent = Number(value);
 
-    return Number.isFinite(percent) ? String(percent / 100) : '';
+    return Number.isFinite(percent) ? toCleanNumber(percent / 100) : '';
+  }
+
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return toCleanNumber(value);
   }
 
   return String(value);
 }
 
-function toSheetRow(record: Record<string, unknown>, columnList: readonly string[], dateColumnSet: Set<string>, percentColumnSet: Set<string>): string[] {
+function toSheetRow(record: Record<string, unknown>, columnList: readonly string[], dateColumnSet: Set<string>, percentColumnSet: Set<string>): (string | number)[] {
   return columnList.map((column) => formatCell(record[column], { isDate: dateColumnSet.has(column), isPercent: percentColumnSet.has(column) }));
+}
+
+// Sheet cells come back typed too, so both sides are compared as text — a number and its own string
+// form must not read as a change, or every row would be rewritten on every tick.
+function toComparableRow(row: (string | number)[]): string[] {
+  return row.map((cell) => String(cell));
 }
 
 function padRow(row: string[], length: number): string[] {
@@ -182,6 +207,30 @@ async function readSheetRows(
   return result;
 }
 
+// Give the date columns a UTC date-time number format, from the row below the header down. A date cell
+// holds a serial number (whole part = days since 1899-12-30, fraction = time of day), so WITHOUT this
+// format Sheets shows the bare number instead of a date. Must be re-applied after every write that
+// added rows: rows arriving through append/INSERT_ROWS do not carry the format of the column they land
+// in, so a one-shot pass at startup only ever dresses the rows that existed back then.
+async function applyDateColumnFormat(sheets: sheets_v4.Sheets, spreadsheetId: string, sheetId: number, columnList: readonly string[], dateColumnList: readonly string[]): Promise<void> {
+  const requestList: sheets_v4.Schema$Request[] = dateColumnList
+    .map((column) => columnList.indexOf(column))
+    .filter((index) => index >= 0)
+    .map((index) => ({
+      repeatCell: {
+        range: { sheetId, startRowIndex: 1, startColumnIndex: index, endColumnIndex: index + 1 },
+        cell: { userEnteredFormat: { numberFormat: { type: 'DATE_TIME', pattern: DATE_TIME_PATTERN } } },
+        fields: 'userEnteredFormat.numberFormat',
+      },
+    }));
+
+  if (requestList.length === 0) {
+    return;
+  }
+
+  await sheets.spreadsheets.batchUpdate({ spreadsheetId, requestBody: { requests: requestList } });
+}
+
 // Mirror `recordList` into the spreadsheet's first sheet: append rows whose key is new, update rows
 // whose values changed. Idempotent — Supabase stays the source of truth, the sheet is overwritten to
 // match. Shared by the live flush, the periodic reconcile, and the manual full sync.
@@ -203,11 +252,11 @@ export async function syncRecordListToSheet(args: SheetSyncArgs): Promise<void> 
   const keyIndex = Math.max(0, columnList.indexOf(keyColumn));
   const existingByKey = await readSheetRows(sheets, spreadsheetId, first.title, columnList, keyIndex);
   const lastColumn = columnLetter(columnList.length);
-  const appendList: string[][] = [];
+  const appendList: (string | number)[][] = [];
   const updateList: sheets_v4.Schema$ValueRange[] = [];
 
   for (const record of recordList) {
-    const key = formatCell(record[keyColumn]);
+    const key = String(formatCell(record[keyColumn]));
     const values = toSheetRow(record, columnList, dateColumnSet, percentColumnSet);
     const current = existingByKey.get(key);
 
@@ -217,7 +266,7 @@ export async function syncRecordListToSheet(args: SheetSyncArgs): Promise<void> 
       continue;
     }
 
-    if (JSON.stringify(current.values) !== JSON.stringify(values)) {
+    if (JSON.stringify(current.values) !== JSON.stringify(toComparableRow(values))) {
       updateList.push({ range: sheetRange(first.title, `A${current.rowNumber}:${lastColumn}${current.rowNumber}`), values: [values] });
     }
   }
@@ -232,6 +281,8 @@ export async function syncRecordListToSheet(args: SheetSyncArgs): Promise<void> 
       insertDataOption: 'INSERT_ROWS',
       requestBody: { values: appendList },
     });
+
+    await applyDateColumnFormat(sheets, spreadsheetId, first.sheetId, columnList, dateColumnList);
   }
 
   if (updateList.length > 0) {
@@ -255,7 +306,7 @@ export async function fullReplaceSheet(args: SheetSyncArgs): Promise<void> {
   const dateColumnSet = new Set<string>(dateColumnList);
   const percentColumnSet = new Set<string>(percentColumnList);
   const lastColumn = columnLetter(columnList.length);
-  const valueMatrix: string[][] = [columnList.map((column) => column), ...recordList.map((record) => toSheetRow(record, columnList, dateColumnSet, percentColumnSet))];
+  const valueMatrix: (string | number)[][] = [columnList.map((column) => column), ...recordList.map((record) => toSheetRow(record, columnList, dateColumnSet, percentColumnSet))];
 
   await sheets.spreadsheets.values.clear({
     spreadsheetId,
@@ -268,6 +319,8 @@ export async function fullReplaceSheet(args: SheetSyncArgs): Promise<void> {
     valueInputOption: 'USER_ENTERED',
     requestBody: { values: valueMatrix },
   });
+
+  await applyDateColumnFormat(sheets, spreadsheetId, first.sheetId, columnList, dateColumnList);
 }
 
 // Connect at startup and make sure the first sheet's header row matches `columnList` — write it when the
@@ -290,8 +343,8 @@ export async function ensureSheetHeader(args: EnsureSheetHeaderArgs): Promise<bo
   return true;
 }
 
-// Apply a UTC date-time number format to the date columns of the first sheet so Google Sheets renders
-// their serial values as native dates. Idempotent — safe to call repeatedly.
+// Startup pass: dress the date columns of the first sheet so their serial values render as native
+// dates. Idempotent — safe to call repeatedly. The write paths re-apply it after adding rows.
 export async function ensureDateColumnFormat(args: EnsureDateColumnFormatArgs): Promise<void> {
   const { sheets, spreadsheetId, columnList, dateColumnList } = args;
   const first = await resolveFirstSheet(sheets, spreadsheetId);
@@ -300,20 +353,5 @@ export async function ensureDateColumnFormat(args: EnsureDateColumnFormatArgs): 
     return;
   }
 
-  const requestList: sheets_v4.Schema$Request[] = dateColumnList
-    .map((column) => columnList.indexOf(column))
-    .filter((index) => index >= 0)
-    .map((index) => ({
-      repeatCell: {
-        range: { sheetId: first.sheetId, startRowIndex: 1, startColumnIndex: index, endColumnIndex: index + 1 },
-        cell: { userEnteredFormat: { numberFormat: { type: 'DATE_TIME', pattern: DATE_TIME_PATTERN } } },
-        fields: 'userEnteredFormat.numberFormat',
-      },
-    }));
-
-  if (requestList.length === 0) {
-    return;
-  }
-
-  await sheets.spreadsheets.batchUpdate({ spreadsheetId, requestBody: { requests: requestList } });
+  await applyDateColumnFormat(sheets, spreadsheetId, first.sheetId, columnList, dateColumnList);
 }

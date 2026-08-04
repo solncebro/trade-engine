@@ -737,4 +737,68 @@ describe('KlineSubscriptionWatchdog', () => {
 
     watchdog.stop();
   });
+
+  test('graceScaledIntervalList keeps a silent interval quiet until a second kline is missed', async () => {
+    const client = createMockClient();
+    client.fetchKlines.mockResolvedValue([buildKline(T0 + FIVE_MIN_MS)]);
+
+    const onNotify = jest.fn();
+    const watchdog = new KlineSubscriptionWatchdog({
+      client,
+      clientLabel: 'test',
+      config: {
+        checkIntervalMs: 30_000,
+        graceMs: 180_000,
+        graceScaledIntervalList: ['5m' as KlineInterval],
+      },
+      onNotify,
+    });
+
+    const wrapped = watchdog.wrapHandler('BTCUSDT', '5m' as KlineInterval, jest.fn());
+    wrapped('BTCUSDT', buildKline(T0));
+
+    jest.setSystemTime(T0 + FIVE_MIN_MS + 184_000);
+    watchdog.start();
+    await jest.advanceTimersByTimeAsync(30_000);
+
+    expect(onNotify).not.toHaveBeenCalled();
+    expect(client.fetchKlines).not.toHaveBeenCalled();
+
+    jest.setSystemTime(T0 + 2 * FIVE_MIN_MS + 180_001);
+    await jest.advanceTimersByTimeAsync(30_000);
+
+    expect(onNotify).toHaveBeenCalled();
+    expect(onNotify.mock.calls[0][0] as string).toContain('subscriptions overdue');
+
+    watchdog.stop();
+  });
+
+  test('interval outside graceScaledIntervalList keeps the plain grace threshold', async () => {
+    const client = createMockClient();
+    client.fetchKlines.mockResolvedValue([buildKline(T0 + FIVE_MIN_MS)]);
+
+    const onNotify = jest.fn();
+    const watchdog = new KlineSubscriptionWatchdog({
+      client,
+      clientLabel: 'test',
+      config: {
+        checkIntervalMs: 30_000,
+        graceMs: 180_000,
+        graceScaledIntervalList: ['1m' as KlineInterval],
+      },
+      onNotify,
+    });
+
+    const wrapped = watchdog.wrapHandler('BTCUSDT', '5m' as KlineInterval, jest.fn());
+    wrapped('BTCUSDT', buildKline(T0));
+
+    jest.setSystemTime(T0 + FIVE_MIN_MS + 184_000);
+    watchdog.start();
+    await jest.advanceTimersByTimeAsync(30_000);
+
+    expect(onNotify).toHaveBeenCalled();
+    expect(onNotify.mock.calls[0][0] as string).toContain('subscriptions overdue');
+
+    watchdog.stop();
+  });
 });
