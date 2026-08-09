@@ -49,7 +49,10 @@ interface OrderParams {
   closePosition?: boolean;             // 3.4.0 — Binance STOP_MARKET/TAKE_PROFIT_MARKET закрытие всей позиции
   orderFilter?: OrderFilterEnum;       // 3.4.0 — Bybit Spot: Order | tpslOrder | StopOrder
   marketUnit?: MarketUnitEnum;         // 3.4.0 — Bybit Spot Market: baseCoin | quoteCoin
-  trailingDelta?: number;              // 3.4.0 — Binance Spot STOP_LOSS/TAKE_PROFIT trailing
+  /** Скользящий стоп: отступ в ПРОЦЕНТАХ. Собственные единицы бирж прячет слой связи. */
+  callbackRate?: number;                // 3.16.0 — заменил trailingDelta, работает на любом рынке
+  /** Скользящий стоп: цена, с которой он начинает вести за ценой. */
+  activationPrice?: number;             // 3.16.0
   quoteOrderQty?: number;              // 3.4.0 — Binance/Bybit Spot Market Buy: USDT-сумма вместо qty
   clientOrderId?: string;              // 3.4.0 — клиентский id (orderLinkId на Bybit, newClientOrderId на Binance)
   params?: Record<string, unknown>; // доп. параметры биржи

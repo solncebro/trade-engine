@@ -9,7 +9,6 @@ import {
   PositionModeEnum,
   PositionSideEnum,
   TriggerByEnum,
-  WorkingTypeEnum,
 } from '@solncebro/exchange-engine';
 
 import { ExchangeConnector } from '../src/services/exchangeConnector';
@@ -142,7 +141,7 @@ describe('PositionManager — futures Bybit', () => {
       expect(result.actualExchangeParams?.reduceOnly).toBe(true);
     });
 
-    it('SL long: side=Sell, positionSide=Long, reduceOnly=true, triggerDirection=2, triggerBy=MarkPrice, closeOnTrigger=true', async () => {
+    it('SL long: passes side, position side, reduce-only and the trigger price intent', async () => {
       const conn = createConnector(ExchangeNameEnum.Bybit, PositionModeEnum.Hedge);
       const result = await conn.positionManager.placeStopLoss({
         symbol: 'BTCUSDT',
@@ -155,13 +154,13 @@ describe('PositionManager — futures Bybit', () => {
       expect(args.side).toBe(OrderSideEnum.Sell);
       expect(args.positionSide).toBe(PositionSideEnum.Long);
       expect(args.reduceOnly).toBe(true);
-      expect(args.triggerDirection).toBe(2);
+      expect(args.triggerDirection).toBeUndefined();
       expect(args.triggerBy).toBe(TriggerByEnum.MarkPrice);
-      expect(args.closeOnTrigger).toBe(true);
+      expect(args.closeOnTrigger).toBeUndefined();
       expect(args.type).toBe(OrderTypeEnum.StopMarket);
     });
 
-    it('SL short: triggerDirection=1', async () => {
+    it('SL short: passes side and position side', async () => {
       const conn = createConnector(ExchangeNameEnum.Bybit, PositionModeEnum.Hedge);
       const result = await conn.positionManager.placeStopLoss({
         symbol: 'BTCUSDT',
@@ -173,10 +172,10 @@ describe('PositionManager — futures Bybit', () => {
       const args = result.actualExchangeParams!;
       expect(args.side).toBe(OrderSideEnum.Buy);
       expect(args.positionSide).toBe(PositionSideEnum.Short);
-      expect(args.triggerDirection).toBe(1);
+      expect(args.triggerDirection).toBeUndefined();
     });
 
-    it('TP long: triggerDirection=1', async () => {
+    it('TP long: passes side and position side', async () => {
       const conn = createConnector(ExchangeNameEnum.Bybit, PositionModeEnum.Hedge);
       const result = await conn.positionManager.placeTakeProfit({
         symbol: 'BTCUSDT',
@@ -186,11 +185,11 @@ describe('PositionManager — futures Bybit', () => {
         amount: 1,
       });
       const args = result.actualExchangeParams!;
-      expect(args.triggerDirection).toBe(1);
+      expect(args.triggerDirection).toBeUndefined();
       expect(args.type).toBe(OrderTypeEnum.TakeProfitMarket);
     });
 
-    it('TP short: triggerDirection=2', async () => {
+    it('TP short: passes side and position side', async () => {
       const conn = createConnector(ExchangeNameEnum.Bybit, PositionModeEnum.Hedge);
       const result = await conn.positionManager.placeTakeProfit({
         symbol: 'BTCUSDT',
@@ -200,7 +199,7 @@ describe('PositionManager — futures Bybit', () => {
         amount: 1,
       });
       const args = result.actualExchangeParams!;
-      expect(args.triggerDirection).toBe(2);
+      expect(args.triggerDirection).toBeUndefined();
     });
   });
 
@@ -230,7 +229,7 @@ describe('PositionManager — futures Bybit', () => {
       expect(result.actualExchangeParams?.reduceOnly).toBe(true);
     });
 
-    it('SL long: reduceOnly=true, no positionSide, triggerDirection=2', async () => {
+    it('SL long one-way: reduce-only, no position side', async () => {
       const conn = createConnector(ExchangeNameEnum.Bybit, PositionModeEnum.OneWay);
       const result = await conn.positionManager.placeStopLoss({
         symbol: 'BTCUSDT',
@@ -242,7 +241,7 @@ describe('PositionManager — futures Bybit', () => {
       const args = result.actualExchangeParams!;
       expect(args.reduceOnly).toBe(true);
       expect(args.positionSide).toBeUndefined();
-      expect(args.triggerDirection).toBe(2);
+      expect(args.triggerDirection).toBeUndefined();
     });
 
     it('open short: side=Sell, no positionSide, no reduceOnly', async () => {
@@ -270,7 +269,7 @@ describe('PositionManager — futures Bybit', () => {
       expect(result.actualExchangeParams?.reduceOnly).toBe(true);
     });
 
-    it('SL short: triggerDirection=1, reduceOnly=true', async () => {
+    it('SL short: passes side and position side, reduceOnly=true', async () => {
       const conn = createConnector(ExchangeNameEnum.Bybit, PositionModeEnum.OneWay);
       const result = await conn.positionManager.placeStopLoss({
         symbol: 'BTCUSDT',
@@ -280,11 +279,11 @@ describe('PositionManager — futures Bybit', () => {
         amount: 1,
       });
       const args = result.actualExchangeParams!;
-      expect(args.triggerDirection).toBe(1);
+      expect(args.triggerDirection).toBeUndefined();
       expect(args.reduceOnly).toBe(true);
     });
 
-    it('TP long: triggerDirection=1, reduceOnly=true', async () => {
+    it('TP long: passes side and position side, reduceOnly=true', async () => {
       const conn = createConnector(ExchangeNameEnum.Bybit, PositionModeEnum.OneWay);
       const result = await conn.positionManager.placeTakeProfit({
         symbol: 'BTCUSDT',
@@ -294,11 +293,11 @@ describe('PositionManager — futures Bybit', () => {
         amount: 1,
       });
       const args = result.actualExchangeParams!;
-      expect(args.triggerDirection).toBe(1);
+      expect(args.triggerDirection).toBeUndefined();
       expect(args.reduceOnly).toBe(true);
     });
 
-    it('TP short: triggerDirection=2, reduceOnly=true', async () => {
+    it('TP short: passes side and position side, reduceOnly=true', async () => {
       const conn = createConnector(ExchangeNameEnum.Bybit, PositionModeEnum.OneWay);
       const result = await conn.positionManager.placeTakeProfit({
         symbol: 'BTCUSDT',
@@ -308,7 +307,7 @@ describe('PositionManager — futures Bybit', () => {
         amount: 1,
       });
       const args = result.actualExchangeParams!;
-      expect(args.triggerDirection).toBe(2);
+      expect(args.triggerDirection).toBeUndefined();
       expect(args.reduceOnly).toBe(true);
     });
   });
@@ -341,7 +340,10 @@ describe('PositionManager — futures Binance', () => {
       expect(result.actualExchangeParams?.reduceOnly).toBeUndefined();
     });
 
-    it('SL long: positionSide=LONG, NO reduceOnly, type=StopMarket, workingType=MarkPrice', async () => {
+    // Обёртка передаёт НАМЕРЕНИЕ: сторону позиции и по какой цене сверять срабатывание.
+    // Какое биржевое поле этому соответствует и где «только уменьшить» запрещено —
+    // решает биржевой слой, поэтому здесь этих полей уже нет.
+    it('SL long: passes the position side and the trigger price intent', async () => {
       const conn = createConnector(ExchangeNameEnum.Binance, PositionModeEnum.Hedge);
       const result = await conn.positionManager.placeStopLoss({
         symbol: 'BTCUSDT',
@@ -352,12 +354,12 @@ describe('PositionManager — futures Binance', () => {
       });
       const args = result.actualExchangeParams!;
       expect(args.positionSide).toBe(PositionSideEnum.Long);
-      expect(args.reduceOnly).toBeUndefined();
       expect(args.type).toBe(OrderTypeEnum.StopMarket);
-      expect(args.workingType).toBe(WorkingTypeEnum.MarkPrice);
+      expect(args.triggerBy).toBe(TriggerByEnum.MarkPrice);
+      expect(args.workingType).toBeUndefined();
     });
 
-    it('SL short: positionSide=SHORT, NO reduceOnly', async () => {
+    it('SL short: passes the position side', async () => {
       const conn = createConnector(ExchangeNameEnum.Binance, PositionModeEnum.Hedge);
       const result = await conn.positionManager.placeStopLoss({
         symbol: 'BTCUSDT',
@@ -368,7 +370,6 @@ describe('PositionManager — futures Binance', () => {
       });
       const args = result.actualExchangeParams!;
       expect(args.positionSide).toBe(PositionSideEnum.Short);
-      expect(args.reduceOnly).toBeUndefined();
     });
 
     it('open short: positionSide=SHORT, NO reduceOnly', async () => {
@@ -396,7 +397,7 @@ describe('PositionManager — futures Binance', () => {
       expect(result.actualExchangeParams?.reduceOnly).toBeUndefined();
     });
 
-    it('TP long: type=TakeProfitMarket, positionSide=LONG, NO reduceOnly', async () => {
+    it('TP long: type=TakeProfitMarket, positionSide=LONG', async () => {
       const conn = createConnector(ExchangeNameEnum.Binance, PositionModeEnum.Hedge);
       const result = await conn.positionManager.placeTakeProfit({
         symbol: 'BTCUSDT',
@@ -408,7 +409,6 @@ describe('PositionManager — futures Binance', () => {
       const args = result.actualExchangeParams!;
       expect(args.type).toBe(OrderTypeEnum.TakeProfitMarket);
       expect(args.positionSide).toBe(PositionSideEnum.Long);
-      expect(args.reduceOnly).toBeUndefined();
     });
 
     it('TP short: type=TakeProfitMarket, positionSide=SHORT', async () => {

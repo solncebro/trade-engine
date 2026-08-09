@@ -34,8 +34,11 @@ export interface OrderParams {
   closePosition?: boolean;
   orderFilter?: OrderFilterEnum;
   marketUnit?: MarketUnitEnum;
-  trailingDelta?: number;
   quoteOrderQty?: number;
+  /** Скользящий стоп: отступ в ПРОЦЕНТАХ. Собственные единицы бирж прячет слой связи. */
+  callbackRate?: number;
+  /** Скользящий стоп: цена, с которой он начинает вести за ценой. */
+  activationPrice?: number;
   clientOrderId?: string;
   params?: Record<string, unknown>;
 }

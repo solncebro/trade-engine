@@ -4,7 +4,7 @@
 
 ## Зависимость
 
-Использует `@solncebro/exchange-engine` 0.14.0 (установлено локально через `file:../exchange-engine`). Все низкоуровневые операции делегируются этой библиотеке. **Прямые импорты из `@solncebro/exchange-engine` сторонними потребителями запрещены** — единая точка входа `@solncebro/trade-engine`.
+Использует `@solncebro/exchange-engine` 0.20.0 (из реестра npm). Все низкоуровневые операции делегируются этой библиотеке. **Прямые импорты из `@solncebro/exchange-engine` сторонними потребителями запрещены** — единая точка входа `@solncebro/trade-engine`.
 
 ## Инициализация
 
@@ -113,7 +113,7 @@ connector.getClient(marketType).amountToPrecision(symbol, amount);
 - `fetchOrderHistory(symbol)` → `Order[]` — история ордеров
 - `modifyOrder(args: ModifyOrderArgs)` → `Order` — модификация ордера (single)
 - `cancelAllOrders(symbol)` → `void` — отмена всех ордеров
-- `createBatchOrders(orderList: CreateOrderWebSocketArgs[])` → `Order[]` — пакетное создание ордеров (Binance Futures chunk=5, Bybit linear=20 / spot=10; Bybit идёт через WS если подключён)
+- `createBatchOrders(orderList: CreateOrderWebSocketArgs[])` → `CreateBatchOrdersResult` (= `CreateOrderItemResult[]`, 3.16.0, был `Order[]`) — пакетное создание ордеров с per-order результатом (`{ order: Order | null; isSuccess; errorCode; errorText; rateLimit? }`) — по каждой входной заявке видно, встала она и, если нет, что ответила биржа (Binance Futures chunk=5, Bybit linear=20 / spot=10; Bybit идёт через WS если подключён)
 - `cancelBatchOrders(symbol, orderIdList)` → `CancelBatchOrdersResult` (= `CancelOrderItemResult[]`) — пакетная отмена с per-order результатами (тип возврата изменён в 0.14.0, был `void`)
 - `modifyBatchOrders(orderList: ModifyBatchOrderArgs[])` → `ModifyBatchOrdersResult` (= `ModifyOrderItemResult[]`) — пакетная модификация (0.14.0). Binance Futures REST chunk=5, Bybit linear=20 / spot=10; Bybit идёт через WS если подключён. На Binance Spot бросает `Not supported for spot market`.
 
@@ -192,7 +192,7 @@ const result = await connector.createOrder({
 - **Spot vs futures разведены.** На spot НЕ выставляются `positionSide`/`reduceOnly`/`closePosition`/`workingType`/`triggerDirection`/`triggerBy`/`closeOnTrigger` — даже если приложение их передаёт в `orderParams`, биржевой слой их не получит.
 - **positionSide (futures).** Явный `orderParams.positionSide` используется без изменений. Если не задан: в OneWay поле не передаётся, в Hedge — smart-inference как safety net (открытие: `Buy → Long`, `Sell → Short`; close при `reduceOnly=true`: `Sell → Long`, `Buy → Short`). Идиоматический путь — `connector.positionManager.*`, где `positionSide` всегда явный, а safety-net не задействован.
 - **reduceOnly.** Читается и из top-level `OrderParams.reduceOnly`, и из nested `params.reduceOnly` (top-level ранее терялся, фикс 3.4.0).
-- **Дополнительные поля** (futures, если заданы): `triggerBy`, `closeOnTrigger`, `closePosition`, `workingType`, `triggerDirection`. **На spot**: `orderFilter` (Bybit), `marketUnit` (Bybit), `quoteOrderQty`, `trailingDelta`. **Универсально**: `clientOrderId`.
+- **Дополнительные поля** (futures, если заданы): `triggerBy`, `closeOnTrigger`, `closePosition`, `workingType`, `triggerDirection`. **На spot**: `orderFilter` (Bybit), `marketUnit` (Bybit), `quoteOrderQty`. **Универсально**: `clientOrderId`, `callbackRate` (3.16.0, проценты — скользящий стоп на любом рынке), `activationPrice` (3.16.0, приводится к сетке цены символа).
 - **Market.** Поле `price` в `OrderParams` может передаваться для удобства, но для `OrderTypeEnum.Market` не форвардится в wire-параметры.
 - **timeInForce.** Все биржи: `IOC` для Market, `GTC` для Limit-like (в т.ч. `StopLimit`/`TakeProfitLimit` на spot).
 - **Stop Loss.** `triggerPrice` (через `stopPrice`) и `triggerDirection` если указаны.
@@ -212,6 +212,7 @@ const result = await connector.createOrder({
 | `stopWatchingMarkPrices()` | `void` | Отписка и очистка кэша mark price |
 | `getMarkPrice(symbol)` | `MarkPriceUpdate \| undefined` | Последний mark price из кэша |
 | `createOrder(params)` | `Promise<OrderResult>` | Создание ордера |
+| `createBatchOrders(orderParamsList)` | `Promise<OrderResult[]>` | Пакетное создание ордеров; каждый элемент несёт `orderId` при успехе или `errorText` с реальным ответом биржи при отказе (не угадывается по номеру заявки, 3.16.0) |
 | `getFuturesSymbols({ excludeTradifi? })` | `Promise<string[]>` | Список фьючерсных символов; `excludeTradifi: true` отсеивает токенизированные TradFi-перпы (акции/ETF/сырьё) по нормализованному `TradeSymbol.isTradifi` (Binance `contractType: TRADIFI_PERPETUAL`, Bybit `symbolType: stock/commodity`; exchange-engine ≥ 0.18.0) |
 | `getSpotSymbols()` | `Promise<string[]>` | Список спотовых символов |
 | `getClient(marketType)` | `ExchangeClient` | **Raw** клиент по marketType (без watchdog-прокси) |

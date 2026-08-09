@@ -31,6 +31,7 @@ jest.mock('@solncebro/exchange-engine', () => {
         amountToPrecision: (_s: string, a: number) => a,
         priceToPrecision: (_s: string, p: number) => p,
         createOrderWebSocket: jest.fn(),
+        createBatchOrders: jest.fn(),
         loadTradeSymbols: jest.fn().mockResolvedValue(new Map()),
         fetchTickers: jest.fn().mockResolvedValue(new Map()),
         getOrderRateLimit: jest.fn().mockResolvedValue({ writeRequestsPerSecond: 30, source: 'binance-exchange-info' }),
@@ -39,6 +40,7 @@ jest.mock('@solncebro/exchange-engine', () => {
         amountToPrecision: (_s: string, a: number) => a,
         priceToPrecision: (_s: string, p: number) => p,
         createOrderWebSocket: jest.fn(),
+        createBatchOrders: jest.fn(),
         loadTradeSymbols: jest.fn().mockResolvedValue(new Map()),
         fetchTickers: jest.fn().mockResolvedValue(new Map()),
         getOrderRateLimit: jest.fn().mockResolvedValue({ writeRequestsPerSecond: 30, source: 'binance-exchange-info' }),
@@ -483,5 +485,62 @@ describe('ExchangeConnector.getFuturesSymbols TRADIFI filter', () => {
     const symbolList = await buildBybitConnectorWithSymbols().getFuturesSymbols();
 
     expect(symbolList).toEqual(['BTCUSDT', 'IBMUSDT', 'XAUUSDT']);
+  });
+});
+
+describe('ExchangeConnector.createBatchOrders outcome mapping', () => {
+  function buildConnector(): ExchangeConnector {
+    return new ExchangeConnector(ExchangeNameEnum.Bybit, {
+      apiKey: 'k',
+      secret: 's',
+    } as ExchangeConfig);
+  }
+
+  const orderParamsList = [
+    {
+      symbol: 'BTCUSDT',
+      amount: 1,
+      price: 100,
+      type: OrderTypeEnum.Limit,
+      side: OrderSideEnum.Buy,
+      marketType: MarketTypeEnum.Futures,
+    },
+    {
+      symbol: 'BTCUSDT',
+      amount: 2,
+      price: 101,
+      type: OrderTypeEnum.Limit,
+      side: OrderSideEnum.Buy,
+      marketType: MarketTypeEnum.Futures,
+    },
+  ];
+
+  it('reports the rejected order as failed and carries the exchange reason through', async () => {
+    const connector = buildConnector();
+    (connector.futures.createBatchOrders as jest.Mock).mockResolvedValue([
+      { order: { id: 'ok-1', symbol: 'BTCUSDT' }, isSuccess: true, errorCode: null, errorText: null },
+      { order: null, isSuccess: false, errorCode: 110007, errorText: 'Insufficient available balance' },
+    ]);
+
+    const resultList = await connector.createBatchOrders(orderParamsList);
+
+    expect(resultList).toHaveLength(2);
+    expect(resultList[0].orderId).toBe('ok-1');
+    expect(resultList[0].errorText).toBeUndefined();
+    expect(resultList[1].orderId).toBeUndefined();
+    expect(resultList[1].errorText).toBe('Insufficient available balance');
+  });
+
+  it('never reports success for an entry the exchange said nothing about', async () => {
+    const connector = buildConnector();
+    (connector.futures.createBatchOrders as jest.Mock).mockResolvedValue([
+      { order: { id: 'ok-1', symbol: 'BTCUSDT' }, isSuccess: true, errorCode: null, errorText: null },
+    ]);
+
+    const resultList = await connector.createBatchOrders(orderParamsList);
+
+    expect(resultList).toHaveLength(2);
+    expect(resultList[1].orderId).toBeUndefined();
+    expect(resultList[1].errorText).toBe('Order creation failed in batch');
   });
 });

@@ -13,7 +13,6 @@ import {
   PositionModeEnum,
   PositionSideEnum,
   TriggerByEnum,
-  WorkingTypeEnum,
 } from '@solncebro/exchange-engine';
 
 import { logger } from './logger';
@@ -582,31 +581,15 @@ export class PositionManager {
     if (isSpot) {
       orderParams.orderFilter = OrderFilterEnum.StopOrder;
     } else {
-      const exchangeName = this.exchangeConnector.getExchangeName();
-
+      // Дальше — только НАМЕРЕНИЕ, без единого упоминания конкретной биржи.
+      // По какой цене сверять срабатывание; с какой стороны цена подходит к уровню; надо ли
+      // при срабатывании закрывать позицию; где «только уменьшить» несовместимо с хеджевым
+      // режимом — всё это выводит и решает биржевой слой, каждая биржа у себя.
       orderParams.triggerBy = args.triggerBy ?? TriggerByEnum.MarkPrice;
+      orderParams.reduceOnly = true;
 
-      if (exchangeName === ExchangeNameEnum.Bybit) {
-        orderParams.triggerDirection = this.resolveTriggerDirection(args.direction, args.isStopLoss);
-        orderParams.closeOnTrigger = true;
-      }
-
-      if (exchangeName === ExchangeNameEnum.Binance) {
-        orderParams.workingType = this.mapTriggerByToWorkingType(orderParams.triggerBy);
-      }
-
-      const isHedge = this.exchangeConnector.futuresPositionMode === PositionModeEnum.Hedge;
-
-      if (isHedge) {
+      if (this.exchangeConnector.futuresPositionMode === PositionModeEnum.Hedge) {
         orderParams.positionSide = this.directionToPositionSide(args.direction);
-        if (exchangeName !== ExchangeNameEnum.Binance) {
-          orderParams.reduceOnly = true;
-        }
-      } else {
-        orderParams.reduceOnly = true;
-        if (exchangeName === ExchangeNameEnum.Bybit) {
-          orderParams.positionSide = undefined;
-        }
       }
     }
 
@@ -680,25 +663,11 @@ export class PositionManager {
     return direction === 'long' ? PositionSideEnum.Long : PositionSideEnum.Short;
   }
 
-  private resolveTriggerDirection(direction: Direction, isStopLoss: boolean): 1 | 2 {
-    if (isStopLoss) {
-      return direction === 'long' ? 2 : 1;
-    }
-    return direction === 'long' ? 1 : 2;
-  }
-
   private resolveConditionalOrderType(orderType: StopOrderType, isStopLoss: boolean): OrderTypeEnum {
     if (isStopLoss) {
       return orderType === 'Market' ? OrderTypeEnum.StopMarket : OrderTypeEnum.StopLimit;
     }
     return orderType === 'Market' ? OrderTypeEnum.TakeProfitMarket : OrderTypeEnum.TakeProfitLimit;
-  }
-
-  private mapTriggerByToWorkingType(triggerBy: TriggerByEnum): WorkingTypeEnum {
-    if (triggerBy === TriggerByEnum.MarkPrice) {
-      return WorkingTypeEnum.MarkPrice;
-    }
-    return WorkingTypeEnum.ContractPrice;
   }
 
   public async readPositionState(args: ReadPositionStateArgs): Promise<PositionStateResult> {

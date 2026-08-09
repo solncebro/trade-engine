@@ -797,28 +797,29 @@ export class ExchangeConnector {
     );
 
     try {
-      const orderList = await client.createBatchOrders(wsArgsList);
+      const outcomeList = await client.createBatchOrders(wsArgsList);
 
+      // Слой связи отдаёт по записи на каждую входную заявку, в исходном порядке, и сам
+      // говорит, встала она или нет. Раньше исход приходилось угадывать по номеру заявки —
+      // отсюда и сверка со словом «undefined»: так выглядел отказ Bybit, прикинувшийся успехом.
       return baseResultList.map((base, index) => {
-        const order = orderList[index];
-        const orderId = order?.id ?? '';
-        const isSuccess = orderId !== '' && orderId !== 'undefined';
+        const outcome = outcomeList[index];
 
-        if (!isSuccess) {
+        if (outcome === undefined || !outcome.isSuccess || outcome.order === null) {
           return {
             ...base,
-            errorText: 'Order creation failed in batch',
+            errorText: outcome?.errorText ?? 'Order creation failed in batch',
           };
         }
 
         return {
           ...base,
-          orderId,
+          orderId: outcome.order.id,
           responseData: {
-            id: orderId,
-            orderId,
-            symbol: order.symbol,
-            rateLimit: order.rateLimit,
+            id: outcome.order.id,
+            orderId: outcome.order.id,
+            symbol: outcome.order.symbol,
+            rateLimit: outcome.rateLimit ?? outcome.order.rateLimit,
           },
         };
       });
@@ -918,10 +919,20 @@ export class ExchangeConnector {
       if (orderParams.quoteOrderQty !== undefined) {
         args.quoteOrderQty = orderParams.quoteOrderQty;
       }
+    }
 
-      if (orderParams.trailingDelta !== undefined) {
-        args.trailingDelta = orderParams.trailingDelta;
-      }
+    // Скольжение стопа задаётся одинаково на любом рынке: отступ в процентах и цена, с
+    // которой стоп начинает вести. Собственные единицы бирж прячет слой связи, поэтому
+    // делить эти поля по рынкам здесь не нужно.
+    if (orderParams.callbackRate !== undefined) {
+      args.callbackRate = orderParams.callbackRate;
+    }
+
+    if (orderParams.activationPrice !== undefined) {
+      args.activationPrice = client.priceToPrecision(
+        orderParams.symbol,
+        orderParams.activationPrice
+      );
     }
 
     args.timeInForce = isMarketLike ? TimeInForceEnum.Ioc : TimeInForceEnum.Gtc;
