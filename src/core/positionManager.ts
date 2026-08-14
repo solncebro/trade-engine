@@ -12,6 +12,7 @@ import {
   Position,
   PositionModeEnum,
   PositionSideEnum,
+  SetLeverageResult,
   TriggerByEnum,
 } from '@solncebro/exchange-engine';
 
@@ -523,22 +524,28 @@ export class PositionManager {
     );
   }
 
-  public async setLeverage(args: SetLeverageArgs): Promise<void> {
+  public async setLeverage(args: SetLeverageArgs): Promise<SetLeverageResult> {
     logger.info(
       { symbol: args.symbol, leverage: args.leverage },
       `[PositionManager] ${args.symbol} setLeverage request leverage=${args.leverage}`
     );
-    await this.executeWrite(
+    const result = await this.executeWrite(
       () => withRetryOn429({
         fn: () => this.exchangeConnector.futures.setLeverage(args.leverage, args.symbol),
         contextLabel: `setLeverage ${args.symbol} leverage=${args.leverage}`,
       }),
       `setLeverage ${args.symbol}`
     );
+
+    // The log states what the exchange CONFIRMED, not an echo of the request: before 14.08.2026
+    // this line printed the requested value as "response ok", which read as a confirmation while
+    // the actual answer was thrown away — there was no way to tell a mismatched leverage apart.
     logger.info(
-      { symbol: args.symbol, leverage: args.leverage },
-      `[PositionManager] ${args.symbol} setLeverage response ok leverage=${args.leverage}`
+      { symbol: args.symbol, leverage: args.leverage, confirmedLeverage: result.confirmedLeverage },
+      `[PositionManager] ${args.symbol} setLeverage response confirmed=${result.confirmedLeverage ?? 'none'} requested=${args.leverage}`
     );
+
+    return result;
   }
 
   public async setMarginMode(args: SetMarginModeArgs): Promise<void> {

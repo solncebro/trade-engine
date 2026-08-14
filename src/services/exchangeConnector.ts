@@ -29,6 +29,7 @@ import {
 } from '../types';
 import { formatErrorMessage } from '../utils/errorFormatter.utils';
 import { isSpot } from '../utils/order.utils';
+import { configurePriceTickSnapper } from '../utils/priceFormat';
 import { normalizeSymbol } from '../utils/symbol.utils';
 
 export interface RateLimitConfig {
@@ -421,6 +422,7 @@ export class ExchangeConnector {
         contextLabel: `loadTradeSymbols spot ${this.exchangeName}`,
       });
       await this.resolveWriteQueueOnInitialize();
+      this.installPriceTickSnapper();
       this.startWatchingTickers();
     } catch (error) {
       logger.error(
@@ -430,6 +432,23 @@ export class ExchangeConnector {
 
       throw error;
     }
+  }
+
+  /**
+   * Teach the shared price formatter this exchange's tick grid, so EVERY price the app states
+   * (Telegram, alerts, logs, journal) matches what actually rests on the exchange instead of printing
+   * a 16-digit floating-point tail. Wired here because the symbol filters have just been loaded — an
+   * app gets it for free by initializing a connector. A symbol whose filters are absent keeps its
+   * exact value: priceToPrecision would fall back to a blind 8 decimals and mangle sub-cent coins.
+   */
+  private installPriceTickSnapper(): void {
+    configurePriceTickSnapper((symbol, price) =>
+      this.exchange.futures.tradeSymbols.has(symbol)
+        ? this.exchange.futures.priceToPrecision(symbol, price)
+        : this.exchange.spot.tradeSymbols.has(symbol)
+          ? this.exchange.spot.priceToPrecision(symbol, price)
+          : price
+    );
   }
 
   private async resolveWriteQueueOnInitialize(): Promise<void> {

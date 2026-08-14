@@ -37,6 +37,20 @@ await connector.initialize();
 
 Для futures-ордеров можно управлять авто-`positionSide` через 4-й аргумент конструктора `futuresPositionMode`: по умолчанию `PositionModeEnum.OneWay` (авто-`positionSide` не подставляется), в `PositionModeEnum.Hedge` — smart-inference как safety-net (открытие: `Buy → Long`, `Sell → Short`; закрытие при `reduceOnly=true`: `Sell → Long`, `Buy → Short`). **Идиоматический путь** — `connector.positionManager.*` с явным `direction`, который выводит все биржевые поля внутри библиотеки.
 
+### Показ цен — только через `formatPrice` (обязательно)
+
+```typescript
+import { formatPrice, snapPriceToTick } from '@solncebro/trade-engine';
+
+await connector.initialize(); // ставит тиковую сетку для formatPrice автоматически
+
+formatPrice('PROMUSDT', 2.961579786096256); // "2.9616" — ровно то, что лежит в заявке
+formatPrice('PROMUSDT', null);              // "—"
+snapPriceToTick('PROMUSDT', 2.961579786096256); // 2.9616 (число, для базы/журнала)
+```
+
+Сырую цену показывать человеку нельзя нигде — ни в Telegram, ни в тревогах, ни в логах, ни в журнале: длинный хвост плавающей точки нечитаем и не совпадает с ценой, которая реально стоит на бирже. Без коннектора (бэктест, утилиты) источник сетки ставится вручную — `configurePriceTickSnapper(...)`.
+
 ### Open / close positions via PositionManager (recommended)
 
 ```typescript

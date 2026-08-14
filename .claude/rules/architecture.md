@@ -43,7 +43,7 @@
 
 ### 3. Коннекторы бирж
 
-**ExchangeConnector** — обёртка над `@solncebro/exchange-engine` 0.20.0 (из реестра npm):
+**ExchangeConnector** — обёртка над `@solncebro/exchange-engine` 0.21.0 (из реестра npm):
 
 | Компонент | Детали |
 |-----------|--------|

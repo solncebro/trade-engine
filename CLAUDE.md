@@ -2,6 +2,35 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+# ⛔️ ЖЁСТКОЕ ПРАВИЛО — ЛЮБАЯ ЦЕНА НАРУЖУ ТОЛЬКО ЧЕРЕЗ `formatPrice`
+
+**Читать первым. Действует и в этой библиотеке, и во ВСЕХ приложениях, которые её используют (rubber, ma-chaser, volume-breaker, любые новые).**
+
+Ни одно ценовое число не показывается человеку в сыром виде — ни в сообщении Telegram, ни в тревоге, ни в логе, ни в строке журнала, ни в документации.
+
+```typescript
+import { formatPrice, snapPriceToTick } from '@solncebro/trade-engine';
+
+// ❌ ЗАПРЕЩЕНО — сырое число с хвостом плавающей точки
+logger.warn(`${symbol}: stop re-derived → trigger ${recomputedPrice}`);
+// → "trigger 2.961579786096256" — человеком не читается и НЕ равно тому, что стоит на бирже
+
+// ✅ ЕДИНСТВЕННЫЙ допустимый способ
+logger.warn(`${symbol}: stop re-derived → trigger ${formatPrice(symbol, recomputedPrice)}`);
+// → "trigger 2.9616" — ровно то, что реально лежит в заявке
+```
+
+- `formatPrice(symbol, price)` — строка на тиковой сетке символа (`—`, если цены нет).
+- `snapPriceToTick(symbol, price)` — то же числом (для записи в базу/журнал).
+- Подключается **само**: `ExchangeConnector.initialize()` ставит источник тиковой сетки. Приложению делать ничего не нужно. Без коннектора (бэктест, утилиты) — `configurePriceTickSnapper(...)` вручную.
+- Символ без загруженных биржевых фильтров печатается не длиннее 8 знаков после точки.
+
+**Почему это правило существует:** заявка на бирже ВСЕГДА лежит на тиковой сетке, поэтому сырое `2.961579786096256` не просто нечитаемо — оно расходится с фактом. Владелец натыкался на это многократно (последний раз 11.08.2026) и требует системности, а не разовых исправлений. Модуль — `src/utils/priceFormat.ts`, сторож — `tests/priceFormat.test.ts`.
+
+**Проверка перед сдачей работы:** поиск по правкам на интерполяцию цены (`${...Price}`, `price=${`, `${...price}`) — каждое такое место обязано быть завёрнуто в `formatPrice`.
+
+---
+
 ## Команды
 
 ```bash
@@ -88,7 +117,7 @@ npx jest --config jest.integration.config.js --runInBand --testPathPatterns=<pat
 - **Ошибки — не исключения**: `createOrder()` возвращает `errorText` в результате, не бросает. Проверка через `isOrderSuccessful(result)`. Прямые вызовы `connector.spot`/`connector.futures` могут бросать исключения — потребитель обрабатывает их сам.
 - **Единая точка входа**: внешние приложения импортируют ТОЛЬКО из `@solncebro/trade-engine`. Прямые импорты из `@solncebro/exchange-engine` запрещены (классы `Exchange` и утилита `formatWebSocketConnectionsReport` НЕ реэкспортируются).
 - **Demo trading**: `ExchangeConfig.isDemoMode = true`, никаких ручных URL-переопределений.
-- **Биржи**: `@solncebro/exchange-engine` 0.20.0 (из реестра npm). Bybit: WebSocket для ордеров.
+- **Биржи**: `@solncebro/exchange-engine` 0.21.0 (из реестра npm). Bybit: WebSocket для ордеров.
 - **Map-коллекции**: `SymbolMappingByExchange` и `ExchangeConnectorByName` — это `Map`, не объекты.
 
 ### Интеграционные тесты

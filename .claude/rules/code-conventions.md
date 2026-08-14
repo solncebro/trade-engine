@@ -41,6 +41,21 @@
 
 ## Паттерны
 
+### ⛔️ Цена наружу — только через `formatPrice`
+
+Любое ценовое число перед показом человеку (сообщение, тревога, лог, журнал) проходит через `formatPrice(symbol, price)` из `src/utils/priceFormat.ts`; числовой вариант для записи — `snapPriceToTick`.
+
+```typescript
+// Неправильно — сырой хвост плавающей точки, не равный цене на бирже
+logger.warn(`${symbol}: trigger ${recomputedPrice}`); // "trigger 2.961579786096256"
+
+// Правильно
+logger.warn(`${symbol}: trigger ${formatPrice(symbol, recomputedPrice)}`); // "trigger 2.9616"
+```
+
+Источник тиковой сетки ставится автоматически в `ExchangeConnector.initialize()`. Правило действует и в приложениях-потребителях библиотеки.
+
+
 ### Ошибки — не исключения
 
 Торговые операции возвращают структурированный результат вместо throw:

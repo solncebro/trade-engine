@@ -47,7 +47,7 @@ jest.mock('@solncebro/exchange-engine', () => {
         modifyBatchOrders: jest.fn().mockImplementation(async (orderList: Array<{ orderId: string }>) =>
           orderList.map(({ orderId }) => ({ orderId, isSuccess: true, errorCode: null, errorText: null }))
         ),
-        setLeverage: jest.fn().mockResolvedValue(undefined),
+        setLeverage: jest.fn().mockImplementation(async (leverage: number) => ({ confirmedLeverage: leverage })),
         setMarginMode: jest.fn().mockResolvedValue(undefined),
         fetchPositionSnapshot: jest.fn().mockResolvedValue(null),
         fetchPositionList: jest.fn().mockResolvedValue([]),
@@ -718,6 +718,28 @@ describe('PositionManager — setup helpers', () => {
 
     expect(setLevSpy).toHaveBeenCalledWith(5, 'BTCUSDT');
     expect(setMarginSpy).toHaveBeenCalledWith(MarginModeEnum.Isolated, 'BTCUSDT');
+  });
+
+  // Подтверждение плеча — факт из ответа биржи, и оно обязано дойти до вызывающего нетронутым:
+  // потребители, ставящие плечо заранее вслепую, сверяют его с настройкой (rubber, 14.08.2026).
+  it('setLeverage passes the exchange-confirmed leverage through to the caller', async () => {
+    const conn = createConnector(ExchangeNameEnum.Bybit, PositionModeEnum.OneWay);
+    const setLevSpy = conn.futures.setLeverage as jest.Mock;
+    setLevSpy.mockResolvedValueOnce({ confirmedLeverage: 7 });
+
+    const result = await conn.positionManager.setLeverage({ symbol: 'BTCUSDT', leverage: 7 });
+
+    expect(result.confirmedLeverage).toBe(7);
+  });
+
+  it('setLeverage passes an unconfirmed (null) answer through untouched — no echo of the request', async () => {
+    const conn = createConnector(ExchangeNameEnum.Bybit, PositionModeEnum.OneWay);
+    const setLevSpy = conn.futures.setLeverage as jest.Mock;
+    setLevSpy.mockResolvedValueOnce({ confirmedLeverage: null });
+
+    const result = await conn.positionManager.setLeverage({ symbol: 'BTCUSDT', leverage: 7 });
+
+    expect(result.confirmedLeverage).toBeNull();
   });
 
   it('openPositionLimit on spot does NOT call setLeverage', async () => {

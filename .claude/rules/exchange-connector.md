@@ -4,7 +4,7 @@
 
 ## Зависимость
 
-Использует `@solncebro/exchange-engine` 0.20.0 (из реестра npm). Все низкоуровневые операции делегируются этой библиотеке. **Прямые импорты из `@solncebro/exchange-engine` сторонними потребителями запрещены** — единая точка входа `@solncebro/trade-engine`.
+Использует `@solncebro/exchange-engine` 0.21.0 (из реестра npm). Все низкоуровневые операции делегируются этой библиотеке. **Прямые импорты из `@solncebro/exchange-engine` сторонними потребителями запрещены** — единая точка входа `@solncebro/trade-engine`.
 
 ## Инициализация
 
@@ -22,8 +22,9 @@ const connector = new ExchangeConnector(
 );
 await connector.initialize();
 // → loadTradeSymbols (futures + spot) обёрнут в withReadRetry
-// → fetchTickers через withReadRetry, периодическое обновление каждые 30 сек
 // → getOrderRateLimit() → создаётся RateLimitedRequestQueue (если rateLimitConfig не null)
+// → installPriceTickSnapper() (3.17.0) — подключает formatPrice/snapPriceToTick к тиковой сетке символов
+// → fetchTickers через withReadRetry, периодическое обновление каждые 30 сек
 // → klineWatchdog запускается (если включён)
 ```
 
@@ -84,6 +85,7 @@ connector.getClient(marketType).amountToPrecision(symbol, amount);
 - `subscribeKlines(args: SubscribeKlinesArgs)` — подписка на свечи через WebSocket
 - `unsubscribeKlines(symbol, interval)` — отписка от свечей
 - `resubscribeKlines(symbol, interval)` — переподписка на свечи (явный реконнект WebSocket-стрима)
+- `resubscribeKlineList(subscriptionList: { symbol; interval }[])` — пакетная переподписка на несколько пар за один вызов; очередь исходящих команд держит темп внутри `exchange-engine`. Используется `KlineSubscriptionWatchdog` для восстановления массовой просрочки одним вызовом вместо команды на каждую пару
 
 **Баланс:**
 - `fetchBalances()` → `AccountBalances` — баланс аккаунта
@@ -256,7 +258,7 @@ const result = await connector.createOrder({
 
 **Алгоритм восстановления**:
 1. Periodic scan каждые `checkIntervalMs` (default 30 сек) — ищет overdue подписки (нет событий дольше `graceMs`).
-2. Для каждой overdue → отправка уведомления через `onNotify`, попытка `resubscribeKlines`.
+2. Для всех overdue сразу → отправка уведомления через `onNotify`, одна пакетная команда `resubscribeKlineList` на весь круг (раньше была отдельная команда `resubscribeKlines` на каждую пару символ+таймфрейм — при массовой просрочке это било по лимиту запросов биржи и рвало соединение).
 3. Если переподписка не восстановила поток → REST refetch последних `restRefetchLimit` свечей + replay user-handler.
 4. Cooldown между восстановлениями: `recoveryCooldownMs` (default 120 сек), `recoveryFailCooldownMs` (default 600 сек после `recoveryFailCountThreshold` неудач).
 

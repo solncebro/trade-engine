@@ -3,7 +3,7 @@ export {
   formatWebSocketConnectionsReport,
   TriggerByEnum,
 } from '@solncebro/exchange-engine';
-export type { FormatWebSocketConnectionsReportArgs } from '@solncebro/exchange-engine';
+export type { FormatWebSocketConnectionsReportArgs, SetLeverageResult } from '@solncebro/exchange-engine';
 
 export { ExchangeConnector } from './services/exchangeConnector';
 export type {
@@ -216,6 +216,7 @@ export * from './utils/loggedExchangeCall';
 export * from './utils/timeout';
 export * from './utils/nestedField';
 export * from './utils/perKeySerializer';
+export * from './utils/priceFormat';
 export * from './utils/priceIntersection';
 export * from './utils/priceIntersection.types';
 export * from './utils/emoji';

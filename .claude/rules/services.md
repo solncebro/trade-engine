@@ -134,11 +134,11 @@ interface KlineSubscriptionWatchdogConfig {
 ```
 
 **Алгоритм восстановления**:
-1. `resubscribeKlines(symbol, interval)` — попытка пересоздать поток через WS.
-2. Если поток не восстановился (новый kline не пришёл в течение grace) → REST `fetchKlines(symbol, interval, limit=restRefetchLimit)` и replay в user handler.
+1. На весь круг просроченных подписок — одна пакетная команда `resubscribeKlineList(...)` (не по вызову на каждую пару символ+таймфрейм — иначе биржа рвёт соединение при массовой просрочке, см. `CHANGELOG.md`).
+2. Если поток всё равно не восстановился (новый kline не пришёл в течение grace) → REST `fetchKlines(symbol, interval, limit=restRefetchLimit)` и replay в user handler.
 3. После `recoveryFailCountThreshold` неудач для одной подписки → cooldown `recoveryFailCooldownMs`.
 
-См. `src/services/klineSubscriptionWatchdog.ts`. Использует `subscribeKlines`/`unsubscribeKlines`/`resubscribeKlines`/`fetchKlines` из `ExchangeClient`.
+См. `src/services/klineSubscriptionWatchdog.ts`. Использует `subscribeKlines`/`unsubscribeKlines`/`resubscribeKlineList`/`fetchKlines` из `ExchangeClient`.
 
 ## Binance Spot user-data (exchange-engine 0.14.0, commit `d93c52a`)
 
@@ -274,9 +274,27 @@ Defaults: `maxRetries = 3`, `baseDelayMs = 1000`, exponential `delay * 2^(attemp
 
 | Файл | Экспорты |
 |------|---------|
+| `priceFormat.ts` (3.17.0) | **`formatPrice(symbol, price)`**, `snapPriceToTick(symbol, price)`, `configurePriceTickSnapper(snapper)`, `isPriceTickSnapperConfigured()` — ⛔️ ОБЯЗАТЕЛЬНАЯ дверь для любой цены наружу, см. ниже |
 | `order.utils.ts` | `isOrderSuccessful(result)`, `isSpot(marketType)` |
 | `symbol.utils.ts` | `normalizeSymbol(symbol)` — убирает `/`, `:`, `.`, `-` |
 | `date.utils.ts` | `createDate()`, `formatTimestamp()`, `createHumanTimestamp()` |
 | `errorFormatter.utils.ts` | `formatErrorMessage(args)` — с error code |
 | `readline.utils.ts` | `ReadlineHelper` — stdin/stdout промпт |
 | `telegramCommand.utils.ts` | `getCommandFromKey(key)` — camelCase → SCREAMING_SNAKE |
+
+## Форматирование цен — `priceFormat.ts` (3.17.0) ⛔️ обязательное
+
+**Ни одна цена не показывается человеку в сыром виде.** Ни в Telegram, ни в тревоге, ни в логе, ни в журнале.
+
+| Экспорт | Что даёт |
+|---|---|
+| `formatPrice(symbol, price)` | строка на тиковой сетке символа; `—` для `null`/`undefined`/`NaN` |
+| `snapPriceToTick(symbol, price)` | то же числом — для записи в базу/журнал |
+| `configurePriceTickSnapper(snapper)` | ручная установка источника сетки (бэктест, утилиты); `null` — сброс |
+| `isPriceTickSnapperConfigured()` | установлен ли источник (можно предупредить, а не молча печатать сырьё) |
+
+**Подключение автоматическое:** `ExchangeConnector.initialize()` сам ставит снаппер из своих загруженных фильтров символов (futures, затем spot). Приложению делать НИЧЕГО не нужно — достаточно инициализировать коннектор.
+
+Символ без загруженных фильтров печатается не длиннее 8 знаков после точки (`priceToPrecision` в этом случае свалился бы на слепые 8 знаков и испортил бы дешёвые монеты, поэтому значение остаётся точным, но обрезается при выводе).
+
+**Почему:** заявка на бирже всегда лежит на тиковой сетке. Сырое `2.961579786096256` не только нечитаемо — оно не равно тому, что реально стоит на бирже. Повод — тревога rubber по PROMUSDT 11.08.2026 и многократные требования владельца сделать это системно, а не чинить каждый раз заново.

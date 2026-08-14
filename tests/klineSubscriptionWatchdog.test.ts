@@ -16,6 +16,7 @@ jest.mock('../src/core/logger', () => ({
 interface MockedClient extends ExchangeClient {
   fetchKlines: jest.Mock;
   resubscribeKlines: jest.Mock;
+  resubscribeKlineList: jest.Mock;
   subscribeKlines: jest.Mock;
   unsubscribeKlines: jest.Mock;
 }
@@ -86,6 +87,7 @@ function createMockClient(): MockedClient {
     subscribeKlines: jest.fn(),
     unsubscribeKlines: jest.fn(),
     resubscribeKlines: jest.fn(),
+    resubscribeKlineList: jest.fn(),
     subscribeMarkPrices: jest.fn(),
     unsubscribeMarkPrices: jest.fn(),
     awaitWebSocketConnectionsReady: jest.fn(),
@@ -162,7 +164,7 @@ describe('KlineSubscriptionWatchdog', () => {
 
     await jest.advanceTimersByTimeAsync(30_000);
 
-    expect(client.resubscribeKlines).toHaveBeenCalledWith({ symbol: 'BTCUSDT', interval: '5m' });
+    expect(client.resubscribeKlineList).toHaveBeenCalledWith([{ symbol: 'BTCUSDT', interval: '5m' }]);
     expect(client.fetchKlines).toHaveBeenCalledWith('BTCUSDT', '5m', { limit: 100 });
     expect(userHandler).toHaveBeenCalledTimes(replayKlineList.length);
     expect(userHandler).toHaveBeenCalledWith('BTCUSDT', replayKlineList[0]);
@@ -297,7 +299,7 @@ describe('KlineSubscriptionWatchdog', () => {
 
     await jest.advanceTimersByTimeAsync(30_000);
 
-    expect(client.resubscribeKlines).toHaveBeenCalledTimes(1);
+    expect(client.resubscribeKlineList).toHaveBeenCalledTimes(1);
 
     const intermediateKline = buildKline(T0 + FIVE_MIN_MS);
     wrapped('BTCUSDT', intermediateKline);
@@ -732,7 +734,7 @@ describe('KlineSubscriptionWatchdog', () => {
 
     await jest.advanceTimersByTimeAsync(30_000);
 
-    expect(client.resubscribeKlines).not.toHaveBeenCalled();
+    expect(client.resubscribeKlineList).not.toHaveBeenCalled();
     expect(client.fetchKlines).not.toHaveBeenCalled();
 
     watchdog.stop();

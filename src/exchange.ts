@@ -19,7 +19,7 @@ export type { RateLimitedRequestQueueArgs } from './core/RateLimitedRequestQueue
 export { withReadRetry, withRetryOn429 } from './core/withRetryOn429';
 
 export { ExchangeError, formatWebSocketConnectionsReport } from '@solncebro/exchange-engine';
-export type { FormatWebSocketConnectionsReportArgs } from '@solncebro/exchange-engine';
+export type { FormatWebSocketConnectionsReportArgs, SetLeverageResult } from '@solncebro/exchange-engine';
 
 export { isOrderSuccessful, isSpot } from './utils/order.utils';
 export { normalizeSymbol } from './utils/symbol.utils';

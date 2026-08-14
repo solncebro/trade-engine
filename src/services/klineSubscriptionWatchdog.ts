@@ -666,8 +666,23 @@ export class KlineSubscriptionWatchdog {
     this.dispatchNotify(lineList.join('\n'));
   }
 
+  private requestBulkResubscribe(recoverableList: KlineSubscriptionOverdueEntry[]): void {
+    const subscriptionList = recoverableList.map((entry) => ({
+      symbol: entry.symbol,
+      interval: entry.interval,
+    }));
+
+    try {
+      this.client.resubscribeKlineList(subscriptionList);
+    } catch (error: unknown) {
+      logger.warn({ error, subscriptionCount: subscriptionList.length }, `${LOG_PREFIX} ${this.clientLabel} bulk resubscribeKlineList failed — proceeding to REST refetch`);
+    }
+  }
+
   private async runRecoveryBatch(recoverableList: KlineSubscriptionOverdueEntry[]): Promise<KlineRecoveryAttemptResult[]> {
     const resultList: KlineRecoveryAttemptResult[] = [];
+
+    this.requestBulkResubscribe(recoverableList);
 
     let cursor = 0;
     const workerCount = Math.min(this.parallelismLimit, recoverableList.length);
@@ -731,14 +746,6 @@ export class KlineSubscriptionWatchdog {
     let isAttemptSuccessful = false;
 
     try {
-      logger.debug({ symbol, interval }, `${LOG_PREFIX} ${this.clientLabel} ${symbol} resubscribeKlines request [${interval}]`);
-
-      try {
-        this.client.resubscribeKlines({ symbol, interval });
-      } catch (error: unknown) {
-        logger.warn({ error, symbol, interval }, `${LOG_PREFIX} ${this.clientLabel} ${symbol} resubscribeKlines failed — proceeding to REST refetch [${interval}]`);
-      }
-
       logger.debug({ symbol, interval, restRefetchLimit: this.restRefetchLimit }, `${LOG_PREFIX} ${this.clientLabel} ${symbol} fetchKlines request limit=${this.restRefetchLimit} [${interval}]`);
 
       let restKlineList: Kline[];
