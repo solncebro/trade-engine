@@ -218,7 +218,7 @@ Error serializer: `pino.stdSerializers.wrapErrorSerializer` расширяет �
 
 ## PersistentTradeJournal (`src/services/tradeJournal/persistentTradeJournal.ts`, 3.10.0)
 
-Обобщённый буферизованный журнал сделок. Владеет клиентами Supabase и Google Sheets; проект-потребитель описывает только структуру таблиц через `TradeJournalSchema` (имена таблиц `trades`/`events`/`paperState`, `summaryKeyColumn`, `statusColumn`, `terminalStatusList`, `modeColumn`, `reconcileTimeColumn` + `reconcileTimeIsIsoString`, `updatedAtColumn`, `paperStateKeyColumn`, списки колонок/дат/процентов для зеркала, `event.{tradeKeyColumn, seqColumn}`) и передаёт данные строками `Record<string, unknown>`.
+Обобщённый буферизованный журнал сделок. Владеет клиентами Supabase и Google Sheets; проект-потребитель описывает только структуру таблиц через `TradeJournalSchema` (имена таблиц `trades`/`events`/`paperState`, `summaryKeyColumn`, `statusColumn`, `terminalStatusList`, `modeColumn`, `reconcileTimeColumn` + `reconcileTimeIsIsoString`, `updatedAtColumn`, `paperStateKeyColumn`, списки колонок/дат/процентов для зеркала, `event.{tradeKeyColumn, seqColumn}`, опционально `sheetOrderColumn`, 3.20.0) и передаёт данные строками `Record<string, unknown>`.
 
 ```ts
 class PersistentTradeJournal {
@@ -233,12 +233,16 @@ class PersistentTradeJournal {
   markOrphaned(args: MarkOrphanedArgs): Promise<void>
   savePaperState(row) / loadPaperStateList() / removePaperState(key)
   reconcileSheetsFromSupabase(lookbackDays) / fullSyncToSheet()
-  insertRow(table, row) / updateRows(args) / selectRows(args)   // generic auxiliary-table access with retries
+  insertRow(table, row) / updateRows(args) / selectRows(args)   // generic auxiliary-table access with retries; args.range?/order? — 3.20.0
   shutdown(): Promise<void>
 }
 ```
 
 Надёжность: сводки и события копятся в RAM и сливаются пачками (`flushIntervalMs`, дефолт 3с); при сбое БД **только неудавшаяся часть** возвращается в очередь (раздельно сводки/события — без дублей событий), следующий тик повторяет. Терминальные сводки (`statusColumn` ∈ `terminalStatusList`) выгружаются из RAM после успешного слива. Зеркало в Sheets: живой слив с антидребезгом (`liveSheetMirror`) и/или периодическая пересинхронизация из Supabase. Все каналы опциональны (null-креды → канал выключен). Зависит от `@supabase/supabase-js`, `@googleapis/sheets`. Единственная точка взаимодействия с Supabase/Sheets — проекты (rubber и др.) прямых зависимостей не держат.
+
+**`selectRows` — диапазон и сортировка (3.20.0).** `JournalSelectRowsArgs.range?: JournalSelectRangeArgs` — полуоткрытый отрезок по одной колонке (`fromValue` включительно, `toValue` не включительно, `toValue` можно не задавать); `order?: { column, ascending }` — сортировка результата. Оба поля опциональны и накладываются поверх точного совпадения по `match`, без них поведение не меняется.
+
+**`sheetOrderColumn` (3.20.0, опционально в `TradeJournalSchema`).** Колонка, по которой `fullSyncToSheet` и `reconcileSheetsFromSupabase` упорядочивают строки при записи в Sheets. Лист читает человек сверху вниз, поэтому порядок должен нести смысл для него (например, момент открытия сделки), а не момент последнего обновления строки. Не задано — используется прежний `reconcileTimeColumn`.
 
 ## Reliability-инфраструктура (3.5.0)
 

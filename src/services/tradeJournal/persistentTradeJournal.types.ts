@@ -12,6 +12,10 @@ export interface TradeJournalSchema {
   terminalStatusList: readonly string[];
   modeColumn: string | null;
   reconcileTimeColumn: string;
+  /** Column the FULL sheet rewrite orders rows by. A sheet is read top to bottom by a person, so the
+   *  order has to be the one that means something to them — for a trade journal that is when the trade
+   *  went on, not when its row was last touched. Omitted: falls back to `reconcileTimeColumn`. */
+  sheetOrderColumn?: string;
   reconcileTimeIsIsoString: boolean;
   updatedAtColumn: string | null;
   paperStateKeyColumn: string;
@@ -47,8 +51,21 @@ export interface JournalUpdateRowsArgs {
   notEqual?: { column: string; value: unknown };
 }
 
+/**
+ * Полуоткрытый отрезок по одной колонке: от `fromValue` включительно до `toValue` НЕ включительно.
+ * Именно так режутся периоды календаря — сутки кончаются ровно там, где начинаются следующие, и
+ * сделка на границе обязана попасть ровно в один период, а не в оба.
+ */
+export interface JournalSelectRangeArgs {
+  column: string;
+  fromValue: number | string;
+  toValue?: number | string;
+}
+
 export interface JournalSelectRowsArgs {
   table: string;
   match: Record<string, unknown>;
   limit?: number;
+  range?: JournalSelectRangeArgs;
+  order?: { column: string; ascending: boolean };
 }

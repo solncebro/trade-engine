@@ -2,15 +2,15 @@
 
 Все типы в `src/types/`, реэкспортируются через `src/types/index.ts`.
 
-## Реэкспорты из exchange-engine
+## Реэкспорты из exchange-engine (3.19.0 — сквозной проброс типов)
 
-Из `@solncebro/exchange-engine` (0.14.0, установлено локально через `file:../exchange-engine`) реэкспортируются:
-- **Constants**: `MARKET_TYPE_LIST`
-- **Enums**: `ExchangeNameEnum`, `MarginModeEnum`, `MarketTypeEnum`, `MarketUnitEnum`, `OrderFilterEnum`, `OrderSideEnum`, `OrderTypeEnum`, `PositionModeEnum`, `PositionSideEnum`, `TimeInForceEnum`, `TradeSymbolTypeEnum`, `TriggerByEnum`, `WebSocketConnectionTypeEnum`, `WorkingTypeEnum`
-- **Types**: `AccountBalances`, `Balance`, `BalanceByAsset`, `BalanceUpdateEvent`, `BalanceUpdateHandler`, `BalanceUpdateItem`, `CancelBatchOrdersResult`, `CancelOrderItemResult`, `ClosedPnl`, `CreateOrderWebSocketArgs`, `ExchangeArgs`, `ExchangeClient`, `ExchangeConfig`, `ExchangeLogger`, `FeeRate`, `FetchAllKlinesOptions`, `FetchPageWithLimitArgs`, `FundingInfo`, `FundingRateHistory`, `Income`, `Kline`, `KlineHandler`, `KlineInterval`, `LeverageFilter`, `MarkPrice`, `MarkPriceHandler`, `MarkPriceUpdate`, `ModifyBatchOrderArgs`, `ModifyBatchOrdersResult`, `ModifyOrderArgs`, `ModifyOrderItemResult`, `OpenInterest`, `Order`, `OrderBook`, `OrderBookHandler`, `OrderBookLevel`, `OrderBookRawLevel`, `OrderBookUpdate`, `OrderBookUpdateType`, `OrderRateLimit`, `OrderRateLimitSource`, `OrderUpdateEvent`, `OrderUpdateHandler`, `Position`, `PositionUpdateEvent`, `PositionUpdateHandler`, `PriceLimitRisk`, `PublicTrade`, `PublicTradeHandler`, `ResubscribeKlinesArgs`, `SetLeverageResult`, `SubscribeKlinesArgs`, `SubscribeOrderbookArgs`, `SubscribePublicTradesArgs`, `Ticker`, `TickerBySymbol`, `TradeSymbol`, `TradeSymbolBySymbol`, `TradeSymbolFilter`, `TradingFunding`, `UserDataStreamHandlerArgs`, `WebSocketConnectionInfo`
-- **Classes**: `ExchangeError`
+Из `@solncebro/exchange-engine` (0.22.0, из реестра npm) реэкспортируются:
 
-**НЕ реэкспортируются** (внутренние компоненты exchange-engine — потребители не должны их использовать): `Exchange` (factory), `formatWebSocketConnectionsReport`. Внешние приложения работают только через `@solncebro/trade-engine`.
+- **Значения** (enum'ы, константы, функции, классы) — поимённым списком в `src/types/index.ts` и `src/index.ts`/`src/exchange.ts`: `MARKET_TYPE_LIST`, `ExchangeNameEnum`, `MarginModeEnum`, `MarketTypeEnum`, `MarketUnitEnum`, `OrderFilterEnum`, `OrderSideEnum`, `OrderTypeEnum`, `PositionModeEnum`, `PositionSideEnum`, `TimeInForceEnum`, `TradeSymbolTypeEnum`, `TriggerByEnum`, `WebSocketConnectionTypeEnum`, `WorkingTypeEnum`, `ExchangeError`, `formatWebSocketConnectionsReport`, `parseBybitOrderbookRawFrame`.
+- **Типы — сквозняком, без поимённого перечня**: `src/types/index.ts` (и, через `export * from './types'`, оба входа пакета — `.` и `./exchange`) делают `export type * from '@solncebro/exchange-engine'`. Любой тип нижней библиотеки виден потребителю автоматически, включая появившиеся уже после этой правки — заводить отдельный реэкспорт под новый тип не нужно.
+- **`Exchange` (фабрика) реэкспортируется ТОЛЬКО как тип** — `export type *` значения не пробрасывает, поэтому создать инстанс биржи в обход `ExchangeConnector` нельзя; принцип единой двери сохраняется. `formatWebSocketConnectionsReport`, в отличие от `Exchange`, реэкспортируется как обычное значение — потребителю можно его вызывать.
+
+**Почему сквозняком, а не перечнем.** До 3.19.0 типы шли поимённым списком — дыру (забытый новый тип) латали новой публикацией пакета: восемь выпусков за пять месяцев, включая `TriggerByEnum`, реэкспортированный дважды уже после боевого инцидента с реальными деньгами. Сторож-тест `tests/exchangeEngineReexport.test.ts` проверяет и то, что каждое ЗНАЧЕНИЕ нижней библиотеки выходит из обоих входов пакета, и то, что поимённый перечень типов не возвращается (`export type { … } from '@solncebro/exchange-engine'` запрещён grep-проверкой по исходникам).
 
 ## Собственные классы trade-engine (3.4.0–3.5.0)
 

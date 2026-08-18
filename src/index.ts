@@ -1,9 +1,9 @@
 export {
   ExchangeError,
   formatWebSocketConnectionsReport,
+  parseBybitOrderbookRawFrame,
   TriggerByEnum,
 } from '@solncebro/exchange-engine';
-export type { FormatWebSocketConnectionsReportArgs, SetLeverageResult } from '@solncebro/exchange-engine';
 
 export { ExchangeConnector } from './services/exchangeConnector';
 export type {
@@ -59,6 +59,7 @@ export type {
   MarkOrphanedArgs,
   JournalUpdateRowsArgs,
   JournalSelectRowsArgs,
+  JournalSelectRangeArgs,
 } from './services/tradeJournal/persistentTradeJournal.types';
 
 export { ConfigManager } from './core/config';

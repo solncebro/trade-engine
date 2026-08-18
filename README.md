@@ -285,7 +285,7 @@ const bounds = OrderCalculator.calculatePriceLimitBounds({
 
 ## Requirements
 
-- Node.js >= 18
+- Node.js >= 22
 - `@solncebro/exchange-engine` >= 0.13.0
 
 ## License

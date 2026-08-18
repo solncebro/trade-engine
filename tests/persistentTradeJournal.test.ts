@@ -9,6 +9,21 @@ jest.mock('@googleapis/sheets', () => ({
   sheets: () => ({}),
 }));
 
+const sheetWriteList: { call: string; recordList: Record<string, unknown>[] }[] = [];
+
+jest.mock('../src/services/tradeJournal/sheetsSync', () => ({
+  createSheetsClient: () => ({}),
+  toSheetsSerialDate: (timestampMs: number) => timestampMs,
+  ensureSheetHeader: async () => true,
+  ensureDateColumnFormat: async () => {},
+  syncRecordListToSheet: async (args: { recordList: Record<string, unknown>[] }) => {
+    sheetWriteList.push({ call: 'sync', recordList: args.recordList });
+  },
+  fullReplaceSheet: async (args: { recordList: Record<string, unknown>[] }) => {
+    sheetWriteList.push({ call: 'full', recordList: args.recordList });
+  },
+}));
+
 jest.mock('@supabase/supabase-js', () => {
   function rowsFor(table: string): Record<string, unknown>[] {
     if (!mockTableByName.has(table)) {
@@ -28,6 +43,8 @@ jest.mock('@supabase/supabase-js', () => {
     private readonly equalFilterList: [string, unknown][] = [];
     private inFilter: [string, unknown[]] | null = null;
     private gteFilter: [string, number] | null = null;
+    private ltFilter: [string, number] | null = null;
+    private orderBy: [string, boolean] | null = null;
     private neqFilter: [string, unknown] | null = null;
     private notInFilter: [string, string] | null = null;
     private rangeFilter: [number, number] | null = null;
@@ -101,6 +118,12 @@ jest.mock('@supabase/supabase-js', () => {
       return this;
     }
 
+    lt(column: string, value: number): this {
+      this.ltFilter = [column, value];
+
+      return this;
+    }
+
     in(column: string, valueList: unknown[]): this {
       this.inFilter = [column, valueList];
 
@@ -113,7 +136,11 @@ jest.mock('@supabase/supabase-js', () => {
       return this;
     }
 
-    order(): this {
+    order(column?: string, options?: { ascending: boolean }): this {
+      if (column !== undefined) {
+        this.orderBy = [column, options?.ascending ?? true];
+      }
+
       return this;
     }
 
@@ -145,6 +172,10 @@ jest.mock('@supabase/supabase-js', () => {
       }
 
       if (this.gteFilter !== null && Number(row[this.gteFilter[0]]) < this.gteFilter[1]) {
+        return false;
+      }
+
+      if (this.ltFilter !== null && Number(row[this.ltFilter[0]]) >= this.ltFilter[1]) {
         return false;
       }
 
@@ -222,6 +253,11 @@ jest.mock('@supabase/supabase-js', () => {
       }
 
       let selectedList = rowList.filter((row) => this.matches(row));
+
+      if (this.orderBy !== null) {
+        const [column, ascending] = this.orderBy;
+        selectedList = [...selectedList].sort((left, right) => (Number(left[column]) - Number(right[column])) * (ascending ? 1 : -1));
+      }
 
       if (this.rangeFilter !== null) {
         selectedList = selectedList.slice(this.rangeFilter[0], this.rangeFilter[1] + 1);
@@ -425,6 +461,87 @@ describe('PersistentTradeJournal auxiliary table access', () => {
 
     expect(afterList[0].status).toBe('filled');
     expect(afterList[0].filled_size_usd).toBe(50);
+  });
+
+  it('selects a half-open time range in order — the period boundary belongs to ONE period only', async () => {
+    const journal = createJournal();
+
+    await journal.insertRow('test_rungs', { id: 'R0', exit_time: 99 });
+    await journal.insertRow('test_rungs', { id: 'R3', exit_time: 300 });
+    await journal.insertRow('test_rungs', { id: 'R1', exit_time: 100 });
+    await journal.insertRow('test_rungs', { id: 'R2', exit_time: 299 });
+
+    const rowList = await journal.selectRows({
+      table: 'test_rungs',
+      match: {},
+      range: { column: 'exit_time', fromValue: 100, toValue: 300 },
+      order: { column: 'exit_time', ascending: true },
+    });
+
+    // 100 попадает, 300 — нет: сутки кончаются ровно там, где начинаются следующие, и сделка на
+    // границе иначе посчиталась бы дважды.
+    expect(rowList.map((row) => row.id)).toEqual(['R1', 'R2']);
+  });
+
+  // The sheet is read by a human top to bottom, and a trade's place in that list is WHEN IT TIED UP
+  // THE MARGIN — its entry. Ordering by the row's last-touched stamp put a trade that closed earlier
+  // above one that opened days before it, and a corrective rewrite reshuffled the whole sheet.
+  it('writes the sheet ordered by the schema\'s sheet-order column, not by the reconcile stamp', async () => {
+    sheetWriteList.length = 0;
+
+    const journal = new PersistentTradeJournal({
+      schema: { ...TEST_SCHEMA, sheetOrderColumn: 'entry_time' },
+      supabaseUrl: 'https://example.supabase.co',
+      supabaseServiceKey: 'service_key',
+      googleSheetsSpreadsheetId: 'sheet-1',
+      googleSheetsCredentialsPath: '/tmp/credentials.json',
+      retryBaseDelayMs: 1,
+    });
+
+    await journal.initialize();
+    // Entered first, touched LAST — the two orders disagree, which is the whole point.
+    await journal.insertRow('test_trades', { id: 'EARLY_ENTRY', entry_time: 100, updated_at: 200 });
+    await journal.insertRow('test_trades', { id: 'LATE_ENTRY', entry_time: 200, updated_at: 100 });
+
+    await journal.fullSyncToSheet();
+    await journal.shutdown();
+
+    const fullWrite = sheetWriteList.find((write) => write.call === 'full');
+
+    expect(fullWrite?.recordList.map((record) => record.id)).toEqual(['EARLY_ENTRY', 'LATE_ENTRY']);
+  });
+
+  it('falls back to the reconcile stamp when no sheet-order column is configured', async () => {
+    sheetWriteList.length = 0;
+
+    const journal = new PersistentTradeJournal({
+      schema: TEST_SCHEMA,
+      supabaseUrl: 'https://example.supabase.co',
+      supabaseServiceKey: 'service_key',
+      googleSheetsSpreadsheetId: 'sheet-1',
+      googleSheetsCredentialsPath: '/tmp/credentials.json',
+      retryBaseDelayMs: 1,
+    });
+
+    await journal.initialize();
+    // Entry order and last-touched order disagree, so the two columns cannot both be right here.
+    await journal.insertRow('test_trades', { id: 'EARLY_ENTRY', entry_time: 100, updated_at: 200 });
+    await journal.insertRow('test_trades', { id: 'LATE_ENTRY', entry_time: 200, updated_at: 100 });
+
+    await journal.fullSyncToSheet();
+    await journal.shutdown();
+
+    const fullWrite = sheetWriteList.find((write) => write.call === 'full');
+
+    expect(fullWrite?.recordList.map((record) => record.id)).toEqual(['LATE_ENTRY', 'EARLY_ENTRY']);
+  });
+
+  it('leaves the query untouched when neither range nor order is asked for', async () => {
+    const journal = createJournal();
+
+    await journal.insertRow('test_rungs', { id: 'R1', exit_time: 1 });
+
+    await expect(journal.selectRows({ table: 'test_rungs', match: { id: 'R1' } })).resolves.toHaveLength(1);
   });
 
   it('honours the notEqual guard on updateRows', async () => {

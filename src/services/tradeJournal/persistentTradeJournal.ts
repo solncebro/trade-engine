@@ -416,9 +416,19 @@ export class PersistentTradeJournal {
     const client = this.supabaseClient;
     const { data, error } = await withResultRetry({
       fn: async () => {
-        const query = client.from(args.table).select('*').match(args.match);
+        // Каждый уточнитель необязателен и накладывается поверх предыдущего: без них запрос
+        // остаётся ровно тем, чем был, — точное совпадение по match.
+        const filtered = client.from(args.table).select('*').match(args.match);
+        const ranged = args.range === undefined
+          ? filtered
+          : args.range.toValue === undefined
+            ? filtered.gte(args.range.column, args.range.fromValue)
+            : filtered.gte(args.range.column, args.range.fromValue).lt(args.range.column, args.range.toValue);
+        const ordered = args.order === undefined
+          ? ranged
+          : ranged.order(args.order.column, { ascending: args.order.ascending });
 
-        return args.limit === undefined ? query : query.limit(args.limit);
+        return args.limit === undefined ? ordered : ordered.limit(args.limit);
       },
       contextLabel: `selectRows ${args.table}`,
       maxRetries: SUPABASE_MAX_ATTEMPTS,
@@ -457,7 +467,7 @@ export class PersistentTradeJournal {
         .from(this.schema.tradesTable)
         .select('*')
         .gte(this.schema.reconcileTimeColumn, cutoff)
-        .order(this.schema.reconcileTimeColumn, { ascending: true });
+        .order(this.sheetOrderColumn, { ascending: true });
 
       if (error !== null) {
         throw new Error(error.message);
@@ -505,6 +515,14 @@ export class PersistentTradeJournal {
     }
   }
 
+  /** The column the sheet is ordered by. A sheet is read top to bottom by a person, so the order has to
+   *  be the one that means something to them; for a trade journal that is when the trade went on, not
+   *  when its row was last touched. Both sheet paths — the periodic reconcile and the full rewrite — use
+   *  this, so a rewrite can never reshuffle the sheet into a different order than the bot appends in. */
+  private get sheetOrderColumn(): string {
+    return this.schema.sheetOrderColumn ?? this.schema.reconcileTimeColumn;
+  }
+
   private async fetchAllSummaryRows(): Promise<Record<string, unknown>[]> {
     if (this.supabaseClient === null) {
       return [];
@@ -517,7 +535,7 @@ export class PersistentTradeJournal {
       const { data, error } = await this.supabaseClient
         .from(this.schema.tradesTable)
         .select('*')
-        .order(this.schema.reconcileTimeColumn, { ascending: true })
+        .order(this.sheetOrderColumn, { ascending: true })
         .range(fromIndex, fromIndex + SUPABASE_PAGE_SIZE - 1);
 
       if (error !== null) {
