@@ -117,7 +117,7 @@ npx jest --config jest.integration.config.js --runInBand --testPathPatterns=<pat
 - **Ошибки — не исключения**: `createOrder()` возвращает `errorText` в результате, не бросает. Проверка через `isOrderSuccessful(result)`. Прямые вызовы `connector.spot`/`connector.futures` могут бросать исключения — потребитель обрабатывает их сам.
 - **Единая точка входа**: внешние приложения импортируют ТОЛЬКО из `@solncebro/trade-engine`. Прямые импорты из `@solncebro/exchange-engine` запрещены. Значения нижней библиотеки реэкспортируются поимённо (`formatWebSocketConnectionsReport` и т.д.) — кроме фабрики `Exchange`, которая остаётся доступна ТОЛЬКО как тип (3.19.0). Типы нижней библиотеки отдаются сквозняком — `export type * from '@solncebro/exchange-engine'` — без поимённого перечня, поэтому новый тип виден потребителю сам.
 - **Demo trading**: `ExchangeConfig.isDemoMode = true`, никаких ручных URL-переопределений.
-- **Биржи**: `@solncebro/exchange-engine` 0.22.0 (из реестра npm). Bybit: WebSocket для ордеров.
+- **Биржи**: `@solncebro/exchange-engine` `>=0.22.0 <1.0.0` (из реестра npm, диапазон, а не точная версия — с 3.21.0). Bybit: WebSocket для ордеров.
 - **Map-коллекции**: `SymbolMappingByExchange` и `ExchangeConnectorByName` — это `Map`, не объекты.
 
 ### Интеграционные тесты

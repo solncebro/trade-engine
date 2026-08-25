@@ -4,7 +4,7 @@
 
 ## Реэкспорты из exchange-engine (3.19.0 — сквозной проброс типов)
 
-Из `@solncebro/exchange-engine` (0.22.0, из реестра npm) реэкспортируются:
+Из `@solncebro/exchange-engine` (`>=0.22.0 <1.0.0`, из реестра npm — диапазон с 3.21.0) реэкспортируются:
 
 - **Значения** (enum'ы, константы, функции, классы) — поимённым списком в `src/types/index.ts` и `src/index.ts`/`src/exchange.ts`: `MARKET_TYPE_LIST`, `ExchangeNameEnum`, `MarginModeEnum`, `MarketTypeEnum`, `MarketUnitEnum`, `OrderFilterEnum`, `OrderSideEnum`, `OrderTypeEnum`, `PositionModeEnum`, `PositionSideEnum`, `TimeInForceEnum`, `TradeSymbolTypeEnum`, `TriggerByEnum`, `WebSocketConnectionTypeEnum`, `WorkingTypeEnum`, `ExchangeError`, `formatWebSocketConnectionsReport`, `parseBybitOrderbookRawFrame`.
 - **Типы — сквозняком, без поимённого перечня**: `src/types/index.ts` (и, через `export * from './types'`, оба входа пакета — `.` и `./exchange`) делают `export type * from '@solncebro/exchange-engine'`. Любой тип нижней библиотеки виден потребителю автоматически, включая появившиеся уже после этой правки — заводить отдельный реэкспорт под новый тип не нужно.
