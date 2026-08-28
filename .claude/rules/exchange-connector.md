@@ -23,10 +23,10 @@ const connector = new ExchangeConnector(
   streamWatchdogConfig   // 7-й — опционально (3.6.0): orderbook/publicTrade/markPrice watchdog
 );
 await connector.initialize();
-// → loadTradeSymbols (futures + spot) обёрнут в withReadRetry
+// → loadTradeSymbols (futures + spot) обёрнут в withRetryOn429
 // → getOrderRateLimit() → создаётся RateLimitedRequestQueue (если rateLimitConfig не null)
 // → installPriceTickSnapper() (3.17.0) — подключает formatPrice/snapPriceToTick к тиковой сетке символов
-// → fetchTickers через withReadRetry, периодическое обновление каждые 30 сек
+// → fetchTickers через withRetryOn429, периодическое обновление каждые 30 сек
 // → klineWatchdog запускается (если включён)
 ```
 
@@ -281,11 +281,25 @@ Watchdog handler-агностичен: примитивы `registerKey/recordFre
 
 Диагностика: `StreamSubscriptionWatchdog.getDiagnosticInfo()` → `{ streamType, totalSubscriptions, overdueCount, inProgressCount, suppressedCount, tickCount, lastTickTimestamp }`.
 
-> **Дублирование с KlineSubscriptionWatchdog (TODO):** kline-watchdog пока отдельный класс с собственной (overlapping) машинерией + богатым interval-grouped Telegram-форматированием. Целевое состояние — мигрировать kline в `StreamSubscriptionWatchdog` как `KlineWatchdogStrategy` (interval-projection staleness + resubscribe+fetchKlines+replay recovery), оставив `KlineSubscriptionWatchdog` тонким back-compat shim. Отложено (затрагивает живой ma-chaser; чисто внутренний DRY без функционального изменения).
+**Клайны переехали (3.22.0).** `KlineWatchdogStrategy` (`src/services/klineWatchdogStrategy.ts`) — стратегия клайнов для того же `StreamSubscriptionWatchdog`: возраст = опоздание клайна, который должен был прийти следом за последним увиденным (`computeAgeMs(entry, now, key)` — интервал берётся по ключу), допуск на интервал (`computeGraceMs`: интервалы из `graceScaledIntervalList` ждут ещё целый интервал), одна пакетная переподписка на всю пачку (`prepareRecoveryBatch` → `resubscribeKlineList`), восстановление ключа — REST-дочитка с таймаутом и реплей в обработчик только клайнов новее последней отметки (`recover(key, context)` читает её из `context.lastEntry`; результат несёт `freshnessTimestamp` последнего REST-клайна и `replayedCount`), сообщения по интервалам с маркером символов (`formatOverdue`/`formatScanResult`). `KlineSubscriptionWatchdog` — тонкая обёртка с прежним интерфейсом: переводит ключи `symbol:interval` в клайновые события и наоборот, сеет свежесть новой подписки открытием идущего интервала (`registerKey(key, ts)`). Двух копий машинерии больше нет.
 
 ## Read Retry (3.5.0)
 
-В `initialize()` и `updateTickers()` вызовы `loadTradeSymbols` / `fetchTickers` обёрнуты в `withReadRetry()` — retry с exponential backoff на сетевых ошибках и 429/5xx. См. `src/core/withRetryOn429.ts`.
+В `initialize()` и `updateTickers()` вызовы `loadTradeSymbols` / `fetchTickers` (и `fetchOrderBook`) обёрнуты в `withRetryOn429()` — retry с exponential backoff на сетевых ошибках и 429/5xx. См. `src/core/withRetryOn429.ts`. Отдельного `withReadRetry` больше нет (3.22.0): он был той же функцией под вторым именем.
+
+## Стакан (3.22.0)
+
+Единственная дверь к глубине для потребителя — методы коннектора, не сырой клиент:
+
+- `subscribeOrderBook(symbol, marketType)` / `unsubscribeOrderBook(symbol, marketType)` — со счётчиком ссылок; топик открывается на первой подписке символа, закрывается на последней. Бросает, если у рынка нет потока стакана (Binance spot).
+- `getOrderBook(symbol, marketType): LiveOrderBook | null` — живая склеенная книга (числовые уровни, продавцы по возрастанию, покупатели по убыванию, `updateId`, время кадра); `null`, пока не пришёл первый снимок или пока после разрыва нумерации дельт ждём свежий.
+- `fetchOrderBook(symbol, marketType, limit?)` — разовое чтение по REST (запасной путь), под `withRetryOn429`.
+
+Внутри — `OrderBookTracker` (`src/services/orderBookTracker.ts`), один на тип рынка, создаётся лениво, подписывается через ПРОКСИРОВАННЫЙ клиент (`getStreamClient`), поэтому сторож стакана, если включён, обёртывает его обработчик. Форматы кадров разные: Binance отдаёт готовый срез (`updateType: 'snapshot'` всегда, глубины 5/10/20) — книга замещается целиком; Bybit отдаёт снимок и дельты (глубины 1/50/200/…) — дельта применяется уровень за уровнем (ноль объёма удаляет уровень); разрыв `updateId` роняет книгу и переподписывает топик с дебаунсом 5 с. Глубина по бирже — `resolveOrderBookStreamDepth` (Binance 20, Bybit 50). `disconnect()` снимает все подписки трекера.
+
+Чистый срез объёма по полосе — `sliceAskVolumeWithinBand` (`src/utils/orderBookSlice.ts`): граница отсчитывается от ОПОРНОЙ цены, не от текущей лучшей; лучшая за границей → `isBeyondBand`. Потребитель-образец — вежливый выход rubber (закрытие кусками по глубине).
+
+`coin-listing` на 28.08.2026 читает стакан в обход (`getClient(marketType).subscribeOrderbook` и своя склейка) — ему адресована строка раздела «Migration» в `CHANGELOG.md`; для записи сырых кадров в базу трекеру понадобится хук «на каждый кадр» (задача библиотеки при переводе coin-listing).
 
 ## Обработка ошибок
 

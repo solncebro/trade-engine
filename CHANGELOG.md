@@ -5,6 +5,90 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.22.0] - 2026-08-28 — Стакан через единую дверь и один сторож потоков вместо двух
+
+Повод — TACUSDT 27.08.2026: два торговых инстанса одной стратегии вышли по рынку в один миг
+и выели один тонкий стакан друг перед другом. Вежливый выход кусками по глубине стакана
+живёт в приложении, но саму глубину приложению взять было неоткуда, кроме сырого клиента
+нижней библиотеки — а это обход единой двери. Заодно закрыт давний список дублей внутри
+самой библиотеки.
+
+### Added
+
+- **Стакан — метод `ExchangeConnector`, а не сырого клиента.** `subscribeOrderBook(symbol,
+  marketType)` / `unsubscribeOrderBook(...)` (со счётчиком ссылок — топик открывается на первой
+  подписке и закрывается на последней), `getOrderBook(symbol, marketType)` — живая склеенная
+  книга (`LiveOrderBook`: числовые уровни, продавцы по возрастанию, покупатели по убыванию,
+  `updateId`, время кадра) или `null`, пока снимка нет; `fetchOrderBook(symbol, marketType,
+  limit?)` — разовое чтение по REST как запасной путь. Внутри — `OrderBookTracker`
+  (`src/services/orderBookTracker.ts`, экспортируется): кадр Binance (готовый срез глубины 20)
+  замещает книгу целиком, поток Bybit (снимок + дельты, глубина 50) склеивается уровень за
+  уровнем; разрыв нумерации дельт роняет книгу до свежего снимка и переподписывает топик с
+  дебаунсом. Глубину по бирже отдаёт `resolveOrderBookStreamDepth(exchangeName)`. Подписка идёт
+  через проксированный клиент, поэтому сторож стакана (если включён) обёртывает обработчик
+  трекера как любой другой.
+- **`sliceAskVolumeWithinBand({ askList, referencePrice, bandPercent, remainingQty })`**
+  (`src/utils/orderBookSlice.ts`) — чистый срез: сколько можно купить разом, не заплатив выше
+  `referencePrice × (1 + bandPercent/100)`. Полоса отсчитывается от ОПОРНОЙ цены, не от
+  текущей лучшей: если лучшая уже на +0,3 %, полоса 0,5 % допускает только объём между +0,3 и
+  +0,5 %, а лучшая за границей даёт `isBeyondBand`. Никакого доступа к бирже — пригодна любому
+  боту, который режет рыночную заявку по глубине.
+- **`sleep(ms)`** экспортируется из пакета (`src/utils/sleep.ts`) — одна пауза на библиотеку
+  и её потребителей.
+- **`KlineWatchdogStrategy`** (`src/services/klineWatchdogStrategy.ts`) — клайны как стратегия
+  общего `StreamSubscriptionWatchdog`: возраст по проекции интервала с масштабируемым допуском,
+  восстановление одной пакетной переподпиской на всю пачку плюс REST-дочитка и реплей в
+  обработчик, форматирование сообщений по интервалам — всё, что раньше лежало в отдельном
+  классе. У `StreamWatchdogStrategy` появились необязательные хуки: `computeGraceMs(key,
+  default)`, `prepareRecoveryBatch(keyList)`, `formatOverdue(...)`, `formatScanResult(...)`,
+  `describeStartup()`; `recover(key, context)` получает последнюю отметку свежести, результат
+  может нести `freshnessTimestamp` и `replayedCount`, а события здоровья — `replayedCount` и
+  `consecutiveFailCount`. `registerKey(key, freshnessTimestamp?)` принимает посев свежести.
+
+### Changed
+
+- **`KlineSubscriptionWatchdog` — тонкая обёртка** над `StreamSubscriptionWatchdog` +
+  `KlineWatchdogStrategy` с ПРЕЖНИМ публичным интерфейсом (`wrapHandler`, `unregisterHandler`,
+  `start`, `stop`, `getDiagnosticInfo`, хуки `onStreamStale/Recovered/RecoveryFailed` с
+  клайновыми событиями). Ни `ExchangeConnector`, ни потребителям менять нечего; 21 тест
+  прежнего класса проходит без правок логики (одно ожидание в тесте заменено с «три микротика»
+  на «сбросить все микрозадачи» — цепочка стала на прослойку длиннее). Двух поколений одной
+  машинерии больше нет: четыре побайтово одинаковых и четыре почти одинаковых метода жили в
+  обоих классах.
+- Три стратегии сердцебиения (`OrderbookWatchdogStrategy`, `PublicTradeWatchdogStrategy`,
+  `MarkPriceWatchdogStrategy`) — один класс `HeartbeatResubscribeStrategy` с параметром
+  «как переподписаться»; имена и конструкторы наружу прежние.
+
+### Removed
+
+- **`withReadRetry` и `WithReadRetryArgs`** — тело и тип были побайтово равны `withRetryOn429`
+  / `WithRetryOn429Args`. Один примитив под двумя именами; читающие вызовы коннектора
+  переведены на `withRetryOn429`.
+- **`isPriceTickSnapperConfigured`** — не использовалась ни в библиотеке, ни в приложениях.
+- Внутренние типы клайнового сторожа, дублировавшие общие: `KlineSubscriptionLastEntry`,
+  `KlineSubscriptionRecoveryState`, `KlineSubscriptionOverdueEntry`, `KlineRecoveryAttemptResult`,
+  `KlineRecoveryAttemptStatus` — вместо них `StreamLastEntry`, `StreamRecoveryState`,
+  `StreamOverdueEntry`, `StreamRecoveryAttemptResult`, `StreamRecoveryStatus`.
+- Пять приватных копий `sleep` и вторая копия `withTimeout` внутри библиотеки; двойные
+  реэкспорты `selectClosedKlineList` (через `ChartGenerator`) и `TriggerByEnum` (явный список
+  корня — остаётся через `./types`); второе объявление `TelegramMessageListenerArgs`.
+
+### Migration (для потребителей)
+
+Что было → что стало → что сделать в приложении. Список адресован тому, кто будет переводить
+приложения на эту версию (в том числе LLM-исполнителю): каждая строка — самодостаточное задание.
+
+| Было | Стало | Что сделать |
+|---|---|---|
+| `withReadRetry({ fn, contextLabel, maxRetries?, baseDelayMs? })` | `withRetryOn429(...)` с той же сигнатурой и тем же поведением | заменить имя импорта и вызова; `WithReadRetryArgs` → `WithRetryOn429Args` |
+| `isPriceTickSnapperConfigured()` | удалена | убрать вызов; `formatPrice` сам печатает не длиннее 8 знаков, если сетка не установлена |
+| своя копия `sleep`/`delay` в приложении | `import { sleep } from '@solncebro/trade-engine'` | удалить локальный файл, переключить импорты |
+| своя копия `withTimeout(promise, ms, message)` в приложении | `import { withTimeout } from '@solncebro/trade-engine'` (была экспортирована и раньше) | удалить локальный файл, переключить импорты |
+| `connector.getClient(marketType).subscribeOrderbook({ symbol, depth, handler })` + своя склейка снимков/дельт (так делает `coin-listing`) | `connector.subscribeOrderBook(symbol, marketType)` → `connector.getOrderBook(symbol, marketType)` (`LiveOrderBook`, уже склеенная, числовые уровни) → `connector.unsubscribeOrderBook(...)` | перевести на методы коннектора, удалить свою склейку и контроль `updateId`; кому нужен именно сырой поток кадров для записи в базу — оставаться на клиенте нельзя, добавить в трекер хук «на каждый кадр» (задача библиотеки, не приложения) |
+| `KlineSubscriptionWatchdog` и его типы `KlineSubscriptionWatchdogArgs/Config/Diagnostic`, `KlineWatchdogHealthEvent` | без изменений | ничего |
+| `KlineSubscriptionLastEntry`, `KlineSubscriptionRecoveryState`, `KlineSubscriptionOverdueEntry` (импорт типов) | `StreamLastEntry`, `StreamRecoveryState`, `StreamOverdueEntry` | заменить имена типов (форма одинаковая; у `StreamOverdueEntry` вместо `symbol`/`interval` — `key`, разбирается `parseKlineWatchdogKey(key)`) |
+| своя стратегия `StreamWatchdogStrategy` | `recover(key, context)` — второй аргумент; `computeAgeMs(entry, nowMs, key)` — третий | реализации могут игнорировать новые аргументы; моки в тестах, проверяющие `toHaveBeenCalledWith(key)`, дополнить `expect.anything()` |
+
 ## [3.21.0] - 2026-08-25 — Одна копия слоя связи и канала в процессе потребителя
 
 Помечено минорной версией, а не патчем: раньше точная версия зависимости не давала

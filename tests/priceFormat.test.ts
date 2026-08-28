@@ -1,7 +1,6 @@
 import {
   configurePriceTickSnapper,
   formatPrice,
-  isPriceTickSnapperConfigured,
   snapPriceToTick,
 } from '../src/utils/priceFormat';
 
@@ -33,7 +32,6 @@ describe('snapPriceToTick', () => {
   });
 
   it('keeps the value when no snapper is configured', () => {
-    expect(isPriceTickSnapperConfigured()).toBe(false);
     expect(snapPriceToTick('PROMUSDT', 2.961579786096256)).toBe(2.961579786096256);
   });
 });

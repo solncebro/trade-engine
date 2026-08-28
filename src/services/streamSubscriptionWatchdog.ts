@@ -3,7 +3,9 @@ import type {
   StreamLastEntry,
   StreamOverdueEntry,
   StreamRecoveryAttemptResult,
+  StreamRecoveryContext,
   StreamRecoveryState,
+  StreamScanResultFormatArgs,
   StreamSubscriptionWatchdogArgs,
   StreamSubscriptionWatchdogConfig,
   StreamSubscriptionWatchdogDiagnostic,
@@ -12,6 +14,7 @@ import type {
 } from './streamSubscriptionWatchdog.types';
 
 import { logger } from '../core/logger';
+import { sleep } from '../utils/sleep';
 
 const DEFAULT_CHECK_INTERVAL_MS = 15_000;
 const DEFAULT_GRACE_MS = 15_000;
@@ -25,18 +28,13 @@ const DEFAULT_RECOVERY_FAIL_COUNT_THRESHOLD = 3;
 const FAILED_PREVIEW_COUNT = 10;
 const LOG_PREFIX = '[StreamWatchdog]';
 
-function sleep(durationMs: number): Promise<void> {
-  return new Promise((resolve) => {
-    setTimeout(resolve, durationMs);
-  });
-}
-
 /**
  * Generic, stream-type-agnostic subscription health watchdog. Tracks per-key
  * freshness pings, detects staleness via the injected strategy, and recovers
  * stale subscriptions through the strategy with cooldown / fail-escalation /
- * suppression / bounded parallelism — the same machinery for every Bybit public
- * stream (orderbook, publicTrade, mark-price; kline folds in during Stage 2).
+ * suppression / bounded parallelism — the same machinery for every public
+ * stream (orderbook, publicTrade, mark-price, and kline through
+ * KlineWatchdogStrategy; KlineSubscriptionWatchdog is the thin shim over it).
  *
  * The watchdog is handler-type-agnostic: callers (the ExchangeConnector proxy)
  * wrap the concrete handler and feed `recordFreshness` / consult `isSuppressed`,
@@ -85,12 +83,13 @@ export class StreamSubscriptionWatchdog {
     return `${this.clientLabel} ${this.strategy.streamType}`;
   }
 
-  // Begin tracking a subscription. Seeds freshness to "now" so a just-subscribed
-  // key is not immediately flagged overdue before its first event arrives.
-  public registerKey(key: string): void {
+  // Begin tracking a subscription. Seeds freshness to "now" (or to the given
+  // timestamp — a kline seeds the open of the interval in progress) so a
+  // just-subscribed key is not immediately flagged overdue before its first event.
+  public registerKey(key: string, freshnessTimestamp?: number): void {
     if (!this.lastEntryByKey.has(key)) {
       const nowMs = Date.now();
-      this.lastEntryByKey.set(key, { freshnessTimestamp: nowMs, receivedAtMs: nowMs });
+      this.lastEntryByKey.set(key, { freshnessTimestamp: freshnessTimestamp ?? nowMs, receivedAtMs: nowMs });
     }
   }
 
@@ -139,11 +138,13 @@ export class StreamSubscriptionWatchdog {
           totalSubscriptions: this.lastEntryByKey.size,
           inProgressCount: this.countInProgress(),
           suppressedCount: this.suppressedKeySet.size,
-        }, `${LOG_PREFIX} ${this.streamLabel} alive — tick #${this.tickCount}, ${this.lastEntryByKey.size} subs, ${this.countInProgress()} in recovery`);
+        }, `${LOG_PREFIX} ${this.streamLabel} alive — tick #${this.tickCount}, ${this.lastEntryByKey.size} subs, ${this.countInProgress()} in recovery, ${this.suppressedKeySet.size} suppressed`);
       }
     }, this.checkIntervalMs).unref();
 
-    logger.info({ checkIntervalMs: this.checkIntervalMs, graceMs: this.graceMs }, `${LOG_PREFIX} ${this.streamLabel} started — checkIntervalMs=${this.checkIntervalMs}, graceMs=${this.graceMs}`);
+    const startupDetail = this.strategy.describeStartup?.() ?? '';
+
+    logger.info({ checkIntervalMs: this.checkIntervalMs, graceMs: this.graceMs }, `${LOG_PREFIX} ${this.streamLabel} started — checkIntervalMs=${this.checkIntervalMs}, graceMs=${this.graceMs}${startupDetail.length > 0 ? `, ${startupDetail}` : ''}`);
   }
 
   public stop(): void {
@@ -185,6 +186,7 @@ export class StreamSubscriptionWatchdog {
     }
 
     const recoverableList = this.filterRecoverable(overdueList);
+    const inProgressCount = overdueList.length - recoverableList.length;
 
     if (recoverableList.length === 0) {
       return;
@@ -195,7 +197,7 @@ export class StreamSubscriptionWatchdog {
 
     const resultList = await this.runRecoveryBatch(recoverableList);
     this.emitRecoveryEvents(resultList);
-    this.notifyScanResult(overdueList.length, resultList);
+    this.notifyScanResult({ overdueList, resultList, inProgressCount });
   }
 
   private collectOverdueList(): StreamOverdueEntry[] {
@@ -203,9 +205,10 @@ export class StreamSubscriptionWatchdog {
     const overdueList: StreamOverdueEntry[] = [];
 
     for (const [key, entry] of this.lastEntryByKey) {
-      const ageMs = this.strategy.computeAgeMs(entry, nowMs);
+      const ageMs = this.strategy.computeAgeMs(entry, nowMs, key);
+      const graceMs = this.strategy.computeGraceMs?.(key, this.graceMs) ?? this.graceMs;
 
-      if (ageMs <= this.graceMs) {
+      if (ageMs <= graceMs) {
         continue;
       }
 
@@ -247,6 +250,9 @@ export class StreamSubscriptionWatchdog {
 
   private async runRecoveryBatch(recoverableList: StreamOverdueEntry[]): Promise<StreamRecoveryAttemptResult[]> {
     const resultList: StreamRecoveryAttemptResult[] = [];
+
+    this.strategy.prepareRecoveryBatch?.(recoverableList.map(entry => entry.key));
+
     let cursor = 0;
     const workerCount = Math.min(this.parallelismLimit, recoverableList.length);
     const workerList: Promise<void>[] = [];
@@ -291,16 +297,17 @@ export class StreamSubscriptionWatchdog {
     }
 
     let isSuccessful = false;
+    const context: StreamRecoveryContext = { lastEntry: this.lastEntryByKey.get(key) ?? null };
 
     try {
-      const result = await this.strategy.recover(key);
+      const result = await this.strategy.recover(key, context);
       isSuccessful = result.status === 'recovered';
 
       // Seed freshness on success so a recovered key is not immediately re-flagged
       // before its next live event arrives.
       if (isSuccessful) {
         const nowMs = Date.now();
-        this.lastEntryByKey.set(key, { freshnessTimestamp: nowMs, receivedAtMs: nowMs });
+        this.lastEntryByKey.set(key, { freshnessTimestamp: result.freshnessTimestamp ?? nowMs, receivedAtMs: nowMs });
       }
 
       return result;
@@ -356,14 +363,16 @@ export class StreamSubscriptionWatchdog {
   private emitRecoveryEvents(resultList: StreamRecoveryAttemptResult[]): void {
     for (const result of resultList) {
       if (result.status === 'recovered') {
-        this.safeEmit(() => this.callbacks.onStreamRecovered?.(this.buildEvent(result.key, {})));
+        this.safeEmit(() => this.callbacks.onStreamRecovered?.(this.buildEvent(result.key, { replayedCount: result.replayedCount })));
       } else {
-        this.safeEmit(() => this.callbacks.onStreamRecoveryFailed?.(this.buildEvent(result.key, { errorText: result.errorText ?? 'unknown' })));
+        const consecutiveFailCount = this.recoveryStateByKey.get(result.key)?.consecutiveFailCount;
+
+        this.safeEmit(() => this.callbacks.onStreamRecoveryFailed?.(this.buildEvent(result.key, { errorText: result.errorText ?? 'unknown', consecutiveFailCount })));
       }
     }
   }
 
-  private buildEvent(key: string, extra: { ageMs?: number; errorText?: string }): StreamHealthEvent {
+  private buildEvent(key: string, extra: Omit<StreamHealthEvent, 'streamType' | 'key'>): StreamHealthEvent {
     return { streamType: this.strategy.streamType, key, ...extra };
   }
 
@@ -376,6 +385,18 @@ export class StreamSubscriptionWatchdog {
   }
 
   private notifyOverdue(overdueList: StreamOverdueEntry[]): void {
+    const formattedList = this.strategy.formatOverdue?.(overdueList);
+
+    if (formattedList !== undefined) {
+      logger.warn({ overdueCount: overdueList.length, partCount: formattedList.length }, `${LOG_PREFIX} ${this.streamLabel} ${overdueList.length} overdue, sending notify (${formattedList.length} part(s))`);
+
+      for (const part of formattedList) {
+        this.dispatchNotify(part);
+      }
+
+      return;
+    }
+
     const previewList = overdueList.slice(0, FAILED_PREVIEW_COUNT).map((entry) => `${entry.key} (${Math.round(entry.ageMs / 1000)}s)`);
     const suffix = overdueList.length > FAILED_PREVIEW_COUNT ? `, +${overdueList.length - FAILED_PREVIEW_COUNT} more` : '';
     const message = `⚠️ ${this.streamLabel} — ${overdueList.length} subscription(s) overdue: ${previewList.join(', ')}${suffix}`;
@@ -384,9 +405,22 @@ export class StreamSubscriptionWatchdog {
     this.dispatchNotify(message);
   }
 
-  private notifyScanResult(overdueCount: number, resultList: StreamRecoveryAttemptResult[]): void {
+  private notifyScanResult(args: StreamScanResultFormatArgs): void {
+    const { overdueList, resultList, inProgressCount } = args;
+    const overdueCount = overdueList.length;
     const recoveredCount = resultList.filter((result) => result.status === 'recovered').length;
     const failedList = resultList.filter((result) => result.status === 'failed');
+    const formattedList = this.strategy.formatScanResult?.(args);
+
+    logger.warn({ overdueCount, recoveredCount, failedCount: failedList.length, inProgressCount }, `${LOG_PREFIX} ${this.streamLabel} scan result — overdue=${overdueCount} recovered=${recoveredCount} failed=${failedList.length} inProgress=${inProgressCount}`);
+
+    if (formattedList !== undefined) {
+      for (const part of formattedList) {
+        this.dispatchNotify(part);
+      }
+
+      return;
+    }
 
     const lineList: string[] = [`🔄 ${this.streamLabel} — recovery (overdue=${overdueCount})`];
 
@@ -402,7 +436,6 @@ export class StreamSubscriptionWatchdog {
       }
     }
 
-    logger.warn({ overdueCount, recoveredCount, failedCount: failedList.length }, `${LOG_PREFIX} ${this.streamLabel} scan result — overdue=${overdueCount} recovered=${recoveredCount} failed=${failedList.length}`);
     this.dispatchNotify(lineList.join('\n'));
   }
 

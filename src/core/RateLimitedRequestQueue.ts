@@ -1,13 +1,11 @@
 import { logger } from './logger';
 import type { RateLimitedRequestQueueArgs } from './RateLimitedRequestQueue.types';
 
+import { sleep } from '../utils/sleep';
+
 const DEFAULT_INTERVAL_MS = 1000;
 const DEFAULT_LOGGER_LABEL = '[RateLimit]';
 const THROTTLE_LOG_WINDOW_MS = 60_000;
-
-function sleep(ms: number): Promise<void> {
-  return new Promise(resolve => setTimeout(resolve, ms));
-}
 
 export class RateLimitedRequestQueue {
   private readonly rateLimit: number;

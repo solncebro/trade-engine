@@ -1,9 +1,10 @@
 import { logger } from './logger';
 import type {
-  WithReadRetryArgs,
   WithResultRetryArgs,
   WithRetryOn429Args,
 } from './withRetryOn429.types';
+
+import { sleep } from '../utils/sleep';
 
 const DEFAULT_MAX_RETRIES = 3;
 const DEFAULT_BASE_DELAY_MS = 1000;
@@ -16,10 +17,6 @@ interface AxiosLikeError {
   };
   message?: string;
   isAxiosError?: boolean;
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise(resolve => setTimeout(resolve, ms));
 }
 
 function extractStatus(error: unknown): number | null {
@@ -141,15 +138,6 @@ function buildExchangeRetryPolicy(baseDelayMs: number): RetryPolicy {
 }
 
 export async function withRetryOn429<T>(args: WithRetryOn429Args<T>): Promise<T> {
-  return executeWithRetry({
-    fn: args.fn,
-    contextLabel: args.contextLabel,
-    maxRetries: args.maxRetries ?? DEFAULT_MAX_RETRIES,
-    ...buildExchangeRetryPolicy(args.baseDelayMs ?? DEFAULT_BASE_DELAY_MS),
-  });
-}
-
-export async function withReadRetry<T>(args: WithReadRetryArgs<T>): Promise<T> {
   return executeWithRetry({
     fn: args.fn,
     contextLabel: args.contextLabel,

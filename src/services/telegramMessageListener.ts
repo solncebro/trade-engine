@@ -5,13 +5,8 @@ import { NewMessage, NewMessageEvent } from 'telegram/events';
 import { StringSession } from 'telegram/sessions';
 
 import { logger } from '../core/logger';
+import type { TelegramMessageListenerArgs } from '../types/telegram';
 import { ReadlineHelper } from '../utils/readline.utils';
-
-export interface TelegramMessageListenerArgs {
-  apiId: number;
-  apiHash: string;
-  appSession: string;
-}
 
 export interface TelegramIncomingMessage {
   chatId: string;

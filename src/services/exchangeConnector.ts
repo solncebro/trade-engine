@@ -1,10 +1,12 @@
 import * as crypto from 'crypto';
 
 import { ExchangeError, Exchange as ExchangeInstance, ExchangeNameEnum, OrderSideEnum, PositionModeEnum, PositionSideEnum, TimeInForceEnum, TradeSymbolTypeEnum } from '@solncebro/exchange-engine';
-import type { CreateOrderWebSocketArgs, ExchangeClient, KlineHandler, MarkPriceHandler, MarkPriceUpdate, OrderBookHandler, OrderRateLimit, PublicTradeHandler, SubscribeKlinesArgs, SubscribeOrderbookArgs, SubscribePublicTradesArgs, Ticker, TickerBySymbol } from '@solncebro/exchange-engine';
+import type { CreateOrderWebSocketArgs, ExchangeClient, KlineHandler, MarkPriceHandler, MarkPriceUpdate, OrderBook, OrderBookHandler, OrderRateLimit, PublicTradeHandler, SubscribeKlinesArgs, SubscribeOrderbookArgs, SubscribePublicTradesArgs, Ticker, TickerBySymbol } from '@solncebro/exchange-engine';
 
 import { KlineSubscriptionWatchdog } from './klineSubscriptionWatchdog';
 import type { KlineSubscriptionWatchdogConfig } from './klineSubscriptionWatchdog.types';
+import { OrderBookTracker, resolveOrderBookStreamDepth } from './orderBookTracker';
+import type { LiveOrderBook } from './orderBookTracker.types';
 import { StreamSubscriptionWatchdog } from './streamSubscriptionWatchdog';
 import type { StreamHealthEvent, StreamSubscriptionWatchdogConfig, StreamWatchdogCallbacks } from './streamSubscriptionWatchdog.types';
 import {
@@ -19,7 +21,7 @@ import {
 import { logger } from '../core/logger';
 import { PositionManager } from '../core/positionManager';
 import { RateLimitedRequestQueue } from '../core/RateLimitedRequestQueue';
-import { withReadRetry } from '../core/withRetryOn429';
+import { withRetryOn429 } from '../core/withRetryOn429';
 import {
   ExchangeConfig,
   MarketTypeEnum,
@@ -105,6 +107,8 @@ export class ExchangeConnector {
   private _spotProxy: ExchangeClient | null = null;
   private readonly rateLimitConfigOverride: RateLimitConfig | null | undefined;
   private writeQueue: RateLimitedRequestQueue | null = null;
+  private readonly exchangeLabel: string;
+  private readonly orderBookTrackerByMarketType: Map<MarketTypeEnum, OrderBookTracker> = new Map();
 
   // On-demand futures trade-symbol reload state: a shared in-flight promise so concurrent
   // callers join one REST round-trip, plus the last reload timestamp for the cooldown.
@@ -140,6 +144,8 @@ export class ExchangeConnector {
     });
 
     const exchangeLabel = exchangeName.charAt(0).toUpperCase() + exchangeName.slice(1);
+
+    this.exchangeLabel = exchangeLabel;
 
     this.futuresStreamBundle = this.buildStreamBundle(
       MarketTypeEnum.Futures,
@@ -413,11 +419,11 @@ export class ExchangeConnector {
 
   public async initialize(): Promise<void> {
     try {
-      await withReadRetry({
+      await withRetryOn429({
         fn: () => this.exchange.futures.loadTradeSymbols(),
         contextLabel: `loadTradeSymbols futures ${this.exchangeName}`,
       });
-      await withReadRetry({
+      await withRetryOn429({
         fn: () => this.exchange.spot.loadTradeSymbols(),
         contextLabel: `loadTradeSymbols spot ${this.exchangeName}`,
       });
@@ -578,11 +584,11 @@ export class ExchangeConnector {
   private async updateTickers(): Promise<void> {
     try {
       const [futuresTickerBySymbol, spotTickerBySymbol] = await Promise.all([
-        withReadRetry({
+        withRetryOn429({
           fn: () => this.exchange.futures.fetchTickers(),
           contextLabel: `fetchTickers futures ${this.exchangeName}`,
         }),
-        withReadRetry({
+        withRetryOn429({
           fn: () => this.exchange.spot.fetchTickers(),
           contextLabel: `fetchTickers spot ${this.exchangeName}`,
         }),
@@ -706,6 +712,53 @@ export class ExchangeConnector {
 
   public getMarkPrice(symbol: string): MarkPriceUpdate | undefined {
     return this.markPriceByFuturesSymbol.get(symbol);
+  }
+
+  // ---- Order book: the single door to depth for consumers (never the raw client) ----
+
+  private getOrCreateOrderBookTracker(marketType: MarketTypeEnum): OrderBookTracker {
+    const existing = this.orderBookTrackerByMarketType.get(marketType);
+
+    if (existing !== undefined) {
+      return existing;
+    }
+
+    // Subscribe through the proxied client so the orderbook watchdog (when enabled) wraps
+    // the tracker's handler and recovers a silent topic; a passthrough when disabled.
+    const tracker = new OrderBookTracker({
+      client: this.getStreamClient(marketType),
+      depth: resolveOrderBookStreamDepth(this.exchangeName),
+      clientLabel: `${this.exchangeLabel} ${isSpot(marketType) ? 'Spot' : 'Futures'}`,
+    });
+
+    this.orderBookTrackerByMarketType.set(marketType, tracker);
+
+    return tracker;
+  }
+
+  /**
+   * Starts keeping a live order book for `symbol` (reference-counted; see OrderBookTracker).
+   * Throws when the market has no order book stream (e.g. Binance spot).
+   */
+  public subscribeOrderBook(symbol: string, marketType: MarketTypeEnum): void {
+    this.getOrCreateOrderBookTracker(marketType).subscribe(symbol);
+  }
+
+  public unsubscribeOrderBook(symbol: string, marketType: MarketTypeEnum): void {
+    this.orderBookTrackerByMarketType.get(marketType)?.unsubscribe(symbol);
+  }
+
+  /** The live merged book, or null while no snapshot is held (not subscribed / not arrived yet / sequence broke). */
+  public getOrderBook(symbol: string, marketType: MarketTypeEnum): LiveOrderBook | null {
+    return this.orderBookTrackerByMarketType.get(marketType)?.getBook(symbol) ?? null;
+  }
+
+  /** One REST read of the book — the fallback when the live book is not available in time. */
+  public async fetchOrderBook(symbol: string, marketType: MarketTypeEnum, limit?: number): Promise<OrderBook> {
+    return withRetryOn429({
+      fn: () => this.getClient(marketType).fetchOrderBook(symbol, limit),
+      contextLabel: `fetchOrderBook ${symbol}`,
+    });
   }
 
   public async createOrder(orderParams: OrderParams): Promise<OrderResult> {
@@ -1074,7 +1127,7 @@ export class ExchangeConnector {
         { exchange: this.exchangeName, reasonLabel },
         `[ExchangeConnector] ${reasonLabel} — reloading all futures trade symbols`
       );
-      await withReadRetry({
+      await withRetryOn429({
         fn: () => this.exchange.futures.loadTradeSymbols(),
         contextLabel: `reload futures trade symbols (${reasonLabel}) ${this.exchangeName}`,
       });
@@ -1160,6 +1213,12 @@ export class ExchangeConnector {
   public async disconnect(): Promise<void> {
     this.isWatchingTickers = false;
     this.stopWatchingMarkPrices();
+
+    for (const tracker of this.orderBookTrackerByMarketType.values()) {
+      tracker.stop();
+    }
+
+    this.orderBookTrackerByMarketType.clear();
 
     this.stopStreamBundle(this.futuresStreamBundle);
     this.stopStreamBundle(this.spotStreamBundle);

@@ -35,6 +35,7 @@ import { startIntervalScheduler } from '../utils/intervalScheduler';
 import type { IntervalSchedulerHandle } from '../utils/intervalScheduler';
 import { loggedCancelBatchOrders, loggedCancelOrder, loggedGetOrder } from '../utils/loggedExchangeCall';
 import { isOrderSuccessful } from '../utils/order.utils';
+import { sleep } from '../utils/sleep';
 
 const TICK_INTERVAL_MS = 1_000;
 const PER_ENTRY_COOLDOWN_MS = 2_000;
@@ -53,10 +54,6 @@ const EXCHANGE_BATCH_MAX_SIZE = 10;
 // Delay between create sub-batches — guards Bybit per-UID write rate-limit (10006). Cancel passes 0
 // (latency-critical); the cancel retry-tracker is the safety-net for any rate-limit hiccup.
 const BATCH_INTER_SUB_BATCH_DELAY_MS = 1_000;
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
 
 interface OrderManagerArgs {
   exchangeConnector: ExchangeConnector;
@@ -334,7 +331,7 @@ class OrderManager {
 
     // Immediate verify (WS-окно + один REST getOrder) выполняется параллельно для всего батча.
     // Caller получает результат после `IMMEDIATE_VERIFY_WAIT_MS`, как для single.
-    await new Promise((resolve) => setTimeout(resolve, IMMEDIATE_VERIFY_WAIT_MS));
+    await sleep(IMMEDIATE_VERIFY_WAIT_MS);
 
     for (const orderId of orderIdList) {
       const entry = this.pendingByOrderId.get(orderId);
@@ -953,7 +950,7 @@ class OrderManager {
   }
 
   private async waitForImmediateVerify(entry: PendingCancelEntry, isCancelSent: boolean): Promise<ImmediateCancelOutcome> {
-    await new Promise((resolve) => setTimeout(resolve, IMMEDIATE_VERIFY_WAIT_MS));
+    await sleep(IMMEDIATE_VERIFY_WAIT_MS);
 
     if (!this.pendingByOrderId.has(entry.orderId)) {
       const immediateResult: ImmediateCancelResult = 'cancelled';

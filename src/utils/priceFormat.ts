@@ -34,11 +34,6 @@ function configurePriceTickSnapper(snapper: PriceTickSnapper | null): void {
   tickSnapper = snapper;
 }
 
-/** True once a snapper is installed — lets a caller warn instead of silently printing raw prices. */
-function isPriceTickSnapperConfigured(): boolean {
-  return tickSnapper !== null;
-}
-
 /**
  * The price as the exchange would hold it. An unknown symbol, an unconfigured or a throwing snapper
  * keeps the input: an approximate-but-readable number is never worth breaking a message — or an order
@@ -79,7 +74,6 @@ export {
   ABSENT_PRICE_TEXT,
   configurePriceTickSnapper,
   formatPrice,
-  isPriceTickSnapperConfigured,
   PriceTickSnapper,
   snapPriceToTick,
 };

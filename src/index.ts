@@ -2,7 +2,6 @@ export {
   ExchangeError,
   formatWebSocketConnectionsReport,
   parseBybitOrderbookRawFrame,
-  TriggerByEnum,
 } from '@solncebro/exchange-engine';
 
 export { ExchangeConnector } from './services/exchangeConnector';
@@ -13,21 +12,24 @@ export type {
 } from './services/exchangeConnector';
 export { FirebaseServiceBase } from './services/firebaseServiceBase';
 export { KlineSubscriptionWatchdog } from './services/klineSubscriptionWatchdog';
+export { OrderBookTracker, resolveOrderBookStreamDepth } from './services/orderBookTracker';
+export type { LiveOrderBook, OrderBookTrackerArgs } from './services/orderBookTracker.types';
 export type {
-  KlineSubscriptionLastEntry,
-  KlineSubscriptionOverdueEntry,
-  KlineSubscriptionRecoveryState,
   KlineSubscriptionWatchdogArgs,
   KlineSubscriptionWatchdogConfig,
   KlineSubscriptionWatchdogDiagnostic,
   KlineWatchdogHealthEvent,
 } from './services/klineSubscriptionWatchdog.types';
+export { buildKlineWatchdogKey, KlineWatchdogStrategy, parseKlineWatchdogKey } from './services/klineWatchdogStrategy';
+export type { KlineWatchdogStrategyArgs } from './services/klineWatchdogStrategy.types';
 export { PremiumIndexCalculator } from './services/premiumIndexCalculator';
 export { StreamSubscriptionWatchdog } from './services/streamSubscriptionWatchdog';
 export type {
   StreamHealthEvent,
   StreamLastEntry,
   StreamRecoveryAttemptResult,
+  StreamRecoveryContext,
+  StreamScanResultFormatArgs,
   StreamSubscriptionWatchdogArgs,
   StreamSubscriptionWatchdogConfig,
   StreamSubscriptionWatchdogDiagnostic,
@@ -121,12 +123,10 @@ export type {
   TrendSummary,
 } from './core/TrendMonitor.types';
 export {
-  withReadRetry,
   withResultRetry,
   withRetryOn429,
 } from './core/withRetryOn429';
 export type {
-  WithReadRetryArgs,
   WithRetryOn429Args,
 } from './core/withRetryOn429.types';
 
@@ -210,11 +210,14 @@ export * from './chart/ChartGenerator.types';
 export * from './utils/indicators';
 export * from './utils/indicators.types';
 export * from './utils/chunk';
+export * from './utils/orderBookSlice';
+export * from './utils/orderBookSlice.types';
 export * from './utils/intervalScheduler';
 export * from './utils/feederConnectionMonitor';
 export * from './utils/klineList';
 export * from './utils/loggedExchangeCall';
 export * from './utils/timeout';
+export * from './utils/sleep';
 export * from './utils/nestedField';
 export * from './utils/perKeySerializer';
 export * from './utils/priceFormat';

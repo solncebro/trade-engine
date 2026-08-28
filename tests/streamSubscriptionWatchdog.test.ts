@@ -87,7 +87,7 @@ describe('StreamSubscriptionWatchdog', () => {
     jest.setSystemTime(T0 + GRACE_MS + CHECK_INTERVAL_MS + 1);
     await jest.advanceTimersByTimeAsync(CHECK_INTERVAL_MS);
 
-    expect(strategy.recover).toHaveBeenCalledWith('BTCUSDT:200');
+    expect(strategy.recover).toHaveBeenCalledWith('BTCUSDT:200', expect.anything());
     expect(staleEventList).toHaveLength(1);
     expect(staleEventList[0]).toMatchObject({ streamType: 'orderbook', key: 'BTCUSDT:200' });
     expect(recoveredEventList).toHaveLength(1);

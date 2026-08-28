@@ -1,4 +1,4 @@
-import { withReadRetry, withRetryOn429 } from '../src/core/withRetryOn429';
+import { withRetryOn429 } from '../src/core/withRetryOn429';
 
 jest.mock('../src/core/logger', () => ({
   logger: {
@@ -90,24 +90,4 @@ describe('withRetryOn429', () => {
     ).rejects.toThrow();
     expect(fn).toHaveBeenCalledTimes(2);
   }, 5_000);
-});
-
-describe('withReadRetry', () => {
-  it('retries 429 the same way as withRetryOn429', async () => {
-    const fn = jest
-      .fn()
-      .mockRejectedValueOnce(makeAxiosError(429, { 'retry-after': '0' }))
-      .mockResolvedValueOnce('ok');
-
-    const result = await withReadRetry({ fn, contextLabel: 'read-test', maxRetries: 3, baseDelayMs: 20 });
-
-    expect(result).toBe('ok');
-    expect(fn).toHaveBeenCalledTimes(2);
-  });
-
-  it('throws on non-retryable status (400)', async () => {
-    const fn = jest.fn().mockRejectedValue(makeAxiosError(400));
-    await expect(withReadRetry({ fn, contextLabel: 'read-400' })).rejects.toThrow();
-    expect(fn).toHaveBeenCalledTimes(1);
-  });
 });

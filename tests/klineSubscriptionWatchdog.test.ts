@@ -307,9 +307,9 @@ describe('KlineSubscriptionWatchdog', () => {
     expect(userHandler).not.toHaveBeenCalled();
 
     resolveFetch([buildKline(T0 + 2 * FIVE_MIN_MS)]);
-    await Promise.resolve();
-    await Promise.resolve();
-    await Promise.resolve();
+    // Flush every pending microtask: the recovery now crosses the strategy → generic
+    // watchdog boundary, so a fixed count of ticks would pin an implementation detail.
+    await jest.advanceTimersByTimeAsync(0);
 
     const lateKline = buildKline(T0 + 3 * FIVE_MIN_MS);
     wrapped('BTCUSDT', lateKline);

@@ -473,4 +473,4 @@ async function generateVolumeMontageChart(args: GenerateVolumeMontageChartArgs):
   return Buffer.from(pngBuffer);
 }
 
-export { generateChart, generateVolumeMontageChart, selectClosedKlineList };
+export { generateChart, generateVolumeMontageChart };

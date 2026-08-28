@@ -16,7 +16,7 @@ export * from './core/positionManager.types';
 
 export { RateLimitedRequestQueue } from './core/RateLimitedRequestQueue';
 export type { RateLimitedRequestQueueArgs } from './core/RateLimitedRequestQueue.types';
-export { withReadRetry, withRetryOn429 } from './core/withRetryOn429';
+export { withRetryOn429 } from './core/withRetryOn429';
 
 export { ExchangeError, formatWebSocketConnectionsReport, parseBybitOrderbookRawFrame } from '@solncebro/exchange-engine';
 

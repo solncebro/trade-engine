@@ -103,9 +103,9 @@ class FirebaseServiceBase<T> extends EventEmitter implements Notifiable {
 - Предназначен для наследования — потребители расширяют этот класс
 - **3.5.0**: `updateData(data: Partial<T>)` внутренне вызывает `flattenForFirestoreUpdate(data)` — превращает вложенные объекты в dot-notation (`{ a: { b: 1 } }` → `{ "a.b": 1 }`), как требует Firestore `documentReference.update()`. Массивы и примитивы сохраняются как есть.
 
-## KlineSubscriptionWatchdog (`src/services/klineSubscriptionWatchdog.ts`, 3.5.0)
+## KlineSubscriptionWatchdog (`src/services/klineSubscriptionWatchdog.ts`, 3.5.0; с 3.22.0 — обёртка)
 
-Мониторинг активности kline-подписок с автоматическим восстановлением. Создаётся опционально внутри `ExchangeConnector` через 5-й аргумент конструктора `klineWatchdogConfig`.
+Мониторинг активности kline-подписок с автоматическим восстановлением. Создаётся опционально внутри `ExchangeConnector` через 5-й аргумент конструктора `klineWatchdogConfig`. **С 3.22.0 это тонкая обёртка** над общим `StreamSubscriptionWatchdog` и `KlineWatchdogStrategy` (`src/services/klineWatchdogStrategy.ts`): интерфейс ниже прежний, вся машинерия сканирования/восстановления/подавления — общая с потоками стакана, сделок и mark-цены (`.claude/rules/exchange-connector.md`, «Stream Subscription Watchdog»).
 
 ```typescript
 class KlineSubscriptionWatchdog {
@@ -138,7 +138,11 @@ interface KlineSubscriptionWatchdogConfig {
 2. Если поток всё равно не восстановился (новый kline не пришёл в течение grace) → REST `fetchKlines(symbol, interval, limit=restRefetchLimit)` и replay в user handler.
 3. После `recoveryFailCountThreshold` неудач для одной подписки → cooldown `recoveryFailCooldownMs`.
 
-См. `src/services/klineSubscriptionWatchdog.ts`. Использует `subscribeKlines`/`unsubscribeKlines`/`resubscribeKlineList`/`fetchKlines` из `ExchangeClient`.
+См. `src/services/klineSubscriptionWatchdog.ts` (обёртка) и `src/services/klineWatchdogStrategy.ts` (логика). Использует `resubscribeKlineList`/`fetchKlines` из `ExchangeClient`; `subscribeKlines`/`unsubscribeKlines` оборачивает прокси `ExchangeConnector`.
+
+## Утилиты паузы и таймаута
+
+`sleep(ms)` (`src/utils/sleep.ts`, 3.22.0) и `withTimeout(promise, ms, message)` (`src/utils/timeout.ts`) экспортируются из пакета — приложениям своих копий не заводить (в 3.22.0 вычищены пять копий `sleep` и вторая `withTimeout` внутри самой библиотеки).
 
 ## Binance Spot user-data (exchange-engine 0.14.0, commit `d93c52a`)
 
@@ -261,18 +265,17 @@ class RateLimitedRequestQueue {
 
 Используется внутри `PositionManager` (все write-операции) и `ExchangeConnector` (динамически создаётся в `initialize()` через `getOrderRateLimit()`). Логирует первый раз, когда срабатывает throttling.
 
-### withRetryOn429 / withReadRetry (`src/core/withRetryOn429.ts`)
+### withRetryOn429 / withResultRetry (`src/core/withRetryOn429.ts`)
 
 Retry на 429 и 5xx с exponential backoff и поддержкой `Retry-After` header.
 
 ```typescript
 withRetryOn429<T>({ fn, contextLabel, maxRetries?, baseDelayMs? }): Promise<T>
-withReadRetry<T>({ fn, contextLabel, maxRetries?, baseDelayMs? }): Promise<T>
 ```
 
 Defaults: `maxRetries = 3`, `baseDelayMs = 1000`, exponential `delay * 2^(attempt-1)`. Используется:
 - `withRetryOn429`: внутри `PositionManager.cancelOrder/cancelBatchOrders/cancelAllOrders/modifyOrder/modifyBatchOrders/setLeverage/setMarginMode`.
-- `withReadRetry`: в `ExchangeConnector.initialize()` (loadTradeSymbols) и `updateTickers()` (fetchTickers).
+- Читающие вызовы `ExchangeConnector` (`initialize()` — loadTradeSymbols, `updateTickers()` — fetchTickers, `fetchOrderBook`) — тот же `withRetryOn429`; отдельный `withReadRetry` удалён в 3.22.0 как побайтовый дубль.
 
 ## Утилиты (`src/utils/`)
 

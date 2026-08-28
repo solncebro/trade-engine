@@ -25,17 +25,18 @@ export function buildPublicTradeWatchdogKey(symbol: string): string {
 
 /**
  * Heartbeat-based staleness (overdue when no event arrived for > graceMs) with
- * resubscribe-only recovery (no REST replay → no suppression needed). Shared by
- * the orderbook / publicTrade / mark-price strategies; only the resubscribe call
- * differs per stream type.
+ * resubscribe-only recovery (no REST replay → no suppression needed). One class
+ * for orderbook / publicTrade / mark-price: the three differ ONLY in the stream
+ * type label and the resubscribe call, which the named subclasses below supply.
  */
-abstract class HeartbeatResubscribeStrategy implements StreamWatchdogStrategy {
-  public abstract readonly streamType: StreamType;
+class HeartbeatResubscribeStrategy implements StreamWatchdogStrategy {
   public readonly suppressDuringRecovery = false;
 
-  protected constructor(
+  public constructor(
+    public readonly streamType: StreamType,
     protected readonly client: ExchangeClient,
     protected readonly clientLabel: string,
+    private readonly resubscribe: (client: ExchangeClient, key: string) => void
   ) {}
 
   public computeAgeMs(entry: StreamLastEntry, nowMs: number): number {
@@ -44,7 +45,7 @@ abstract class HeartbeatResubscribeStrategy implements StreamWatchdogStrategy {
 
   public async recover(key: string): Promise<StreamRecoveryAttemptResult> {
     try {
-      this.doResubscribe(key);
+      this.resubscribe(this.client, key);
       logger.info({ key }, `${LOG_PREFIX} ${this.clientLabel} ${this.streamType} resubscribe ${key}`);
 
       return { key, status: 'recovered', errorText: null };
@@ -55,46 +56,26 @@ abstract class HeartbeatResubscribeStrategy implements StreamWatchdogStrategy {
       return { key, status: 'failed', errorText };
     }
   }
-
-  protected abstract doResubscribe(key: string): void;
 }
 
 export class OrderbookWatchdogStrategy extends HeartbeatResubscribeStrategy {
-  public readonly streamType: StreamType = 'orderbook';
-
   public constructor(client: ExchangeClient, clientLabel: string) {
-    super(client, clientLabel);
-  }
+    super('orderbook', client, clientLabel, (streamClient, key) => {
+      const separatorIndex = key.lastIndexOf(':');
 
-  protected doResubscribe(key: string): void {
-    const separatorIndex = key.lastIndexOf(':');
-    const symbol = key.slice(0, separatorIndex);
-    const depth = Number(key.slice(separatorIndex + 1));
-
-    this.client.resubscribeOrderbook({ symbol, depth });
+      streamClient.resubscribeOrderbook({ symbol: key.slice(0, separatorIndex), depth: Number(key.slice(separatorIndex + 1)) });
+    });
   }
 }
 
 export class PublicTradeWatchdogStrategy extends HeartbeatResubscribeStrategy {
-  public readonly streamType: StreamType = 'publicTrade';
-
   public constructor(client: ExchangeClient, clientLabel: string) {
-    super(client, clientLabel);
-  }
-
-  protected doResubscribe(key: string): void {
-    this.client.resubscribePublicTrades({ symbol: key });
+    super('publicTrade', client, clientLabel, (streamClient, key) => streamClient.resubscribePublicTrades({ symbol: key }));
   }
 }
 
 export class MarkPriceWatchdogStrategy extends HeartbeatResubscribeStrategy {
-  public readonly streamType: StreamType = 'markPrice';
-
   public constructor(client: ExchangeClient, clientLabel: string) {
-    super(client, clientLabel);
-  }
-
-  protected doResubscribe(_key: string): void {
-    this.client.resubscribeMarkPrices();
+    super('markPrice', client, clientLabel, streamClient => streamClient.resubscribeMarkPrices());
   }
 }

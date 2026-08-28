@@ -1,7 +1,8 @@
 import type { ExchangeClient, KlineInterval } from '@solncebro/exchange-engine';
 
-// Structured health event — mirrors the generic StreamSubscriptionWatchdog event
-// contract so consumers treat kline and non-kline stream health uniformly.
+// Structured health event — the generic StreamHealthEvent with the kline key already
+// split into symbol + interval, so consumers treat kline and non-kline stream health
+// uniformly without parsing keys.
 export interface KlineWatchdogHealthEvent {
   symbol: string;
   interval: KlineInterval;
@@ -37,34 +38,6 @@ export interface KlineSubscriptionWatchdogArgs {
   clientLabel: string;
   config?: KlineSubscriptionWatchdogConfig;
   onNotify?: (message: string) => void | Promise<void>;
-}
-
-export interface KlineSubscriptionLastEntry {
-  openTimestamp: number;
-  receivedAtMs: number;
-}
-
-export interface KlineSubscriptionRecoveryState {
-  isInProgress: boolean;
-  lastAttemptAtMs: number;
-  consecutiveFailCount: number;
-}
-
-export interface KlineSubscriptionOverdueEntry {
-  symbol: string;
-  interval: KlineInterval;
-  ageMs: number;
-  expectedNextOpenTimestamp: number;
-}
-
-export type KlineRecoveryAttemptStatus = 'recovered' | 'failed';
-
-export interface KlineRecoveryAttemptResult {
-  symbol: string;
-  interval: KlineInterval;
-  status: KlineRecoveryAttemptStatus;
-  replayedCount: number;
-  errorText: string | null;
 }
 
 export interface KlineSubscriptionWatchdogDiagnostic {

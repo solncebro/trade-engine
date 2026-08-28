@@ -208,6 +208,38 @@ const markPriceUpdate = connector.getMarkPrice('BTCUSDT');
 connector.stopWatchingMarkPrices();
 ```
 
+### Order book (live depth) — the only door to depth
+
+```typescript
+import { MarketTypeEnum, sliceAskVolumeWithinBand } from '@solncebro/trade-engine';
+
+// Reference-counted: the stream topic opens on the first subscribe of a symbol
+// and closes on the last unsubscribe. Depth is fixed per exchange (Binance 20, Bybit 50).
+connector.subscribeOrderBook('BTCUSDT', MarketTypeEnum.Futures);
+
+// Synchronous read of the merged book: null until the first snapshot lands
+// (or while a broken delta sequence waits for a fresh one).
+const book = connector.getOrderBook('BTCUSDT', MarketTypeEnum.Futures);
+
+if (book !== null) {
+  // How much can be bought without paying more than 0.5% above the reference price.
+  const slice = sliceAskVolumeWithinBand({
+    askList: book.askList,
+    referencePrice: 100,
+    bandPercent: 0.5,
+    remainingQty: 1_000,
+  });
+  // slice.qty, slice.boundaryPrice, slice.bestAskPrice, slice.isBeyondBand
+}
+
+// One-shot REST read — the fallback when the live book is not there in time.
+const snapshot = await connector.fetchOrderBook('BTCUSDT', MarketTypeEnum.Futures, 20);
+
+connector.unsubscribeOrderBook('BTCUSDT', MarketTypeEnum.Futures);
+```
+
+Never subscribe through `connector.getClient(...).subscribeOrderbook` — that is the raw client of the lower library; the merge of snapshots and deltas, the sequence check and the resubscribe live in `OrderBookTracker` behind the connector.
+
 ### Price limit bounds
 
 ```typescript
@@ -234,6 +266,9 @@ const bounds = OrderCalculator.calculatePriceLimitBounds({
 | `TelegramMessageListener` | MTProto client for listening to Telegram channel messages |
 | `FirebaseServiceBase<T>` | Firestore CRUD with real-time subscription |
 | `ConfigManager` | Environment variable validation |
+| `OrderBookTracker` | Live merged order book per subscribed symbol (Binance partial-depth slices, Bybit snapshot + deltas, sequence-gap resubscribe); used by `ExchangeConnector.subscribeOrderBook/getOrderBook` |
+| `StreamSubscriptionWatchdog` | Stream-type-agnostic subscription health watchdog; behaviour per stream comes from a `StreamWatchdogStrategy` (`OrderbookWatchdogStrategy`, `PublicTradeWatchdogStrategy`, `MarkPriceWatchdogStrategy`, `KlineWatchdogStrategy`) |
+| `KlineSubscriptionWatchdog` | Thin kline-shaped shim over `StreamSubscriptionWatchdog` + `KlineWatchdogStrategy` (same public surface as before) |
 
 ### Enums (re-exported from `@solncebro/exchange-engine`)
 
@@ -275,6 +310,15 @@ const bounds = OrderCalculator.calculatePriceLimitBounds({
 | `normalizeSymbol(symbol)` | Remove exchange suffixes (`:`, `/`, `.`, `-`) |
 | `formatTimestamp(ts)` | Format timestamp to `HH:mm:ss.SSS` |
 | `createLogger(args?)` | Create pino logger with optional BetterStack transport |
+| `sliceAskVolumeWithinBand(args)` | Ask liquidity that fits within a price band above a reference price (pure) |
+| `resolveOrderBookStreamDepth(exchangeName)` | Stream depth the order-book tracker subscribes at (Binance 20, Bybit 50) |
+| `sleep(ms)` | Promise-wrapped `setTimeout` — the one pause primitive for the library and its consumers |
+| `withTimeout(promise, ms, message)` | Race a promise against a timer |
+| `withRetryOn429(args)` / `withResultRetry(args)` | Retry wrappers (exponential backoff on 429/5xx; result-based retry). `withReadRetry` was removed in 3.22.0 — it was the same function under a second name |
+
+## Migration notes
+
+Every removal or rename ships with a "what to do" row in `CHANGELOG.md` → `### Migration (для потребителей)`. The 3.22.0 rows in short: `withReadRetry` → `withRetryOn429`; `isPriceTickSnapperConfigured` → removed; a local `sleep`/`withTimeout` in an app → import from this package; order-book access through the raw client → `connector.subscribeOrderBook/getOrderBook/unsubscribeOrderBook`; `KlineSubscriptionWatchdog` → unchanged surface; `KlineSubscription{LastEntry,RecoveryState,OverdueEntry}` → `Stream{LastEntry,RecoveryState,OverdueEntry}`.
 
 ## Key Principles
 
