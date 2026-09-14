@@ -9,6 +9,7 @@ import type { Kline, MaLevel } from '../types/index';
 import { VOLUME_SMA_PERIOD } from '../types/index';
 import { calculateMaSeries, calculateValueMaSeries } from '../utils/indicators';
 import { selectClosedKlineList } from '../utils/klineList';
+import { formatPrice, snapPriceToTick } from '../utils/priceFormat';
 
 dayjs.extend(utc);
 
@@ -252,14 +253,14 @@ async function generateChart(args: GenerateChartArgs): Promise<Buffer> {
     for (const level of [25, 50, 100, 200] as MaLevel[]) {
       const series = calculateMaSeries(klineList, level);
       const lastValue = series[series.length - 1];
-      computedMaByLevel[`ma${level}`] = lastValue;
+      computedMaByLevel[`ma${level}`] = lastValue === null ? null : snapPriceToTick(symbol, lastValue);
     }
 
-    const orderLinePriceList = args.orderLineList.map((orderLine) => ({ label: orderLine.label, price: orderLine.price }));
-    const yDataMin = Math.min(...displayKlineList.map((kline) => kline.lowPrice));
-    const yDataMax = Math.max(...displayKlineList.map((kline) => kline.highPrice));
+    const orderLinePriceList = args.orderLineList.map((orderLine) => ({ label: orderLine.label, price: snapPriceToTick(symbol, orderLine.price) }));
+    const yDataMin = snapPriceToTick(symbol, Math.min(...displayKlineList.map((kline) => kline.lowPrice)));
+    const yDataMax = snapPriceToTick(symbol, Math.max(...displayKlineList.map((kline) => kline.highPrice)));
 
-    logger.info({ symbol, interval, klineLength: klineList.length, displayCount, lastClosePrice: klineList[klineList.length - 1]?.closePrice, firstOpenTimestamp: displayKlineList[0]?.openTimestamp, lastOpenTimestamp: displayKlineList[displayKlineList.length - 1]?.openTimestamp, yDataMin, yDataMax, orderLinePriceList, computedMaByLevel }, `[Chart] ${symbol} generateChart orderLineCount=${args.orderLineList.length} klineLen=${klineList.length} displayCount=${displayCount} computedMa50=${computedMaByLevel.ma50} computedMa25=${computedMaByLevel.ma25} yDataRange=${yDataMin}..${yDataMax} [${interval}]`);
+    logger.info({ symbol, interval, klineLength: klineList.length, displayCount, lastClosePrice: snapPriceToTick(symbol, klineList[klineList.length - 1]?.closePrice), firstOpenTimestamp: displayKlineList[0]?.openTimestamp, lastOpenTimestamp: displayKlineList[displayKlineList.length - 1]?.openTimestamp, yDataMin, yDataMax, orderLinePriceList, computedMaByLevel }, `[Chart] ${symbol} generateChart orderLineCount=${args.orderLineList.length} klineLen=${klineList.length} displayCount=${displayCount} computedMa50=${formatPrice(symbol, computedMaByLevel.ma50)} computedMa25=${formatPrice(symbol, computedMaByLevel.ma25)} yDataRange=${formatPrice(symbol, yDataMin)}..${formatPrice(symbol, yDataMax)} [${interval}]`);
   }
 
   const volumeSeriesOptionList = drawVolumeSubchart

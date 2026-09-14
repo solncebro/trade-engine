@@ -30,6 +30,7 @@ import {
   OrderTypeEnum,
 } from '../types';
 import { formatErrorMessage } from '../utils/errorFormatter.utils';
+import { configureAmountStepSnapper } from '../utils/numberFormat';
 import { isSpot } from '../utils/order.utils';
 import { configurePriceTickSnapper } from '../utils/priceFormat';
 import { normalizeSymbol } from '../utils/symbol.utils';
@@ -57,6 +58,19 @@ export interface StreamWatchdogConfigMap {
   markPrice?: StreamWatchdogStreamConfig;
 }
 
+// Schedule of the built-in instruments refresh. Omitted field = the 24h default; 0 (or a
+// negative value) switches the schedule off entirely and leaves the caller to refresh by hand.
+export interface TradeSymbolsRefreshConfig {
+  tradeSymbolsRefreshIntervalMs?: number;
+}
+
+// Per-market reload bookkeeping: one shared in-flight promise (concurrent callers join a
+// single REST round-trip) plus the moment the last reload finished (cooldown).
+interface TradeSymbolsReloadState {
+  inFlight: Promise<void> | null;
+  lastReloadMs: number;
+}
+
 interface StreamWatchdogBundle {
   kline: KlineSubscriptionWatchdog | null;
   orderbook: StreamSubscriptionWatchdog | null;
@@ -66,11 +80,25 @@ interface StreamWatchdogBundle {
 
 const FALLBACK_WRITE_REQUESTS_PER_SECOND = 10;
 
-// Min gap between on-demand full futures trade-symbol reloads (triggered by a missing
+// Min gap between full trade-symbol reloads of one market (triggered by a missing
 // symbol). Trade symbols load once at initialize(); a symbol listed afterwards is absent
 // until reloaded. This cooldown guards the instruments-info REST endpoint from being
 // hammered when a chaser is created for a symbol that genuinely does not exist.
-const FUTURES_TRADE_SYMBOLS_RELOAD_COOLDOWN_MS = 60_000;
+const TRADE_SYMBOLS_RELOAD_COOLDOWN_MS = 60_000;
+
+// Built-in daily instruments refresh. Trade symbols load once at initialize(), so a process
+// that lives for weeks never learns about a coin listed after its start. The round is pinned
+// to 00:05 UTC — right past the daily candle boundary and the daily reports apps send, the
+// quietest minute of the day — and carries a random 0..120s shift so several processes on one
+// IP do not knock on the exchange in the very same instant. One instruments-info read per
+// market per day weighs nothing against any rate limit.
+const TRADE_SYMBOLS_REFRESH_DAY_MS = 24 * 60 * 60 * 1000;
+const TRADE_SYMBOLS_REFRESH_DEFAULT_INTERVAL_MS = 24 * 60 * 60 * 1000;
+const TRADE_SYMBOLS_REFRESH_UTC_HOUR = 0;
+const TRADE_SYMBOLS_REFRESH_UTC_MINUTE = 5;
+const TRADE_SYMBOLS_REFRESH_JITTER_MAX_MS = 120_000;
+const DAILY_TRADE_SYMBOLS_REFRESH_REASON = 'daily trade-symbol refresh';
+const MANUAL_TRADE_SYMBOLS_REFRESH_REASON = 'trade-symbol refresh';
 
 function readReduceOnly(orderParams: OrderParams): boolean {
   if (orderParams.reduceOnly === true) {
@@ -110,10 +138,16 @@ export class ExchangeConnector {
   private readonly exchangeLabel: string;
   private readonly orderBookTrackerByMarketType: Map<MarketTypeEnum, OrderBookTracker> = new Map();
 
-  // On-demand futures trade-symbol reload state: a shared in-flight promise so concurrent
-  // callers join one REST round-trip, plus the last reload timestamp for the cooldown.
-  private futuresTradeSymbolsReloadInFlight: Promise<void> | null = null;
-  private lastFuturesTradeSymbolsReloadMs: number = 0;
+  // Trade-symbol reload state per market (single-flight + cooldown), see TradeSymbolsReloadState.
+  private readonly tradeSymbolsReloadStateByMarketType: Map<MarketTypeEnum, TradeSymbolsReloadState> = new Map();
+
+  // Daily instruments refresh: the interval taken from config, the pending timer, the flag that
+  // says the schedule is alive (a round in progress must not re-arm after disconnect) and the
+  // guard that keeps two rounds from overlapping.
+  private readonly tradeSymbolsRefreshIntervalMs: number;
+  private tradeSymbolsRefreshTimeoutId: NodeJS.Timeout | null = null;
+  private isTradeSymbolsRefreshScheduled: boolean = false;
+  private isRefreshingAllTradeSymbols: boolean = false;
 
   private readonly markPriceHandler = (list: MarkPriceUpdate[]): void => {
     for (const update of list) {
@@ -131,11 +165,14 @@ export class ExchangeConnector {
     futuresPositionMode: PositionModeEnum = PositionModeEnum.OneWay,
     klineWatchdogConfig?: KlineSubscriptionWatchdogConfig,
     rateLimitConfig?: RateLimitConfig | null,
-    streamWatchdogConfig?: StreamWatchdogConfigMap
+    streamWatchdogConfig?: StreamWatchdogConfigMap,
+    tradeSymbolsRefreshConfig?: TradeSymbolsRefreshConfig
   ) {
     this.exchangeName = exchangeName;
     this.futuresPositionMode = futuresPositionMode;
     this.rateLimitConfigOverride = rateLimitConfig;
+    this.tradeSymbolsRefreshIntervalMs =
+      tradeSymbolsRefreshConfig?.tradeSymbolsRefreshIntervalMs ?? TRADE_SYMBOLS_REFRESH_DEFAULT_INTERVAL_MS;
 
     this.exchange = new ExchangeInstance(exchangeName, {
       config,
@@ -429,7 +466,9 @@ export class ExchangeConnector {
       });
       await this.resolveWriteQueueOnInitialize();
       this.installPriceTickSnapper();
+      this.installAmountStepSnapper();
       this.startWatchingTickers();
+      this.startDailyTradeSymbolsRefresh();
     } catch (error) {
       logger.error(
         { error, exchange: this.exchangeName },
@@ -454,6 +493,20 @@ export class ExchangeConnector {
         : this.exchange.spot.tradeSymbols.has(symbol)
           ? this.exchange.spot.priceToPrecision(symbol, price)
           : price
+    );
+  }
+
+  /**
+   * Same wiring for contracts amounts: the lot step of every loaded symbol becomes the grid that
+   * `formatAmount` / `snapAmountToStep` use, so a computed quantity prints as the exchange holds it.
+   */
+  private installAmountStepSnapper(): void {
+    configureAmountStepSnapper((symbol, amount) =>
+      this.exchange.futures.tradeSymbols.has(symbol)
+        ? this.exchange.futures.amountToPrecision(symbol, amount)
+        : this.exchange.spot.tradeSymbols.has(symbol)
+          ? this.exchange.spot.amountToPrecision(symbol, amount)
+          : amount
     );
   }
 
@@ -1102,21 +1155,50 @@ export class ExchangeConnector {
   }
 
   private async reloadFuturesTradeSymbols(reasonLabel: string): Promise<void> {
+    await this.reloadTradeSymbolsForMarket(MarketTypeEnum.Futures, reasonLabel);
+  }
+
+  /**
+   * Spot twin of the futures reload: same single-flight promise, same cooldown, same swallowed
+   * failure. Spot had no reload at all — its instruments cache lived exactly as long as the
+   * process, so a pair listed on spot after start stayed invisible forever.
+   */
+  private async reloadSpotTradeSymbols(reasonLabel: string): Promise<void> {
+    await this.reloadTradeSymbolsForMarket(MarketTypeEnum.Spot, reasonLabel);
+  }
+
+  private getTradeSymbolsReloadState(marketType: MarketTypeEnum): TradeSymbolsReloadState {
+    const knownState = this.tradeSymbolsReloadStateByMarketType.get(marketType);
+
+    if (knownState !== undefined) {
+      return knownState;
+    }
+
+    const state: TradeSymbolsReloadState = { inFlight: null, lastReloadMs: 0 };
+    this.tradeSymbolsReloadStateByMarketType.set(marketType, state);
+
+    return state;
+  }
+
+  private async reloadTradeSymbolsForMarket(marketType: MarketTypeEnum, reasonLabel: string): Promise<void> {
+    const state = this.getTradeSymbolsReloadState(marketType);
+    const marketLabel = isSpot(marketType) ? 'spot' : 'futures';
+
     // Join an in-flight reload — concurrent callers share one REST round-trip.
-    if (this.futuresTradeSymbolsReloadInFlight !== null) {
-      await this.futuresTradeSymbolsReloadInFlight;
+    if (state.inFlight !== null) {
+      await state.inFlight;
 
       return;
     }
 
     // Cooldown: a recent reload already refreshed the full list — skip another REST hit
     // until the cooldown elapses.
-    const sinceLastReloadMs = Date.now() - this.lastFuturesTradeSymbolsReloadMs;
+    const sinceLastReloadMs = Date.now() - state.lastReloadMs;
 
-    if (this.lastFuturesTradeSymbolsReloadMs > 0 && sinceLastReloadMs < FUTURES_TRADE_SYMBOLS_RELOAD_COOLDOWN_MS) {
+    if (state.lastReloadMs > 0 && sinceLastReloadMs < TRADE_SYMBOLS_RELOAD_COOLDOWN_MS) {
       logger.warn(
-        { exchange: this.exchangeName, reasonLabel, sinceLastReloadMs },
-        `[ExchangeConnector] ${reasonLabel} but reload on cooldown (${Math.round(sinceLastReloadMs / 1000)}s since last) — skipping reload`
+        { exchange: this.exchangeName, marketType, reasonLabel, sinceLastReloadMs },
+        `[ExchangeConnector] ${reasonLabel} but ${marketLabel} reload on cooldown (${Math.round(sinceLastReloadMs / 1000)}s since last) — skipping reload`
       );
 
       return;
@@ -1124,28 +1206,157 @@ export class ExchangeConnector {
 
     const reloadPromise = (async (): Promise<void> => {
       logger.info(
-        { exchange: this.exchangeName, reasonLabel },
-        `[ExchangeConnector] ${reasonLabel} — reloading all futures trade symbols`
+        { exchange: this.exchangeName, marketType, reasonLabel },
+        `[ExchangeConnector] ${reasonLabel} — reloading all ${marketLabel} trade symbols`
       );
       await withRetryOn429({
-        fn: () => this.exchange.futures.loadTradeSymbols(),
-        contextLabel: `reload futures trade symbols (${reasonLabel}) ${this.exchangeName}`,
+        fn: () => this.getClient(marketType).loadTradeSymbols(),
+        contextLabel: `reload ${marketLabel} trade symbols (${reasonLabel}) ${this.exchangeName}`,
       });
     })();
 
-    this.futuresTradeSymbolsReloadInFlight = reloadPromise;
+    state.inFlight = reloadPromise;
 
     try {
       await reloadPromise;
     } catch (error) {
       logger.error(
-        { error, exchange: this.exchangeName, reasonLabel },
-        `[ExchangeConnector] futures trade-symbol reload failed (${reasonLabel})`
+        { error, exchange: this.exchangeName, marketType, reasonLabel },
+        `[ExchangeConnector] ${marketLabel} trade-symbol reload failed (${reasonLabel})`
       );
     } finally {
-      this.lastFuturesTradeSymbolsReloadMs = Date.now();
-      this.futuresTradeSymbolsReloadInFlight = null;
+      state.lastReloadMs = Date.now();
+      state.inFlight = null;
     }
+  }
+
+  /**
+   * Refresh the instruments cache of BOTH markets — futures first, spot after, one at a time and
+   * never in parallel: a scheduled round starts on every process of the account at the same
+   * minute, and two reads fired together double the spike the exchange sees. A failure of either
+   * market is logged and swallowed — the caller keeps the previous cache (stale beats empty) and
+   * the second market is refreshed regardless of what happened to the first.
+   */
+  public async refreshAllTradeSymbols(reasonLabel: string = MANUAL_TRADE_SYMBOLS_REFRESH_REASON): Promise<void> {
+    if (this.isRefreshingAllTradeSymbols) {
+      logger.warn(
+        { exchange: this.exchangeName, reasonLabel },
+        `[ExchangeConnector] ${reasonLabel} skipped — the previous trade-symbol round has not finished yet`
+      );
+
+      return;
+    }
+
+    this.isRefreshingAllTradeSymbols = true;
+
+    try {
+      await this.refreshMarketTradeSymbolsSafely(MarketTypeEnum.Futures, reasonLabel);
+      await this.refreshMarketTradeSymbolsSafely(MarketTypeEnum.Spot, reasonLabel);
+    } finally {
+      this.isRefreshingAllTradeSymbols = false;
+    }
+  }
+
+  private async refreshMarketTradeSymbolsSafely(marketType: MarketTypeEnum, reasonLabel: string): Promise<void> {
+    try {
+      if (isSpot(marketType)) {
+        await this.reloadSpotTradeSymbols(reasonLabel);
+
+        return;
+      }
+
+      await this.reloadFuturesTradeSymbols(reasonLabel);
+    } catch (error) {
+      logger.warn(
+        { error, exchange: this.exchangeName, marketType, reasonLabel },
+        `[ExchangeConnector] ${reasonLabel} failed for ${isSpot(marketType) ? 'spot' : 'futures'} — keeping the previous cache`
+      );
+    }
+  }
+
+  /**
+   * Arm the daily instruments refresh. Called at the end of a successful initialize(), so a
+   * repeated initialize() re-arms the schedule instead of leaving two timers behind. An interval
+   * of 0 (or less) means the consumer refreshes by hand — nothing is scheduled.
+   */
+  private startDailyTradeSymbolsRefresh(): void {
+    this.stopDailyTradeSymbolsRefresh();
+
+    if (this.tradeSymbolsRefreshIntervalMs <= 0) {
+      logger.info(
+        { exchange: this.exchangeName },
+        `[ExchangeConnector] ${this.exchangeName} daily trade-symbol refresh is switched off by config`
+      );
+
+      return;
+    }
+
+    this.isTradeSymbolsRefreshScheduled = true;
+    this.scheduleNextTradeSymbolsRefresh();
+  }
+
+  private stopDailyTradeSymbolsRefresh(): void {
+    this.isTradeSymbolsRefreshScheduled = false;
+
+    if (this.tradeSymbolsRefreshTimeoutId !== null) {
+      clearTimeout(this.tradeSymbolsRefreshTimeoutId);
+      this.tradeSymbolsRefreshTimeoutId = null;
+    }
+  }
+
+  private scheduleNextTradeSymbolsRefresh(): void {
+    const delayMs = this.resolveTradeSymbolsRefreshDelayMs();
+
+    logger.info(
+      { exchange: this.exchangeName, delayMs },
+      `[ExchangeConnector] ${this.exchangeName} next trade-symbol refresh in ${Math.round(delayMs / 1000)}s`
+    );
+
+    const timeoutId = setTimeout(() => {
+      this.tradeSymbolsRefreshTimeoutId = null;
+
+      void this.runScheduledTradeSymbolsRefresh();
+    }, delayMs);
+
+    // The schedule must never be the reason a process stays alive.
+    timeoutId.unref();
+    this.tradeSymbolsRefreshTimeoutId = timeoutId;
+  }
+
+  // The next round is armed only AFTER this one has settled, so a slow reload can never overlap
+  // with the following tick; a disconnect during the round leaves nothing armed.
+  private async runScheduledTradeSymbolsRefresh(): Promise<void> {
+    await this.refreshAllTradeSymbols(DAILY_TRADE_SYMBOLS_REFRESH_REASON);
+
+    if (!this.isTradeSymbolsRefreshScheduled) {
+      return;
+    }
+
+    this.scheduleNextTradeSymbolsRefresh();
+  }
+
+  /**
+   * How long to wait for the next round. The 24-hour schedule is pinned to the next 00:05 UTC,
+   * recomputed from the clock every round so the random shift never drifts the anchor away; any
+   * other interval is taken literally, because 00:05 means nothing to it.
+   */
+  private resolveTradeSymbolsRefreshDelayMs(): number {
+    if (this.tradeSymbolsRefreshIntervalMs !== TRADE_SYMBOLS_REFRESH_DAY_MS) {
+      return this.tradeSymbolsRefreshIntervalMs;
+    }
+
+    const nowMs = Date.now();
+    const anchor = new Date(nowMs);
+
+    anchor.setUTCHours(TRADE_SYMBOLS_REFRESH_UTC_HOUR, TRADE_SYMBOLS_REFRESH_UTC_MINUTE, 0, 0);
+
+    let delayMs = anchor.getTime() - nowMs;
+
+    while (delayMs <= 0) {
+      delayMs += TRADE_SYMBOLS_REFRESH_DAY_MS;
+    }
+
+    return delayMs + Math.floor(Math.random() * TRADE_SYMBOLS_REFRESH_JITTER_MAX_MS);
   }
 
   public async getSpotSymbols(): Promise<string[]> {
@@ -1213,6 +1424,7 @@ export class ExchangeConnector {
   public async disconnect(): Promise<void> {
     this.isWatchingTickers = false;
     this.stopWatchingMarkPrices();
+    this.stopDailyTradeSymbolsRefresh();
 
     for (const tracker of this.orderBookTrackerByMarketType.values()) {
       tracker.stop();

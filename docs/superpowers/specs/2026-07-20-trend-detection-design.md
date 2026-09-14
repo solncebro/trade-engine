@@ -80,7 +80,7 @@ reversalThresholdPercent = max(minReversalPercent, reversalAtrMultiplier × atrP
 
 ## 4. Контракты
 
-### 4.1 Чистый расчёт — `TrendCalculator` (статический класс, по образцу `OrderCalculator`)
+### 4.1 Чистый расчёт — `TrendCalculator` (статический класс, по образцу `OrderCalculator` — тот на момент этого замысла ещё жил в библиотеке, удалён в 3.13.0)
 
 ```typescript
 // src/core/trendCalculator.ts

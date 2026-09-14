@@ -689,6 +689,16 @@ describe('PositionManager — spotMarketBuyByQuote', () => {
     expect(result.actualExchangeParams?.marketUnit).toBeUndefined();
   });
 
+  it('OKX: quoteOrderQty set, no marketUnit — the OKX client reads the quote size itself', async () => {
+    const conn = createConnector(ExchangeNameEnum.Okx, PositionModeEnum.OneWay);
+    const result = await conn.positionManager.spotMarketBuyByQuote({
+      symbol: 'BTCUSDT',
+      quoteAmount: 100,
+    });
+    expect(result.actualExchangeParams?.quoteOrderQty).toBe(100);
+    expect(result.actualExchangeParams?.marketUnit).toBeUndefined();
+  });
+
   it('throws on non-positive quoteAmount', async () => {
     const conn = createConnector(ExchangeNameEnum.Bybit, PositionModeEnum.OneWay);
     await expect(
@@ -697,6 +707,45 @@ describe('PositionManager — spotMarketBuyByQuote', () => {
         quoteAmount: 0,
       })
     ).rejects.toThrow('positive quoteAmount');
+  });
+});
+
+describe('PositionManager — futures OKX', () => {
+  it('Hedge mode close long: positionSide=Long and reduceOnly=true — the OKX client drops the flag itself', async () => {
+    const conn = createConnector(ExchangeNameEnum.Okx, PositionModeEnum.Hedge);
+    const result = await conn.positionManager.closePositionMarket({
+      symbol: 'BTCUSDT',
+      marketType: MarketTypeEnum.Futures,
+      direction: 'long',
+      amount: 1,
+    });
+    expect(result.actualExchangeParams?.side).toBe(OrderSideEnum.Sell);
+    expect(result.actualExchangeParams?.positionSide).toBe(PositionSideEnum.Long);
+    expect(result.actualExchangeParams?.reduceOnly).toBe(true);
+  });
+
+  it('OneWay mode close long: no positionSide, reduceOnly=true', async () => {
+    const conn = createConnector(ExchangeNameEnum.Okx, PositionModeEnum.OneWay);
+    const result = await conn.positionManager.closePositionMarket({
+      symbol: 'BTCUSDT',
+      marketType: MarketTypeEnum.Futures,
+      direction: 'long',
+      amount: 1,
+    });
+    expect(result.actualExchangeParams?.positionSide).toBeUndefined();
+    expect(result.actualExchangeParams?.reduceOnly).toBe(true);
+  });
+
+  it('open long carries no reduceOnly in either mode', async () => {
+    const conn = createConnector(ExchangeNameEnum.Okx, PositionModeEnum.Hedge);
+    const result = await conn.positionManager.openPositionMarket({
+      symbol: 'BTCUSDT',
+      marketType: MarketTypeEnum.Futures,
+      direction: 'long',
+      amount: 1,
+    });
+    expect(result.actualExchangeParams?.side).toBe(OrderSideEnum.Buy);
+    expect(result.actualExchangeParams?.reduceOnly).toBeUndefined();
   });
 });
 

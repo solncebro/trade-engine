@@ -488,6 +488,76 @@ describe('ExchangeConnector.getFuturesSymbols TRADIFI filter', () => {
   });
 });
 
+// Only Bybit symbols go through normalizeSymbol: it strips separators and a settle suffix
+// ('BTC/USDT:USDT' → 'BTCUSDT'). OKX needs none of that — exchange-engine already joins the
+// instrument id parts into a plain name (BTC-USDT-SWAP → BTCUSDT), so the list has to come out
+// untouched, including names that legitimately start with a digit.
+describe('ExchangeConnector symbol naming for OKX', () => {
+  // 'ETH-USDT-SWAP' / 'SOL-USDT' carry the separators normalizeSymbol() strips ('/', ':', '.',
+  // '-') — a guard fixture, not a real exchange-engine OKX name (the real normalizer already
+  // joins instId parts into a plain 'ETHUSDT'). Without a name shaped like this, applying
+  // normalizeSymbol() to every exchange would pass silently: the other fixtures ('BTCUSDT',
+  // 'FLOKIUSDT', '1INCHUSDT', 'CFGUSDT') contain none of the characters normalizeSymbol touches.
+  function buildOkxConnectorWithSymbols(): ExchangeConnector {
+    const connector = new ExchangeConnector(ExchangeNameEnum.Okx, {
+      apiKey: 'k',
+      secret: 's',
+    } as ExchangeConfig);
+
+    const futuresTradeSymbols = new Map<string, TradeSymbol>([
+      ['BTCUSDT', { symbol: 'BTCUSDT', isActive: true, type: TradeSymbolTypeEnum.Swap, isLinear: true, contractType: 'SWAP', isTradifi: false } as TradeSymbol],
+      ['FLOKIUSDT', { symbol: 'FLOKIUSDT', isActive: true, type: TradeSymbolTypeEnum.Swap, isLinear: true, contractType: 'SWAP', isTradifi: false } as TradeSymbol],
+      ['1INCHUSDT', { symbol: '1INCHUSDT', isActive: true, type: TradeSymbolTypeEnum.Swap, isLinear: true, contractType: 'SWAP', isTradifi: false } as TradeSymbol],
+      ['ETH-USDT-SWAP', { symbol: 'ETH-USDT-SWAP', isActive: true, type: TradeSymbolTypeEnum.Swap, isLinear: true, contractType: 'SWAP', isTradifi: false } as TradeSymbol],
+    ]);
+    const spotTradeSymbols = new Map<string, TradeSymbol>([
+      ['BTCUSDT', { symbol: 'BTCUSDT', isActive: true, type: TradeSymbolTypeEnum.Spot, isLinear: false, contractType: '', isTradifi: false } as TradeSymbol],
+      ['CFGUSDT', { symbol: 'CFGUSDT', isActive: true, type: TradeSymbolTypeEnum.Spot, isLinear: false, contractType: '', isTradifi: false } as TradeSymbol],
+      ['SOL-USDT', { symbol: 'SOL-USDT', isActive: true, type: TradeSymbolTypeEnum.Spot, isLinear: false, contractType: '', isTradifi: false } as TradeSymbol],
+    ]);
+
+    (connector.futures as unknown as { tradeSymbols: typeof futuresTradeSymbols }).tradeSymbols = futuresTradeSymbols;
+    (connector.spot as unknown as { tradeSymbols: typeof spotTradeSymbols }).tradeSymbols = spotTradeSymbols;
+
+    return connector;
+  }
+
+  // Same separator-bearing name on Bybit — proves the fixture is actually sensitive to
+  // normalizeSymbol(): Bybit must come out stripped where OKX above must come out untouched.
+  function buildBybitConnectorWithSeparatorSymbol(): ExchangeConnector {
+    const connector = new ExchangeConnector(ExchangeNameEnum.Bybit, {
+      apiKey: 'k',
+      secret: 's',
+    } as ExchangeConfig);
+
+    const futuresTradeSymbols = new Map<string, TradeSymbol>([
+      ['ETH-USDT-SWAP', { symbol: 'ETH-USDT-SWAP', isActive: true, type: TradeSymbolTypeEnum.Swap, isLinear: true, contractType: 'LinearPerpetual', isTradifi: false } as TradeSymbol],
+    ]);
+
+    (connector.futures as unknown as { tradeSymbols: typeof futuresTradeSymbols }).tradeSymbols = futuresTradeSymbols;
+
+    return connector;
+  }
+
+  it('leaves futures symbols exactly as exchange-engine named them', async () => {
+    const symbolList = await buildOkxConnectorWithSymbols().getFuturesSymbols();
+
+    expect(symbolList).toEqual(['BTCUSDT', 'FLOKIUSDT', '1INCHUSDT', 'ETH-USDT-SWAP']);
+  });
+
+  it('leaves spot symbols exactly as exchange-engine named them', async () => {
+    const symbolList = await buildOkxConnectorWithSymbols().getSpotSymbols();
+
+    expect(symbolList).toEqual(['BTCUSDT', 'CFGUSDT', 'SOL-USDT']);
+  });
+
+  it('strips separators for Bybit — the same fixture normalized, unlike OKX above', async () => {
+    const symbolList = await buildBybitConnectorWithSeparatorSymbol().getFuturesSymbols();
+
+    expect(symbolList).toEqual(['ETHUSDTSWAP']);
+  });
+});
+
 describe('ExchangeConnector.createBatchOrders outcome mapping', () => {
   function buildConnector(): ExchangeConnector {
     return new ExchangeConnector(ExchangeNameEnum.Bybit, {

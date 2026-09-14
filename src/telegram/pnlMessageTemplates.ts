@@ -5,6 +5,8 @@ import type { AutoCloseCancelledMessageArgs, AutoCloseMessageArgs, AutoTpMenuMes
 
 import type { MaLevel } from '../types/index';
 import { EMOJI_CHECK, EMOJI_CROSS, EMOJI_INFO, EMOJI_PAUSE, EMOJI_PROFIT, EMOJI_ROBOT, EMOJI_SCISSORS, EMOJI_SOS, EMOJI_WARNING } from '../utils/emoji';
+import { formatAmount, formatUsdAmount } from '../utils/numberFormat';
+import { formatPrice } from '../utils/priceFormat';
 
 const ORDER_ID_SHORT_THRESHOLD = 15;
 
@@ -54,7 +56,7 @@ function formatProfitAlertMessage(args: ProfitAlertMessageArgs): string {
     `🟢 ${formatTimeframe(timeframe)} \`${symbol}\` ${formatDirection(direction)}`,
     buildHeaderTail(maLevel, isAugmented, `PNL +${pnlPercent.toFixed(1)}%`),
     [
-      `Entry: \`${entryPrice}\` → Last: \`${lastPrice}\``,
+      `Entry: \`${formatPrice(symbol, entryPrice)}\` → Last: \`${formatPrice(symbol, lastPrice)}\``,
       ...formatStopLossBlock(stopLossLevel, stopLossStatus, stopLossOrderId, stopLossErrorText),
     ],
   );
@@ -62,7 +64,7 @@ function formatProfitAlertMessage(args: ProfitAlertMessageArgs): string {
 
 function formatLossAlertMessage(args: LossAlertMessageArgs): string {
   const { symbol, timeframe, direction, pnlPercent, entryPrice, lastPrice, maLevel, isAugmented } = args;
-  const bodyLineList: string[] = [`Entry: \`${entryPrice}\` → Last: \`${lastPrice}\``];
+  const bodyLineList: string[] = [`Entry: \`${formatPrice(symbol, entryPrice)}\` → Last: \`${formatPrice(symbol, lastPrice)}\``];
 
   if (args.isInsuranceCreated && args.insuranceMaLevel) {
     bodyLineList.push(`⚡ Insurance chaser created on ${formatMaLevel(args.insuranceMaLevel)}`);
@@ -85,7 +87,7 @@ function formatAutoCloseMessage(args: AutoCloseMessageArgs): string {
   return buildPnlMessage(
     `🔒 ${formatTimeframe(timeframe)} \`${symbol}\` ${formatDirection(direction)}`,
     buildHeaderTail(maLevel, isAugmented, `Auto-closed @ PNL +${pnlPercent.toFixed(1)}%`),
-    [`Entry: \`${entryPrice}\` → Close: \`${lastPrice}\``],
+    [`Entry: \`${formatPrice(symbol, entryPrice)}\` → Close: \`${formatPrice(symbol, lastPrice)}\``],
   );
 }
 
@@ -94,7 +96,7 @@ function formatPositionClosedMessage(args: PositionClosedMessageArgs): string {
   const bodyLineList: string[] = [];
 
   if (isAugmented) {
-    bodyLineList.push(`Entry: \`${entryPrice}\``);
+    bodyLineList.push(`Entry: \`${formatPrice(symbol, entryPrice)}\``);
   }
 
   return buildPnlMessage(
@@ -109,7 +111,7 @@ function formatAutoCloseCancelledMessage(args: AutoCloseCancelledMessageArgs): s
   const bodyLineList: string[] = [];
 
   if (isAugmented) {
-    bodyLineList.push(`Entry: \`${entryPrice}\``);
+    bodyLineList.push(`Entry: \`${formatPrice(symbol, entryPrice)}\``);
   }
 
   return buildPnlMessage(
@@ -177,8 +179,8 @@ function formatPositionsListMessage(args: PositionsListMessageArgs): string {
 
       lineList.push(
         `${dirIcon} \`${position.symbol}\`${importedSuffix} ${dirLabel}`,
-        `  Entry: \`${position.entryPrice}\` | BE: \`${position.breakevenPrice}\``,
-        `  Volume: ${position.volumeUsdt} USDT × ${position.leverage}x`,
+        `  Entry: \`${formatPrice(position.symbol, position.entryPrice)}\` | BE: \`${formatPrice(position.symbol, position.breakevenPrice)}\``,
+        `  Volume: ${position.volumeUsdt} USDT · Leverage: ${position.leverage}x`,
       );
 
       if (filledLine !== null) {
@@ -187,7 +189,7 @@ function formatPositionsListMessage(args: PositionsListMessageArgs): string {
 
       lineList.push(
         `  PNL: ${pnlSign}${position.pnlPercent.toFixed(1)}% (${pnlSign}${pnlUsdt.toFixed(1)} USDT)`,
-        `  Liq: \`${position.liquidationPrice}\` (${liqSign}${position.liquidationDistancePercent.toFixed(1)}%)`,
+        `  Liq: \`${formatPrice(position.symbol, position.liquidationPrice)}\` (${liqSign}${position.liquidationDistancePercent.toFixed(1)}%)`,
       );
 
       if (position.isHalveMarkActive) {
@@ -222,10 +224,10 @@ function formatPositionsListMessage(args: PositionsListMessageArgs): string {
 
       lineList.push(
         `${dirIcon} \`${ephemeral.symbol}\` ${dirLabel}`,
-        `  Entry: \`${ephemeral.entryPrice}\` · Last: \`${ephemeral.markPrice}\``,
-        `  Contracts: ${ephemeral.contracts} × ${ephemeral.leverage}x`,
+        `  Entry: \`${formatPrice(ephemeral.symbol, ephemeral.entryPrice)}\` · Last: \`${formatPrice(ephemeral.symbol, ephemeral.markPrice)}\``,
+        `  Contracts: ${formatAmount(ephemeral.symbol, ephemeral.contracts)} × ${ephemeral.leverage}x`,
         `  PNL: ${pnlSign}${ephemeral.pnlPercent.toFixed(1)}% (${pnlSign}${pnlUsdt.toFixed(1)} USDT)`,
-        `  Liq: \`${ephemeral.liquidationPrice}\``,
+        `  Liq: \`${formatPrice(ephemeral.symbol, ephemeral.liquidationPrice)}\``,
         '',
       );
     }
@@ -249,9 +251,9 @@ function formatPositionDetailMessage(args: PositionDetailMessageArgs): string {
   const lineList: string[] = [
     `${dirIcon} ${formatTimeframe(args.timeframe)} \`${args.symbol}\` ${dirLabel}${headerTail}${importedSuffix}`,
     '',
-    `Entry: \`${args.entryPrice}\` | BE: \`${args.breakevenPrice}\``,
-    `Last: \`${args.lastPrice}\``,
-    `Volume: ${args.volumeUsdt} USDT × ${args.leverage}x`,
+    `Entry: \`${formatPrice(args.symbol, args.entryPrice)}\` | BE: \`${formatPrice(args.symbol, args.breakevenPrice)}\``,
+    `Last: \`${formatPrice(args.symbol, args.lastPrice)}\``,
+    `Volume: ${args.volumeUsdt} USDT · Leverage: ${args.leverage}x`,
   ];
 
   if (filledLine !== null) {
@@ -259,9 +261,9 @@ function formatPositionDetailMessage(args: PositionDetailMessageArgs): string {
   }
 
   lineList.push(
-    `Contracts: ${args.contracts}`,
+    `Contracts: ${formatAmount(args.symbol, args.contracts)}`,
     `PNL: ${pnlSign}${args.pnlPercent.toFixed(1)}% (${pnlSign}${args.pnlUsdt.toFixed(1)} USDT)`,
-    `Liq: \`${args.liquidationPrice}\` (${liqSign}${args.liquidationDistancePercent.toFixed(1)}%)`,
+    `Liq: \`${formatPrice(args.symbol, args.liquidationPrice)}\` (${liqSign}${args.liquidationDistancePercent.toFixed(1)}%)`,
   );
 
   if (!args.isImported) {
@@ -270,7 +272,7 @@ function formatPositionDetailMessage(args: PositionDetailMessageArgs): string {
     for (const ma of args.maValueList) {
       const offsetSign = ma.offsetFromLastPercent >= 0 ? '+' : '';
 
-      lineList.push(`${formatMaLevel(ma.level)}: \`${ma.price}\` (${offsetSign}${ma.offsetFromLastPercent.toFixed(2)}% from last)`);
+      lineList.push(`${formatMaLevel(ma.level)}: \`${formatPrice(args.symbol, ma.price)}\` (${offsetSign}${ma.offsetFromLastPercent.toFixed(2)}% from last)`);
     }
   }
 
@@ -300,11 +302,11 @@ function formatEphemeralPositionDetailMessage(args: EphemeralPositionDetailMessa
   const lineList: string[] = [
     `🌐 \`${args.symbol}\` ${dirLabel} — Imported`,
     '',
-    `Entry: \`${args.entryPrice}\``,
-    `Last: \`${args.lastPrice}\``,
+    `Entry: \`${formatPrice(args.symbol, args.entryPrice)}\``,
+    `Last: \`${formatPrice(args.symbol, args.lastPrice)}\``,
     `PNL: ${pnlSign}${args.pnlPercent.toFixed(2)}% (${pnlSign}${args.pnlUsdt.toFixed(2)} USDT)`,
-    `Contracts: ${args.contracts} · Leverage: ${args.leverage}x`,
-    `Liq: \`${args.liquidationPrice}\``,
+    `Contracts: ${formatAmount(args.symbol, args.contracts)} · Leverage: ${args.leverage}x`,
+    `Liq: \`${formatPrice(args.symbol, args.liquidationPrice)}\``,
     '',
     'Not tracked. Tap Track to enable trailing SL / alerts / SOS / cleanup-on-close.',
   ];
@@ -317,14 +319,15 @@ function formatTpSplitConfirmation(args: TpSplitConfirmationArgs): string {
   const lineList = [
     `${EMOJI_PROFIT} TP — ${formatClickableText(symbol)} ${formatDirection(direction)}`,
     `${formatMaLevel(maLevel)} — ${parts} parts`,
-    `Total: ${totalContracts} contracts @ entry \`${entryPrice}\``,
+    `Total: ${formatAmount(symbol, totalContracts)} contracts @ entry \`${formatPrice(symbol, entryPrice)}\``,
   ];
 
   if (tpSizeDisplay !== undefined) {
-    const totalActual = parts * tpSizeDisplay.actualTpSize;
+    const totalActual = formatUsdAmount(parts * tpSizeDisplay.actualTpSize);
+    const actualTpSize = formatUsdAmount(tpSizeDisplay.actualTpSize);
     const sizeLine = tpSizeDisplay.actualTpSize === tpSizeDisplay.requestedTpSize
-      ? `TP size: ${parts} × $${tpSizeDisplay.actualTpSize} = $${totalActual}`
-      : `TP size: ${parts} × $${tpSizeDisplay.actualTpSize} = $${totalActual} (you requested $${tpSizeDisplay.requestedTpSize})`;
+      ? `TP size: ${parts} × $${actualTpSize} = $${totalActual}`
+      : `TP size: ${parts} × $${actualTpSize} = $${totalActual} (you requested $${formatUsdAmount(tpSizeDisplay.requestedTpSize)})`;
     lineList.push(sizeLine);
   }
 
@@ -333,7 +336,7 @@ function formatTpSplitConfirmation(args: TpSplitConfirmationArgs): string {
   for (let i = 0; i < partList.length; i++) {
     const part = partList[i];
 
-    lineList.push(`${i + 1}. \`${part.price}\` — ${part.amount}`);
+    lineList.push(`${i + 1}. \`${formatPrice(symbol, part.price)}\` — ${formatAmount(symbol, part.amount)}`);
   }
 
   return lineList.join('\n');
@@ -344,7 +347,7 @@ function formatTpSplitCreatedMessage(args: TpSplitCreatedMessageArgs): string {
 
   return buildPnlMessage(
     `${EMOJI_CHECK} TP created — ${formatClickableText(symbol)} ${formatDirection(direction)}`,
-    `${parts} orders placed between \`${firstPrice}\` and \`${lastPrice}\``,
+    `${parts} orders placed between \`${formatPrice(symbol, firstPrice)}\` and \`${formatPrice(symbol, lastPrice)}\``,
     [],
   );
 }
@@ -359,10 +362,10 @@ function formatInsuranceFilledMessage(args: InsuranceFilledMessageArgs): string 
     `${formatMaLevel(maLevel)} — Insurance filled, mode switched`,
     [
       '',
-      `Entry averaged: \`${entryPrice}\``,
-      `Breakeven price: \`${breakevenPrice}\``,
-      `Last: \`${lastPrice}\` · PNL: ${pnlSign}${pnlPercent.toFixed(2)}%`,
-      `Contracts: ${contracts}`,
+      `Entry averaged: \`${formatPrice(symbol, entryPrice)}\``,
+      `Breakeven price: \`${formatPrice(symbol, breakevenPrice)}\``,
+      `Last: \`${formatPrice(symbol, lastPrice)}\` · PNL: ${pnlSign}${pnlPercent.toFixed(2)}%`,
+      `Contracts: ${formatAmount(symbol, contracts)}`,
       '',
       `Breakeven half-close at +${breakevenHalfClosePercent}%`,
       `Profit pipeline resumed (step +${profitThresholdPercent}% / auto-close ${autoCloseLabel})`,
@@ -379,10 +382,10 @@ function formatInsuranceAdditionalFillMessage(args: InsuranceAdditionalFillMessa
     `${formatMaLevel(maLevel)} — Additional insurance fill, entry re-averaged`,
     [
       '',
-      `Entry: \`${previousEntryPrice}\` → \`${entryPrice}\``,
-      `Breakeven: \`${previousBreakevenPrice}\` → \`${breakevenPrice}\``,
-      `Last: \`${lastPrice}\` · PNL: ${pnlSign}${pnlPercent.toFixed(2)}%`,
-      `Contracts: ${contracts}`,
+      `Entry: \`${formatPrice(symbol, previousEntryPrice)}\` → \`${formatPrice(symbol, entryPrice)}\``,
+      `Breakeven: \`${formatPrice(symbol, previousBreakevenPrice)}\` → \`${formatPrice(symbol, breakevenPrice)}\``,
+      `Last: \`${formatPrice(symbol, lastPrice)}\` · PNL: ${pnlSign}${pnlPercent.toFixed(2)}%`,
+      `Contracts: ${formatAmount(symbol, contracts)}`,
       '',
       `Breakeven half-close at +${breakevenHalfClosePercent}%`,
     ],
@@ -398,10 +401,10 @@ function formatSosMarkedMessage(args: SosMarkedMessageArgs): string {
     buildHeaderTail(maLevel, isAugmented, 'Marked as SOS by user'),
     [
       '',
-      `Entry: \`${entryPrice}\``,
-      `Breakeven price: \`${breakevenPrice}\``,
-      `Last: \`${lastPrice}\` · PNL: ${pnlSign}${pnlPercent.toFixed(2)}%`,
-      `Contracts: ${contracts}`,
+      `Entry: \`${formatPrice(symbol, entryPrice)}\``,
+      `Breakeven price: \`${formatPrice(symbol, breakevenPrice)}\``,
+      `Last: \`${formatPrice(symbol, lastPrice)}\` · PNL: ${pnlSign}${pnlPercent.toFixed(2)}%`,
+      `Contracts: ${formatAmount(symbol, contracts)}`,
       '',
       `Breakeven half-close at +${breakevenHalfClosePercent}%`,
     ],
@@ -412,18 +415,18 @@ function formatPositionAugmentedMessage(args: PositionAugmentedMessageArgs): str
   const { symbol, timeframe, direction, previousEntryPrice, entryPrice, previousContracts, contracts, lastPrice, pnlPercent, liquidationPrice } = args;
   const dirIcon = direction === 'long' ? '🟢' : '🔴';
   const pnlSign = pnlPercent >= 0 ? '+' : '';
-  const previousContractsLabel = previousContracts.toLocaleString('en-US');
-  const contractsLabel = contracts.toLocaleString('en-US');
+  const previousContractsLabel = formatAmount(symbol, previousContracts);
+  const contractsLabel = formatAmount(symbol, contracts);
 
   return buildPnlMessage(
     `${dirIcon} ${formatTimeframe(timeframe)} \`${symbol}\` ${formatDirection(direction)}`,
     'Position augmented (new chaser merged)',
     [
       '',
-      `Entry: \`${previousEntryPrice}\` → \`${entryPrice}\``,
+      `Entry: \`${formatPrice(symbol, previousEntryPrice)}\` → \`${formatPrice(symbol, entryPrice)}\``,
       `Contracts: ${previousContractsLabel} → ${contractsLabel}`,
-      `Last: \`${lastPrice}\` · PNL: ${pnlSign}${pnlPercent.toFixed(2)}%`,
-      `Liq: \`${liquidationPrice}\``,
+      `Last: \`${formatPrice(symbol, lastPrice)}\` · PNL: ${pnlSign}${pnlPercent.toFixed(2)}%`,
+      `Liq: \`${formatPrice(symbol, liquidationPrice)}\``,
     ],
   );
 }
@@ -494,9 +497,9 @@ function formatHalfClosedMessage(args: HalfClosedMessageArgs): string {
     buildHeaderTail(maLevel, isAugmented, `Half closed at breakeven (${pnlSign}${pnlPercent.toFixed(2)}%)`),
     [
       '',
-      `Entry: \`${entryPrice}\``,
-      `Closed: ${closedContracts} @ \`${lastPrice}\``,
-      `Remaining: ${remainingContracts}`,
+      `Entry: \`${formatPrice(symbol, entryPrice)}\``,
+      `Closed: ${formatAmount(symbol, closedContracts)} @ \`${formatPrice(symbol, lastPrice)}\``,
+      `Remaining: ${formatAmount(symbol, remainingContracts)}`,
       'Monitoring resumed — SOS available again',
     ],
   );

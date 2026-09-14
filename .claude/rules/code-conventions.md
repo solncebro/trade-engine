@@ -72,7 +72,7 @@ catch (error) { ... }
 
 ### Статические классы
 
-`OrderCalculator` и `ConfigManager` — все методы `static`. Нет инстанцирования.
+`ConfigManager` и `TrendCalculator` — все методы `static`. Нет инстанцирования.
 
 ### Map-based коллекции
 

@@ -18,7 +18,7 @@
 - **`RateLimitedRequestQueue`** (`src/core/RateLimitedRequestQueue.ts`, 3.5.0) — sliding-window очередь с RPS-лимитом.
 - **`KlineSubscriptionWatchdog`** (`src/services/klineSubscriptionWatchdog.ts`, 3.5.0) — мониторинг и автовосстановление kline-подписок.
 - **`withRetryOn429`** / **`withResultRetry`** (`src/core/withRetryOn429.ts`, 3.5.0) — функциональные retry-обёртки (`withReadRetry` удалён в 3.22.0 — та же функция под вторым именем).
-- **`PremiumIndexCalculator`** (`src/services/premiumIndexCalculator.ts`) — per-symbol EMA «премии» (`midPrice − markPrice`, окно 30s) для подачи `premiumAvg` в `OrderCalculator.calculatePriceLimitBounds`; не auto-wired.
+- **`PremiumIndexCalculator`** (`src/services/premiumIndexCalculator.ts`) — per-symbol EMA «премии» (`midPrice − markPrice`, окно 30s); значение забирается через `getPremiumAvg`, расчёта ценовых границ в библиотеке нет (уехал вместе с `OrderCalculator` в 3.13.0); не auto-wired.
 - **`TrendCalculator`** (`src/core/trendCalculator.ts`, 3.14.0) — статический расчёт тренда по структуре рынка: `computePivotList` (вершины/впадины), `assessTrend` (направление, слом, сила 0–100). → [подробнее](trend.md)
 - **`TrendMonitor`** (`src/core/TrendMonitor.ts`, 3.14.0) — живой наблюдатель тренда поверх `MarketDataSource`; событие `trendChanged`, сводка по интервалам. Типы `trendCalculator.types.ts` (`TrendDirection`, `TrendCalculatorConfig`, `TrendPivot`, `TrendStrengthComponents`, `TrendAssessment`, `TrendAssessmentResult`, `ComputePivotListArgs`, `AssessTrendArgs`) и `TrendMonitor.types.ts` (`TrendMonitorArgs`, `TrendChangedEvent`, `TrendChangedListener`, `TrendSummary`) + `FormatTrendSummaryMessageArgs` реэкспортируются из entry. → [подробнее](trend.md)
 - **Экспорт из entry** (`src/index.ts`) — типы из `positionManager.types.ts`: `Direction`, `StopOrderType`, `OpenPositionLimitArgs`, `OpenPositionMarketArgs`, `OpenPositionBatchLimitArgs`, `OpenPositionBatchLimitItem`, `OpenPositionBatchLimitResult`, `ClosePositionLimitArgs`, `ClosePositionMarketArgs`, `ClosePositionBatchLimitArgs`, `ClosePositionBatchLimitItem`, `ClosePositionBatchLimitResult`, `PositionBatchLimitItemResult`, `PlaceStopLossArgs`, `PlaceTakeProfitArgs`, `CancelOrderArgs`, `CancelBatchOrdersArgs`, `CancelAllOrdersArgs`, `PositionManagerModifyOrderArgs`, `PositionManagerModifyBatchOrdersArgs`, `PositionManagerModifyBatchOrderItem`, `ReadPositionStateArgs`, `ReadAllPositionsArgs`, `PositionStateResult`, `PositionAbsenceReason`, `PositionAmbiguityReason`, `SpotMarketBuyByQuoteArgs`, `SetLeverageArgs`, `SetMarginModeArgs`.
@@ -246,7 +246,9 @@ interface PriceLimitBoundsArgs {
   tradeSymbol: TradeSymbol;
   markPrice: number;
   indexPrice?: number;
-  premiumAvg?: number; // Bybit premium-член: EMA(midPrice − mark, 30s); при отсутствии трактуется как 0 (см. PremiumIndexCalculator)
+  // Слагаемого «премии» здесь НЕТ. Официальная формула Bybit — Min(Mark × (1+Y), Max(Index,
+  // Mark × (1+X))); прежняя самодельная добавка premiumAvg раздувала полосу ровно на
+  // прижатых разгонах и сожгла вход по OPGUSDT 07.07.2026 — убрана сознательно.
 }
 
 interface PriceLimitBounds {
@@ -258,7 +260,7 @@ interface PriceLimitBounds {
 }
 ```
 
-Используется в `OrderCalculator.calculatePriceLimitBounds()`. Возвращает `null`, если у символа нет `priceLimitRisk` или `markPrice <= 0`, а также для `binancePercentPriceBySide` (не поддерживается в расчёте).
+Это ТОЛЬКО типы: самого расчёта в библиотеке нет — он ушёл вместе с `OrderCalculator` в 3.13.0, и `src/types/priceLimit.ts` остался единственным следом. Считает границы приложение; форма аргументов и результата оставлена общей, чтобы у всех потребителей она совпадала.
 
 ### Общие типы (`common.ts`)
 

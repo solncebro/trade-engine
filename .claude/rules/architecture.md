@@ -5,15 +5,20 @@
 ```
 Сигнал (Telegram/WebSocket)
   → TelegramMessageListener / WebSocket клиент
-    → Парсинг символа из заголовка сигнала
-      → OrderCalculator.resolveSymbolsForExchanges()
-        → OrderCalculator.createOrderAttributesForSymbol()
-          → [если нет данных на futures] OrderCalculator.enrichWithSpotFallback()
-            → ExchangeConnector.createOrder()
-              → OrderCalculator.calculateCloseOrder() (TP/SL)
+    → приложение решает символ, объём и сторону (расчёта сигнала в библиотеке нет)
+      → ExchangeConnector.resolveSymbolWithPrefix()   имя символа на этой бирже
+        → connector.positionManager.*                 деловой вход (открытие/закрытие, SL/TP)
+          → ExchangeConnector.createOrder()           единственная дверь на биржу
+            → client.createOrderWebSocket()           нижняя библиотека
 ```
 
-С 3.4.0 параллельно доступен путь **`connector.positionManager.*`** (открытие/закрытие, SL/TP) без ручной сборки `OrderParams` — см. `positionManager.ts` и `.claude/rules/exchange-connector.md`.
+Расчётного слоя сигнала в библиотеке больше нет: статический класс `OrderCalculator` (разбор
+символов сигнала, объём, запасной путь через спот, лимитная цена с отступом) удалён в 3.13.0 —
+он принадлежал области листингов и уехал туда вместе со своими проверками. Осталась исполняющая
+часть, и деловой вход в неё — `connector.positionManager.*` (с 3.4.0): открытие и закрытие, стоп
+и тейк без ручной сборки `OrderParams` — см. `positionManager.ts` и `.claude/rules/exchange-connector-orders.md`.
+
+Старый путь для наследования — `OrderExecutor`: он же теперь и считает закрывающую заявку.
 
 ## Слои
 
@@ -23,23 +28,34 @@
 - **WebSocket** — внешний WS-сервер отправляет `TestMessage` с полями `{sendTime, scrapedTime, sourceTime, source, title, id}`.
 - Отдельного standalone-эмулятора `websocketEmulator.utils.ts` в библиотеке больше нет — он принадлежал приложению-потребителю и был удалён; вместе с ним из зависимостей убраны `ws`/`@types/ws`.
 
-### 2. Бизнес-логика (расчёт ордеров)
+### 2. Бизнес-логика (сборка заявки)
 
-**OrderCalculator** — статический класс, центр вычислений:
+Единого «центра вычислений» больше нет — обязанности удалённого `OrderCalculator` разошлись
+по трём местам:
 
-| Метод | Назначение |
-|-------|-----------|
-| `resolveSymbolsForExchanges()` | Маппинг символов → биржевые форматы (с учётом префиксов 1000FLOKI и т.д.) |
-| `createOrderAttributesForSymbol()` | Расчёт параметров ордера: цена, объём, сторона, проверка 24h% роста |
-| `enrichWithSpotFallback()` | Замена ошибок "No price data" на спот-ордера |
-| `calculateLimitOrderWithPriceAdjustment()` | Корректировка цены лимитного ордера на процент |
-| `calculateCloseOrder()` | Создание TP/SL ордеров с `reduceOnly`, `triggerPrice` и копированием `positionSide` из исходного orderParams (3.4.0) |
-| `setupLeverageAndMarginModeEnum()` | Установка кредитного плеча и маржинального режима |
-| `getUniqueSymbolCountFromMapping()` | Подсчёт уникальных символов для распределения объёма |
+| Что было в `OrderCalculator` | Где это теперь |
+|------------------------------|----------------|
+| `resolveSymbolsForExchanges()` — имена символов с приставками | `ExchangeConnector.resolveSymbolWithPrefix(symbol, marketType)` — по одному символу за вызов, по кэшу тикеров |
+| `createOrderAttributesForSymbol()` — цена, объём, сторона, порог 24-часового роста | в библиотеке нет: считает приложение (область листингов) |
+| `enrichWithSpotFallback()` — запасной путь через спот | в коде нет вовсе |
+| `calculateLimitOrderWithPriceAdjustment()` — лимитная цена с отступом | в коде нет вовсе |
+| `calculatePriceLimitBounds()` — ценовые границы биржи | в коде нет вовсе; остались только типы `PriceLimitBoundsArgs` / `PriceLimitBounds` (`src/types/priceLimit.ts`) |
+| `calculateCloseOrder()` — закрывающая заявка | `OrderExecutor.buildCloseOrderParams()` (приватный, единственное место применения) |
+| `setupLeverageAndMarginModeEnum()` — плечо и режим маржи | `PositionManager.setLeverage()` / `setMarginMode()`, а внутри открытия — `applyFuturesSetup()` |
 
-**OrderExecutor** — базовый класс для наследования:
+**PositionManager** (`src/core/positionManager.ts`) — деловой вход. Принимает `symbol`,
+`marketType`, `direction`, объём и цену; сам выводит сторону заявки из направления, в двустороннем
+режиме счёта — сторону позиции, признак «только уменьшать» (на Binance в этом режиме не ставится:
+биржа не принимает его вместе со стороной позиции), при необходимости заранее ставит плечо и режим
+маржи. `direction='short'` на споте бросает ошибку сразу, синхронно. Все записи — через очередь
+ограничения частоты и повтор на 429.
+
+**OrderExecutor** — базовый класс для наследования (старый путь):
 - `createOrder()` — выполнение ордера через ExchangeConnector
 - `createCloseOrder()` — TP/SL/аварийный выход (emergency exit → market order)
+- `buildCloseOrderParams()` — обратная сторона, цена со сдвигом на процент, у стоп-лосса цена и
+  сторона срабатывания, на срочном рынке `reduceOnly`; `positionSide` копируется из исходного
+  `orderParams` (нужно для двустороннего режима)
 
 ### 3. Коннекторы бирж
 
@@ -78,19 +94,26 @@
 
 ### Создание ордера
 ```
-символ "ETHUSDT"
-  → resolveSymbolsForExchanges() → Map<Binance, Map<"ETHUSDT", "ETHUSDT">>
-  → createOrderAttributesForSymbol() → OrderAttributes[] с ценой, объёмом, стороной
-  → createOrder() → OrderResult { orderId, actualExchangeParams, responseData }
+символ "ETHUSDT", направление "long", объём и цена от приложения
+  → resolveSymbolWithPrefix("ETHUSDT", Futures) → "ETHUSDT"
+  → positionManager.openPositionLimit() → OrderParams (сторона, сторона позиции, reduceOnly)
+  → connector.createOrder() → buildCreateOrderArgs(): количество и цена на сетке символа,
+      срок действия (рыночная — Ioc, прочие — Gtc), triggerPrice → stopPrice
+  → client.createOrderWebSocket() → OrderResult { orderId, actualExchangeParams, responseData }
+      либо, при отказе, { errorText, errorCode } — исключение наружу не выходит
 ```
 
-### Spot fallback
+### Закрывающая заявка (старый путь)
 ```
-символ "CFGUSDT" (нет на futures)
-  → createOrderAttributesForSymbol() → errorText: "No price data available"
-  → enrichWithSpotFallback() → marketType переключается на Spot
-  → пересчёт цены/объёма по спотовому тикеру
+исходный OrderParams входа + процент сдвига + признак «тейк или стоп»
+  → OrderExecutor.buildCloseOrderParams() → обратная сторона, цена со сдвигом,
+      у стоп-лосса — triggerPrice и triggerDirection, на срочном рынке — reduceOnly
+  → [аварийный выход] тип меняется на рыночный, срабатывание снимается
+  → OrderExecutor.createOrder() → CloseOrderResult { orderId, price } либо { errorText }
 ```
+
+Запасного пути через спот («нет символа на срочном — торгуем на споте») в библиотеке нет: он
+удалён вместе с `OrderCalculator` в 3.13.0. Рынок задаёт вызывающий полем `marketType`.
 
 ### Символы с префиксами (Bybit)
 ```

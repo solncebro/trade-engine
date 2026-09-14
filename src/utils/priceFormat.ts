@@ -54,8 +54,13 @@ function snapPriceToTick(symbol: string, price: number): number {
 }
 
 /** Shortest decimal string of a value: 2.96160000 → "2.9616", 75 → "75". */
-function trimPriceTail(value: number, maxDigits: number): string {
-  return String(Number(value.toFixed(maxDigits)));
+function trimNumberTail(value: number, maxDigits: number): string {
+  const rounded = Number(value.toFixed(maxDigits));
+  const text = String(rounded);
+
+  // String() switches to exponent notation below 1e-6 ("3.4e-7") — a sub-micro coin must still read
+  // as a plain decimal, so the fixed form is kept and only its trailing zeros go.
+  return text.includes('e') ? rounded.toFixed(maxDigits).replace(/\.?0+$/, '') : text;
 }
 
 /**
@@ -67,7 +72,7 @@ function formatPrice(symbol: string, price: number | null | undefined): string {
     return ABSENT_PRICE_TEXT;
   }
 
-  return trimPriceTail(snapPriceToTick(symbol, price), UNSNAPPED_PRICE_MAX_DIGITS);
+  return trimNumberTail(snapPriceToTick(symbol, price), UNSNAPPED_PRICE_MAX_DIGITS);
 }
 
 export {
@@ -76,4 +81,5 @@ export {
   formatPrice,
   PriceTickSnapper,
   snapPriceToTick,
+  trimNumberTail,
 };

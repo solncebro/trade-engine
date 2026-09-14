@@ -105,7 +105,7 @@ class FirebaseServiceBase<T> extends EventEmitter implements Notifiable {
 
 ## KlineSubscriptionWatchdog (`src/services/klineSubscriptionWatchdog.ts`, 3.5.0; с 3.22.0 — обёртка)
 
-Мониторинг активности kline-подписок с автоматическим восстановлением. Создаётся опционально внутри `ExchangeConnector` через 5-й аргумент конструктора `klineWatchdogConfig`. **С 3.22.0 это тонкая обёртка** над общим `StreamSubscriptionWatchdog` и `KlineWatchdogStrategy` (`src/services/klineWatchdogStrategy.ts`): интерфейс ниже прежний, вся машинерия сканирования/восстановления/подавления — общая с потоками стакана, сделок и mark-цены (`.claude/rules/exchange-connector.md`, «Stream Subscription Watchdog»).
+Мониторинг активности kline-подписок с автоматическим восстановлением. Создаётся опционально внутри `ExchangeConnector` через 5-й аргумент конструктора `klineWatchdogConfig`. **С 3.22.0 это тонкая обёртка** над общим `StreamSubscriptionWatchdog` и `KlineWatchdogStrategy` (`src/services/klineWatchdogStrategy.ts`): интерфейс ниже прежний, вся машинерия сканирования/восстановления/подавления — общая с потоками стакана, сделок и mark-цены (`.claude/rules/exchange-connector-streams.md`, «Stream Subscription Watchdog»).
 
 ```typescript
 class KlineSubscriptionWatchdog {
@@ -150,7 +150,7 @@ interface KlineSubscriptionWatchdogConfig {
 
 ## PremiumIndexCalculator (`src/services/premiumIndexCalculator.ts`)
 
-Поддерживает per-symbol непрерывную EMA «премии» (`midPrice − markPrice`) с окном 30 секунд. Значение используется как `premiumAvg` для `OrderCalculator.calculatePriceLimitBounds` (Bybit-ветка). Bybit не публикует это значение ни на одном публичном WebSocket-стриме для линейных USDT-перпетуалов, поэтому потребитель обязан считать его сам.
+Поддерживает per-symbol непрерывную EMA «премии» (`midPrice − markPrice`) с окном 30 секунд. Bybit не публикует это значение ни на одном публичном WebSocket-стриме для линейных USDT-перпетуалов, поэтому потребитель обязан считать его сам — этот класс и есть общее место, где оно считается. Значение забирается через `getPremiumAvg`; расчёта ценовых границ в библиотеке нет (ушёл вместе с `OrderCalculator` в 3.13.0), и в саму формулу границ «премия» больше не входит — см. `types.md`, раздел про ценовые лимиты.
 
 ```typescript
 class PremiumIndexCalculator {
@@ -164,7 +164,7 @@ class PremiumIndexCalculator {
 - EMA в непрерывном времени: `α(Δt) = 1 − exp(−Δt / 30s)`, `ema_new = ema_prev + α × (delta − ema_prev)`. Первый сэмпл инициализирует состояние напрямую (без сглаживания).
 - `feed` игнорирует невалидные сэмплы (`bid/ask/mark` не-finite или `<= 0`, `timestamp` не-finite) и неположительные интервалы (`intervalSec <= 0`).
 - `getPremiumAvg` возвращает `undefined`, пока по символу не было ни одного валидного сэмпла.
-- **НЕ auto-wired.** Потребитель сам инстанцирует калькулятор, кормит его orderbook + mark price через `feed`, и передаёт `getPremiumAvg(symbol)` в `premiumAvg` аргументов `calculatePriceLimitBounds`.
+- **НЕ auto-wired.** Потребитель сам заводит калькулятор, кормит его стаканом и ценой маркировки через `feed` и сам решает, куда девать `getPremiumAvg(symbol)`. В расчёт ценовых границ это значение больше не идёт: сам расчёт из библиотеки ушёл, а в официальной формуле Bybit слагаемого «премии» нет — самодельная добавка раздувала полосу ровно на прижатых разгонах (`src/types/priceLimit.ts`).
 
 Экспортируется из `@solncebro/trade-engine` (`src/index.ts`).
 
@@ -281,7 +281,8 @@ Defaults: `maxRetries = 3`, `baseDelayMs = 1000`, exponential `delay * 2^(attemp
 
 | Файл | Экспорты |
 |------|---------|
-| `priceFormat.ts` (3.17.0) | **`formatPrice(symbol, price)`**, `snapPriceToTick(symbol, price)`, `configurePriceTickSnapper(snapper)`, `isPriceTickSnapperConfigured()` — ⛔️ ОБЯЗАТЕЛЬНАЯ дверь для любой цены наружу, см. ниже |
+| `priceFormat.ts` (3.17.0) | **`formatPrice(symbol, price)`**, `snapPriceToTick(symbol, price)`, `configurePriceTickSnapper(snapper)`, `trimNumberTail(value, maxDigits)` — ⛔️ ОБЯЗАТЕЛЬНАЯ дверь для любой цены наружу, см. ниже (`isPriceTickSnapperConfigured()` удалена в 3.22.0 — не использовалась) |
+| `numberFormat.ts` (3.23.0) | **`formatAmount(symbol, amount)`**, `snapAmountToStep(symbol, amount)`, `formatUsdAmount(value)`, `roundUsdAmount(value)`, `formatPercent(value, maxDigits?)`, `roundPercent(value, maxDigits?)`, `configureAmountStepSnapper(snapper)` — та же обязательная дверь, но для любого другого вычисленного числа, см. ниже |
 | `order.utils.ts` | `isOrderSuccessful(result)`, `isSpot(marketType)` |
 | `symbol.utils.ts` | `normalizeSymbol(symbol)` — убирает `/`, `:`, `.`, `-` |
 | `date.utils.ts` | `createDate()`, `formatTimestamp()`, `createHumanTimestamp()` |
@@ -298,10 +299,34 @@ Defaults: `maxRetries = 3`, `baseDelayMs = 1000`, exponential `delay * 2^(attemp
 | `formatPrice(symbol, price)` | строка на тиковой сетке символа; `—` для `null`/`undefined`/`NaN` |
 | `snapPriceToTick(symbol, price)` | то же числом — для записи в базу/журнал |
 | `configurePriceTickSnapper(snapper)` | ручная установка источника сетки (бэктест, утилиты); `null` — сброс |
-| `isPriceTickSnapperConfigured()` | установлен ли источник (можно предупредить, а не молча печатать сырьё) |
 
 **Подключение автоматическое:** `ExchangeConnector.initialize()` сам ставит снаппер из своих загруженных фильтров символов (futures, затем spot). Приложению делать НИЧЕГО не нужно — достаточно инициализировать коннектор.
 
 Символ без загруженных фильтров печатается не длиннее 8 знаков после точки (`priceToPrecision` в этом случае свалился бы на слепые 8 знаков и испортил бы дешёвые монеты, поэтому значение остаётся точным, но обрезается при выводе).
 
 **Почему:** заявка на бирже всегда лежит на тиковой сетке. Сырое `2.961579786096256` не только нечитаемо — оно не равно тому, что реально стоит на бирже. Повод — тревога rubber по PROMUSDT 11.08.2026 и многократные требования владельца сделать это системно, а не чинить каждый раз заново.
+
+## Форматирование остальных чисел — `numberFormat.ts` (3.23.0) ⛔️ обязательное
+
+Правило `priceFormat.ts` выше касалось только цены. Любое ДРУГОЕ вычисленное число — объём в
+USDT, маржа, количество контрактов, процент — после сложения, деления или умножения несёт тот
+же хвост плавающей точки и наружу (Telegram, тревоги, логи, журнал) выходит только через эту
+дверь:
+
+| Экспорт | Что даёт |
+|---|---|
+| `formatAmount(symbol, amount)` | строка на шаге количества символа; `—` для `null`/`undefined`/`NaN` |
+| `snapAmountToStep(symbol, amount)` | то же числом — для записи в базу/журнал |
+| `formatUsdAmount(value)` | сумма USDT строкой, не точнее цента |
+| `roundUsdAmount(value)` | то же числом |
+| `formatPercent(value, maxDigits = 2)` | процент строкой без хвоста плавающей точки |
+| `roundPercent(value, maxDigits = 2)` | то же числом |
+| `configureAmountStepSnapper(snapper)` | ручная установка источника шага количества (бэктест, утилиты); `null` — сброс |
+
+**Подключение автоматическое:** `ExchangeConnector.initialize()` ставит снаппер шага количества
+тем же путём, что и тиковую сетку цены (`installAmountStepSnapper`, сразу после
+`installPriceTickSnapper`). Без коннектора — `configureAmountStepSnapper(...)` вручную.
+
+**Почему:** та же причина, что у цены, но шире — правило `formatPrice` не касалось объёма,
+маржи, количества контрактов и процента, и они продолжали утекать наружу сырыми. Повод тот же —
+тревога rubber по PROMUSDT 11.08.2026.

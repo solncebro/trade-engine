@@ -204,4 +204,8 @@ describe('resolveOrderBookStreamDepth', () => {
     expect(resolveOrderBookStreamDepth(ExchangeNameEnum.Binance)).toBe(20);
     expect(resolveOrderBookStreamDepth(ExchangeNameEnum.Bybit)).toBe(50);
   });
+
+  it('takes the deep OKX channel, the only one wide enough to answer a price band', () => {
+    expect(resolveOrderBookStreamDepth(ExchangeNameEnum.Okx)).toBe(400);
+  });
 });

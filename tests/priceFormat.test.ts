@@ -50,6 +50,12 @@ describe('formatPrice', () => {
     expect(formatPrice('PEPEUSDT', 0.0000123456789)).toBe('0.0000123');
   });
 
+  it('prints a sub-micro price as a plain decimal, never in exponent notation', () => {
+    expect(formatPrice('UNKNOWNUSDT', 3.4e-7)).toBe('0.00000034');
+    expect(formatPrice('UNKNOWNUSDT', 1e-8)).toBe('0.00000001');
+    expect(formatPrice('UNKNOWNUSDT', 0.00000034)).toBe('0.00000034');
+  });
+
   it('caps an unsnappable price instead of printing its whole tail', () => {
     configurePriceTickSnapper(snapper);
 

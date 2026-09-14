@@ -2,6 +2,7 @@ export {
   ExchangeError,
   formatWebSocketConnectionsReport,
   parseBybitOrderbookRawFrame,
+  parseOkxOrderbookRawFrame,
 } from '@solncebro/exchange-engine';
 
 export { ExchangeConnector } from './services/exchangeConnector';
@@ -9,6 +10,7 @@ export type {
   RateLimitConfig,
   StreamWatchdogConfigMap,
   StreamWatchdogStreamConfig,
+  TradeSymbolsRefreshConfig,
 } from './services/exchangeConnector';
 export { FirebaseServiceBase } from './services/firebaseServiceBase';
 export { KlineSubscriptionWatchdog } from './services/klineSubscriptionWatchdog';
@@ -221,6 +223,8 @@ export * from './utils/sleep';
 export * from './utils/nestedField';
 export * from './utils/perKeySerializer';
 export * from './utils/priceFormat';
+export * from './utils/numberFormat';
+export type { AmountStepSnapper } from './utils/numberFormat.types';
 export * from './utils/priceIntersection';
 export * from './utils/priceIntersection.types';
 export * from './utils/emoji';

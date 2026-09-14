@@ -52,6 +52,7 @@ import { withRetryOn429 } from './withRetryOn429';
 
 import { ExchangeConnector } from '../services/exchangeConnector';
 import { OrderParams, OrderResult } from '../types/orders';
+import { snapPriceToTick } from '../utils/priceFormat';
 
 const SPOT_SHORT_ERROR_MESSAGE =
   'SHORT positions are not supported on spot. Use marketType=Futures.';
@@ -420,9 +421,9 @@ export class PositionManager {
         symbol: args.symbol,
         orderId: args.orderId,
         marketType: args.marketType,
-        price: args.price,
+        price: args.price === undefined ? undefined : snapPriceToTick(args.symbol, args.price),
         amount: args.amount,
-        triggerPrice: args.triggerPrice,
+        triggerPrice: args.triggerPrice === undefined ? undefined : snapPriceToTick(args.symbol, args.triggerPrice),
       },
       `[PositionManager] ${args.symbol} modifyOrder request orderId=${args.orderId} marketType=${args.marketType}`
     );
@@ -514,6 +515,10 @@ export class PositionManager {
       clientOrderId: args.clientOrderId,
     };
 
+    // Bybit needs to be told the unit explicitly, otherwise it reads the size as base coins.
+    // OKX needs nothing: its spot client already treats a positive quoteOrderQty as a
+    // quote-sized order on its own (isOkxQuoteSizedOrder) and stamps tgtCcy=quote_ccy on the
+    // wire — an extra branch here would only restate what the exchange layer already knows.
     if (this.exchangeConnector.getExchangeName() === ExchangeNameEnum.Bybit) {
       orderParams.marketUnit = MarketUnitEnum.QuoteCoin;
     }
@@ -625,6 +630,11 @@ export class PositionManager {
     const exchangeName = this.exchangeConnector.getExchangeName();
     const isHedge = this.exchangeConnector.futuresPositionMode === PositionModeEnum.Hedge;
 
+    // Binance futures reject reduceOnly together with a position side, so it is withheld here.
+    // OKX needs no entry of its own: its client asks the account which mode it is really in and
+    // drops reduceOnly itself whenever it sends a position side (applyOkxPositionParams), while
+    // in the one-way mode it forwards the flag. Passing it stays correct either way, and the
+    // exchange layer — not this guess about the mode — has the last word on the wire.
     if (isHedge) {
       orderParams.positionSide = this.directionToPositionSide(input.direction);
 
@@ -698,7 +708,7 @@ export class PositionManager {
         level: 'info',
         key: `readPositionState:${symbol}`,
         windowMs: READ_POSITION_STATE_LOG_THROTTLE_MS,
-        payload: { symbol, direction, positionIdx, contracts: snapshot?.contracts ?? null, side: snapshot?.side ?? null, snapshotPositionIdx: snapshot?.positionIdx ?? null, entryPrice: snapshot?.entryPrice ?? null },
+        payload: { symbol, direction, positionIdx, contracts: snapshot?.contracts ?? null, side: snapshot?.side ?? null, snapshotPositionIdx: snapshot?.positionIdx ?? null, entryPrice: snapshot === null ? null : snapPriceToTick(symbol, snapshot.entryPrice) },
         message: `[PositionManager] ${symbol} readPositionState fetchPositionSnapshot response contracts=${snapshot?.contracts ?? 'null'} side=${snapshot?.side ?? 'null'} positionIdx=${positionIdx ?? 'any'} direction=${direction}`,
       });
     } catch (error: unknown) {

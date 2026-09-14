@@ -25,9 +25,15 @@ logger.warn(`${symbol}: stop re-derived → trigger ${formatPrice(symbol, recomp
 - Подключается **само**: `ExchangeConnector.initialize()` ставит источник тиковой сетки. Приложению делать ничего не нужно. Без коннектора (бэктест, утилиты) — `configurePriceTickSnapper(...)` вручную.
 - Символ без загруженных биржевых фильтров печатается не длиннее 8 знаков после точки.
 
-**Почему это правило существует:** заявка на бирже ВСЕГДА лежит на тиковой сетке, поэтому сырое `2.961579786096256` не просто нечитаемо — оно расходится с фактом. Владелец натыкался на это многократно (последний раз 11.08.2026) и требует системности, а не разовых исправлений. Модуль — `src/utils/priceFormat.ts`, сторож — `tests/priceFormat.test.ts`.
+**Правило распространяется на ЛЮБОЕ вычисленное число, а не только на цену.** Объём в USDT, маржа, количество контрактов, процент, среднее — всё, над чем было совершено математическое действие, несёт хвост плавающей точки и наружу (Telegram, тревоги, логи, журнал) выходит только через форматтер из `src/utils/numberFormat.ts`:
+- `formatAmount(symbol, amount)` / `snapAmountToStep(symbol, amount)` — количество контрактов на шаге количества символа (подключается в `ExchangeConnector.initialize()` вместе с тиковой сеткой; без коннектора — `configureAmountStepSnapper(...)`).
+- `formatUsdAmount(value)` / `roundUsdAmount(value)` — суммы USDT, не точнее цента.
+- `formatPercent(value, digits = 2)` / `roundPercent(value, digits = 2)` — проценты.
+- `formatX` — для строк текста, `snapX`/`roundX` — для числовых полей объекта логгера и записей журнала. Значения, идущие в расчёты и на биржу, не трогать — форматирование стоит только в точке вывода.
 
-**Проверка перед сдачей работы:** поиск по правкам на интерполяцию цены (`${...Price}`, `price=${`, `${...price}`) — каждое такое место обязано быть завёрнуто в `formatPrice`.
+**Почему это правило существует:** заявка на бирже ВСЕГДА лежит на тиковой сетке, поэтому сырое `2.961579786096256` не просто нечитаемо — оно расходится с фактом. Владелец натыкался на это многократно (последний раз 11.08.2026) и требует системности, а не разовых исправлений. Модули — `src/utils/priceFormat.ts` (цена, сторож `tests/priceFormat.test.ts`) и `src/utils/numberFormat.ts` (3.23.0; всё остальное вычисленное число, сторож `tests/numberFormat.test.ts`).
+
+**Проверка перед сдачей работы:** поиск по правкам на интерполяцию числа (`${...Price}`, `price=${`, `${...price}`, `${...amount}`, `${...Percent}`, `${...Usdt}`) — каждое такое место обязано быть завёрнуто в `formatPrice`/`formatAmount`/`formatPercent`/`formatUsdAmount`.
 
 ---
 
@@ -47,12 +53,12 @@ npx tsc --noEmit
 yarn lint
 yarn lint:fix
 
-# Интеграционные тесты (нужны demo API-ключи в .env.test)
+# Живые проверки на демо-счетах (нужны demo API-ключи в .env.test)
+# Ставят заявки ~100 USDT и закрывают их тут же, в том же тесте — это штатно
 yarn test:integration              # все
 yarn test:integration:binance      # Binance
 yarn test:integration:bybit        # Bybit
-yarn test:integration:e2e-signal   # E2E сигнал→ордер
-yarn test:integration:mvp          # spot-fallback + limit-orders + multiple-symbols + error-handling
+yarn test:integration:okx          # OKX
 
 # Один юнит-тест
 npx jest tests/utils.test.ts
@@ -67,26 +73,49 @@ npx jest --config jest.integration.config.js --runInBand --testPathPatterns=<pat
 
 **@solncebro/trade-engine** — библиотека торгового движка для Binance и Bybit с интеграцией Telegram и Firebase.
 
-### Пайплайн: Сигнал → Ордер
+### Путь «Сигнал → Ордер»
 
-1. Сигнал приходит (Telegram / WebSocket)
-2. `OrderCalculator.resolveSymbolsForExchanges()` — маппинг символов с учётом префиксов (`1000FLOKI`)
-3. `OrderCalculator.createOrderAttributesForSymbol()` — расчёт параметров ордера
-4. Если нет данных на futures → `OrderCalculator.enrichWithSpotFallback()` — переключение на spot
-5. `ExchangeConnector.createOrder()` — исполнение на бирже
+Расчёта сигнала в библиотеке больше нет: статический класс `OrderCalculator` (разбор символов
+сигнала, объём по сигналу, запасной путь через спот, лимитная цена с отступом в процентах) уехал
+в область листингов в 3.13.0. Что и на сколько покупать, решает приложение; библиотека исполняет.
+
+1. Сигнал приходит (Telegram / WebSocket) — приложение само считает символ, объём и сторону
+2. `ExchangeConnector.resolveSymbolWithPrefix(symbol, marketType)` — имя символа на этой бирже
+   с учётом приставок: сперва имя как есть, затем `10` / `100` / `1000` / `10000` / `100000` /
+   `1000000` по кэшу тикеров (`1000FLOKIUSDT` и подобные). Ничего не нашлось — предупреждение
+   в журнал и имя возвращается как есть
+3. `connector.positionManager.*` — деловой вход (`openPositionLimit/Market`, `closePosition*`,
+   `placeStopLoss/TakeProfit`): по направлению сделки сам выводит сторону заявки, в двустороннем
+   режиме счёта — сторону позиции, признак «только уменьшать» (на Binance в этом режиме он не
+   ставится — биржа не принимает его вместе со стороной позиции), при необходимости заранее
+   ставит плечо и режим маржи. Все записи идут через очередь ограничения частоты и повтор на 429
+4. `ExchangeConnector.createOrder(orderParams)` — единственная дверь на биржу: количество и цена
+   сажаются на сетку символа, срок действия проставляется сам (рыночная — «исполнить и отменить
+   остаток», прочие — «до отмены»), цена срабатывания уходит отдельным полем, заявка отправляется
+   через `createOrderWebSocket` нижней библиотеки. Ошибка не бросается — возвращается полями
+   `errorText` / `errorCode` результата
+5. Старый путь для наследования — `OrderExecutor`: `createOrder()` и `createCloseOrder()`, где
+   закрывающая заявка собирается на месте (`buildCloseOrderParams`: обратная сторона, цена со
+   сдвигом на процент, у стоп-лосса — цена и сторона срабатывания, на срочном рынке — «только
+   уменьшать»; аварийный выход превращает её в рыночную без срабатывания). Новые проекты — через
+   `PositionManager`
 
 ### Подробная документация
 
 | Файл | Содержание |
 |------|-----------|
 | [`.claude/rules/architecture.md`](.claude/rules/architecture.md) | Архитектура, слои, потоки данных, схема пайплайна |
-| [`.claude/rules/exchange-connector.md`](.claude/rules/exchange-connector.md) | ExchangeConnector: подключение, тикеры, префиксы, demo trading |
-| [`.claude/rules/order-calculator.md`](.claude/rules/order-calculator.md) | OrderCalculator: все методы расчёта ордеров |
+| [`.claude/rules/exchange-connector.md`](.claude/rules/exchange-connector.md) | ExchangeConnector: подключение, тикеры, префиксы, demo trading (индекс; темы ниже — сателлиты) |
+| [`.claude/rules/exchange-connector-client-api.md`](.claude/rules/exchange-connector-client-api.md) | Полный справочник методов `ExchangeClient` (`connector.spot` / `connector.futures`) |
+| [`.claude/rules/exchange-connector-orders.md`](.claude/rules/exchange-connector-orders.md) | Создание ордеров (`buildCreateOrderArgs`), отличия OKX, методы `PositionManager` |
+| [`.claude/rules/exchange-connector-streams.md`](.claude/rules/exchange-connector-streams.md) | `KlineSubscriptionWatchdog`, `StreamSubscriptionWatchdog`, стакан (`OrderBookTracker`) |
 | [`.claude/rules/types.md`](.claude/rules/types.md) | Система типов: OrderParams, OrderResult, маппинги, конфиги |
 | [`.claude/rules/services.md`](.claude/rules/services.md) | Telegram, Firebase, Logger, утилиты |
 | [`.claude/rules/testing.md`](.claude/rules/testing.md) | Тестирование: команды, паттерны, хелперы, символы |
 | [`.claude/rules/code-conventions.md`](.claude/rules/code-conventions.md) | Конвенции: форматирование, импорты, именование, паттерны |
 | [`.claude/rules/strategy-trading.md`](.claude/rules/strategy-trading.md) | Слой стратегической торговли: `OrderManager`, базовый `PositionMonitor` (+ хуки, порты `PositionStore`/`MarketDataSource`), подключаемый `GenericPnlMonitor` (opt-in PnL-бот позиций), `ChartGenerator`, модель `MonitoredPosition`, утилиты слоя |
+| [`.claude/rules/strategy-trading-order-manager.md`](.claude/rules/strategy-trading-order-manager.md) | `OrderManager`: конструктор, публичный интерфейс, ключевые поведения (гарантированная отмена, per-position FIFO, идемпотентность SL, sub-batch splitting), константы |
+| [`.claude/rules/strategy-trading-monitors.md`](.claude/rules/strategy-trading-monitors.md) | `PositionMonitor` и `GenericPnlMonitor`: конструкторы, что реализуют сами, protected-хуки, Telegram-меню позиций, константы |
 | [`.claude/rules/trend.md`](.claude/rules/trend.md) | Определение тренда: `TrendCalculator` (структура рынка — вершины/впадины, направление, слом, сила 0–100), `TrendMonitor` (живой наблюдатель + событие смены тренда), `formatTrendSummaryMessage` |
 
 ### Ключевые модули
@@ -97,11 +126,10 @@ npx jest --config jest.integration.config.js --runInBand --testPathPatterns=<pat
 - **`src/core/withRetryOn429.ts`** (3.5.0) — `withRetryOn429` (+ `withResultRetry`) — retry-обёртки с exponential backoff на 429/5xx. `withReadRetry` удалён в 3.22.0 (был той же функцией под вторым именем).
 - **`src/services/streamSubscriptionWatchdog.ts`** — ЕДИНЫЙ сторож здоровья WS-подписок; поведение потока задаёт `StreamWatchdogStrategy` (`streamWatchdogStrategies.ts` — стакан/сделки/mark-цена; `klineWatchdogStrategy.ts` — клайны, 3.22.0). `klineSubscriptionWatchdog.ts` — тонкая обёртка с прежним интерфейсом.
 - **`src/services/orderBookTracker.ts`** (3.22.0) — живая склеенная книга по подписке; наружу — `ExchangeConnector.subscribeOrderBook/getOrderBook/unsubscribeOrderBook/fetchOrderBook`. Чтение стакана через сырой клиент (`getClient(...).subscribeOrderbook`) — обход единой двери. Чистый срез объёма по полосе — `sliceAskVolumeWithinBand` (`src/utils/orderBookSlice.ts`).
-- **`src/services/premiumIndexCalculator.ts`** — `PremiumIndexCalculator`, per-symbol EMA «премии» (`midPrice − markPrice`, окно 30s) для подачи `premiumAvg` в `OrderCalculator.calculatePriceLimitBounds`; не auto-wired. → [подробнее](.claude/rules/services.md)
+- **`src/services/premiumIndexCalculator.ts`** — `PremiumIndexCalculator`, per-symbol EMA «премии» (`midPrice − markPrice`, окно 30s); Bybit это значение публично не отдаёт, поэтому потребитель считает его сам и забирает через `getPremiumAvg`. Расчёта ценовых границ в библиотеке нет — он уехал вместе с `OrderCalculator` в 3.13.0, остались только типы `PriceLimitBoundsArgs` / `PriceLimitBounds`. Не auto-wired. → [подробнее](.claude/rules/services.md)
 - **`src/services/tradifiSymbolGate.ts`** (3.12.0) — `TradifiSymbolGate`, переиспользуемый хранитель «универса без TradFi» (`isAllowed`/`classify`/`filterSymbolList`); опциональный `shouldAllowTradifi` (3.13.0, default `false`) снимает фильтр по явному согласию потребителя. → [подробнее](.claude/rules/services.md)
-- **`src/core/orderCalculator.ts`** — статические методы расчёта ордеров, маппинг символов, кредитное плечо, spot fallback. `calculateCloseOrder` сохраняет `positionSide` из исходного `orderParams`. → [подробнее](.claude/rules/order-calculator.md)
 - **`src/core/trendCalculator.ts` + `src/core/TrendMonitor.ts`** (3.14.0) — определение тренда актива по структуре рынка (вершины/впадины). `TrendCalculator` — статический расчёт направления (рост/падение/боковик), слома тренда по закрытию и силы 0–100. `TrendMonitor` — живой наблюдатель поверх `MarketDataSource`: вердикт по каждому интервалу + сводка, событие `trendChanged` при смене направления, чистое снятие подписок. `formatTrendSummaryMessage` — текст сводки для Telegram. Не торгует и не шлёт сам. → [подробнее](.claude/rules/trend.md)
-- **`src/core/orderExecutor.ts`** — базовый класс исполнения ордеров с TP/SL и аварийным выходом (legacy путь; новые проекты — через `PositionManager`).
+- **`src/core/orderExecutor.ts`** — базовый класс исполнения ордеров с TP/SL и аварийным выходом (legacy путь; новые проекты — через `PositionManager`). Сборка закрывающей заявки живёт здесь же (`buildCloseOrderParams`, приватный) — она перешла сюда из `OrderCalculator.calculateCloseOrder` в 3.13.0: расчёт общий, а место применения единственное. `positionSide` копируется из исходного `orderParams` — нужно для двустороннего режима.
 - **`src/services/telegram*.ts`** — Telegram-бот (Telegraf) + MTProto-слушатель. → [подробнее](.claude/rules/services.md)
 - **`src/services/firebaseServiceBase.ts`** — базовый класс Firestore CRUD с real-time подпиской; `updateData` использует `flattenForFirestoreUpdate` (3.5.0). → [подробнее](.claude/rules/services.md)
 
@@ -121,11 +149,29 @@ npx jest --config jest.integration.config.js --runInBand --testPathPatterns=<pat
 - **Биржи**: `@solncebro/exchange-engine` `>=0.22.0 <1.0.0` (из реестра npm, диапазон, а не точная версия — с 3.21.0). Bybit: WebSocket для ордеров.
 - **Map-коллекции**: `SymbolMappingByExchange` и `ExchangeConnectorByName` — это `Map`, не объекты.
 
-### Интеграционные тесты
+### Живые проверки на демо-счетах (`tests/integration/`)
 
-- `.env.test` с `BINANCE_DEMO_API_KEY`, `BINANCE_DEMO_SECRET_KEY`, `BYBIT_DEMO_API_KEY`, `BYBIT_DEMO_SECRET_KEY`
+- Три набора: `binance.test.ts` (16), `bybit.test.ts` (16), `okx.test.ts` (17). Каждый — блок
+  `ExchangeConnector` (имя биржи, номер счёта, списки инструментов, тикер, разрешение символа,
+  плечо, режим маржи, заявки, позиция, стакан) и блок `PositionManager` (чтение позиций, плечо,
+  открытие и закрытие рыночной заявкой)
+- `.env.test` с `BINANCE_DEMO_API_KEY`, `BINANCE_DEMO_SECRET_KEY`, `BYBIT_DEMO_API_KEY`,
+  `BYBIT_DEMO_SECRET_KEY`, а для OKX — **тремя** переменными: `OKX_DEMO_API_KEY`,
+  `OKX_DEMO_SECRET_KEY`, `OKX_DEMO_PASSPHRASE` (кодовую фразу OKX требует в подписи каждого запроса)
 - Тесты автоматически пропускаются при отсутствии ключей (`describeIfCredentials()`)
-- Хелперы: `tests/integration/helpers/` — конфиги, символы, WS-эмулятор
+- Хелперы: `tests/integration/helpers/testnet.helpers.ts` — конфиги, символы, своё чтение
+  `.env.test` и `createDemoConnector()` (спрашивает у счёта его режим позиций и собирает
+  коннектор под ответ — иначе счёт в режиме «лонг и шорт» отвергает заявки без стороны позиции)
 - Всегда `--runInBand` (последовательно), таймаут 180 сек
 - Интеграционные команды запускаются через `scripts/runIntegrationJest.js`, который очищает proxy-переменные окружения (`HTTP_PROXY/HTTPS_PROXY/ALL_PROXY/GIT_HTTP_PROXY/GIT_HTTPS_PROXY/SOCKS_PROXY/SOCKS5_PROXY` и lowercase-варианты)
 - → [подробнее](.claude/rules/testing.md)
+
+#### Граница с exchange-engine
+
+Здесь проверяется ТОЛЬКО обёртка: разрешение имени символа с приставками, кэш тикеров, поведение
+самого коннектора и потоки `PositionManager` / `OrderExecutor` — то есть то, что эта библиотека
+добавляет поверх нижней. Договор с биржей — единицы объёма, знаки, инварианты ответов, потоки
+котировок и заявок — проверяется живыми пробами соседней библиотеки, в `../exchange-engine/scripts/`
+(инструкция — `README.md` там же; проба OKX — `okx-live-probe`, общая проверка договора —
+`exchange-live-check`). Дублировать эти проверки здесь запрещено: две копии одной правды расходятся,
+и по расхождению уже не понять, где ошибка — в обёртке или в договоре.

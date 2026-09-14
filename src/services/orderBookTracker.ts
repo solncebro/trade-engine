@@ -10,9 +10,19 @@ import { logger } from '../core/logger';
 // followed by deltas). One consumer-facing default per exchange keeps the choice out of
 // every application; a symbol thin enough to need more than this is not one to close in a
 // single piece anyway.
+//
+// OKX offers no middle size at all: its book channels are 1 level (`bbo-tbt`), 5 levels
+// (`books5`) and 400 levels (`books`) — nothing in between. Five levels cannot answer the one
+// question this book exists to answer, "how much fits within a price band" (see
+// `sliceAskVolumeWithinBand`), because the band routinely reaches past the fifth level. So the
+// deep channel is the only honest choice, and the depth has to be exactly 400: asking for
+// anything else still lands on `books` and only earns a warning from the stream that the
+// requested number was ignored.
+const OKX_DEEP_ORDER_BOOK_STREAM_DEPTH = 400;
 const ORDER_BOOK_STREAM_DEPTH_BY_EXCHANGE: ReadonlyMap<ExchangeNameEnum, number> = new Map([
   [ExchangeNameEnum.Binance, 20],
   [ExchangeNameEnum.Bybit, 50],
+  [ExchangeNameEnum.Okx, OKX_DEEP_ORDER_BOOK_STREAM_DEPTH],
 ]);
 const FALLBACK_ORDER_BOOK_STREAM_DEPTH = 50;
 const DEFAULT_RESUBSCRIBE_DEBOUNCE_MS = 5_000;

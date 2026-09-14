@@ -55,6 +55,11 @@ Demo Trading использует твой **реальный аккаунт Byb
    - В demo аккаунте уже есть тестовые средства
    - Если нет — перейди в Assets → Request Test Funds
 
+6. **Список разрешённых адресов:**
+   - Ключ Bybit привязывается к списку IP. Адрес машины, с которой идут проверки, обязан быть в нём.
+   - Если адреса нет — биржа отвечает `10010: Unmatched IP` на КАЖДЫЙ подписанный запрос
+     (плечо, режим маржи, заявки, позиции), а публичные запросы при этом проходят.
+
 **API Endpoints:**
 
 | | URL |
@@ -62,6 +67,34 @@ Demo Trading использует твой **реальный аккаунт Byb
 | REST | `https://api-demo.bybit.com` |
 | WebSocket | `wss://stream-demo.bybit.com/v5/trade` |
 | Управление ключами | `https://demo.bybit.com` |
+
+---
+
+### OKX Demo Trading
+
+Demo Trading использует твой **реальный аккаунт OKX**, переключённый в демо-режим.
+
+1. **Перейди на:** https://www.okx.com → Demo trading
+
+2. **Перейди в:** раздел API демо-аккаунта
+
+3. **Создай API ключ:**
+   - Придумай и запиши **кодовую фразу** (passphrase) — OKX просит её при создании ключа
+     и подписывает ею каждый запрос. Посмотреть её потом нельзя.
+   - Включи права на торговлю
+
+4. **Сохрани ТРИ значения:** API Key, Secret Key и кодовую фразу
+
+5. **Режим позиций:** проверки сами спрашивают у счёта, в каком он режиме — односторонний или
+   «лонг и шорт» — и подстраиваются под ответ. Менять его руками не нужно.
+
+**API Endpoints:**
+
+| | URL |
+|---|---|
+| REST | `https://www.okx.com` (демо выбирается заголовком `x-simulated-trading: 1`, отдельного хоста нет) |
+| WebSocket | `wss://wspap.okx.com:8443/ws/v5/{public,private,business}` |
+| Управление ключами | `https://www.okx.com` → Demo trading |
 
 ---
 
@@ -77,6 +110,11 @@ BINANCE_DEMO_SECRET_KEY=your_binance_demo_secret_key_here
 # Bybit Demo Trading
 BYBIT_DEMO_API_KEY=your_bybit_demo_api_key_here
 BYBIT_DEMO_SECRET_KEY=your_bybit_demo_secret_key_here
+
+# OKX Demo Trading — три переменные, кодовая фраза обязательна
+OKX_DEMO_API_KEY=your_okx_demo_api_key_here
+OKX_DEMO_SECRET_KEY=your_okx_demo_secret_key_here
+OKX_DEMO_PASSPHRASE=your_okx_demo_passphrase_here
 ```
 
 Пример файла: `.env.test.example`
@@ -93,32 +131,10 @@ BYBIT_DEMO_SECRET_KEY=your_bybit_demo_secret_key_here
 yarn test
 ```
 
-### MVP интеграционные тесты (рекомендуется начать отсюда)
-
-```bash
-yarn test:integration:mvp
-```
-
-Покрывает:
-
-- Spot Fallback (переключение на spot при недоступности фьючерсов)
-- Multiple Symbols (одновременная торговля BTC, ETH, XRP)
-- Limit Orders (лимит-ордеры с коррекцией цены +40%)
-- Error Scenarios (graceful обработка ошибок API)
-
 ### Все интеграционные тесты
 
 ```bash
 yarn test:integration
-```
-
-### Отдельные сценарии
-
-```bash
-yarn test:integration:spot-fallback
-yarn test:integration:multiple-symbols
-yarn test:integration:limit-orders
-yarn test:integration:error-handling
 ```
 
 ### По биржам
@@ -126,7 +142,11 @@ yarn test:integration:error-handling
 ```bash
 yarn test:integration:binance
 yarn test:integration:bybit
+yarn test:integration:okx
 ```
+
+> Эти проверки **ставят заявки на демо-счёте** примерно на 100 USDT и закрывают их тут же,
+> в том же тесте. Это штатное поведение, а не побочный эффект.
 
 ---
 
@@ -135,23 +155,21 @@ yarn test:integration:bybit
 ### Успешный запуск
 
 ```
-PASS  tests/integration/spot-fallback.test.ts
-PASS  tests/integration/limit-orders.test.ts
-PASS  tests/integration/multiple-symbols.test.ts
-PASS  tests/integration/error-handling.test.ts
+PASS  tests/integration/okx.test.ts
 
-Test Suites: 4 passed, 4 total
-Tests:       45 passed, 45 total
+Test Suites: 1 passed, 1 total
+Tests:       17 passed, 17 total
 ```
 
 ### Тесты пропущены (нет credentials)
 
 ```
-SKIP  tests/integration/spot-fallback.test.ts
-  ... all tests skipped (no bybit demo credentials)
+SKIP  tests/integration/okx.test.ts
+  ... all tests skipped (no okx demo credentials)
 ```
 
-Создай `.env.test` с demo credentials.
+Создай `.env.test` с demo credentials. Для OKX нужны **все три** переменные —
+без `OKX_DEMO_PASSPHRASE` проверки считают ключ неполным и пропускают себя.
 
 ### Ошибка подключения
 
@@ -159,7 +177,9 @@ SKIP  tests/integration/spot-fallback.test.ts
 
 - API ключ и Secret введены верно
 - Ключи скопированы полностью (без пробелов)
-- Используются ключи от **demo.binance.com** или **demo.bybit.com** (не production!)
+- Используются ключи от **demo.binance.com**, **demo.bybit.com** или демо-режима **okx.com** (не production!)
+- Для OKX задана кодовая фраза и совпадает с той, что вводилась при создании ключа
+- Для Bybit адрес машины добавлен в список разрешённых у ключа (иначе `10010: Unmatched IP`)
 - Интернет подключение работает
 
 ---
@@ -169,17 +189,33 @@ SKIP  tests/integration/spot-fallback.test.ts
 ```
 tests/
 ├── utils.test.ts                      # Unit: утилиты (normalizeSymbol, etc.)
-├── bybitNativeTradeWebSocket.test.ts  # Unit: Bybit WebSocket
-└── integration/                       # Интеграционные тесты
-    ├── spot-fallback.test.ts          # MVP: Fallback на spot market
-    ├── limit-orders.test.ts           # MVP: Лимит-ордеры с +40% коррекцией
-    ├── multiple-symbols.test.ts       # MVP: Торговля несколькими парами
-    ├── error-handling.test.ts         # MVP: Graceful error handling
-    ├── binance.test.ts                # Binance: ExchangeConnector + OrderCalculator (18 тестов)
-    ├── bybit.test.ts                  # Bybit: ExchangeConnector + OrderCalculator (18 тестов)
+├── positionManager.test.ts            # Unit: PositionManager по биржам и режимам позиций
+├── orderBookTracker.test.ts           # Unit: живая книга и глубина потока по биржам
+└── integration/                       # Живые проверки на демо-счетах
+    ├── binance.test.ts                # Binance: ExchangeConnector + PositionManager (16 проверок)
+    ├── bybit.test.ts                  # Bybit: ExchangeConnector + PositionManager (16 проверок)
+    ├── okx.test.ts                    # OKX: ExchangeConnector + PositionManager (17 проверок)
     └── helpers/
-        └── testnet.helpers.ts         # Общие утилиты и конфигурация
+        └── testnet.helpers.ts         # Конфиги демо-счетов, символы, сборка коннектора
 ```
+
+Проверок вокруг `OrderCalculator` (`spot-fallback`, `limit-orders`, `multiple-symbols`,
+`error-handling`, `e2e-signal`) больше нет: сам класс уехал из библиотеки в область листингов
+(релиз 3.13.0), и проверять в trade-engine стало нечего.
+
+### Что проверяется здесь, а что в exchange-engine
+
+Здесь — только **обёртка**: разрешение имени символа с приставками, кэш тикеров, поведение
+коннектора, потоки `PositionManager` (чтение позиций, плечо, режим маржи, открытие и закрытие
+рыночной заявкой) и `OrderExecutor`.
+
+**Договор с биржей** — единицы объёма, знаки величин, инварианты ответов, потоки котировок и
+заявок — проверяется живыми пробами соседней библиотеки: `../exchange-engine/scripts/`
+(инструкция — `README.md` там же; проба OKX — `okx-live-probe`, общая проверка договора —
+`exchange-live-check`).
+
+Дублировать эти проверки здесь запрещено: две копии одной правды расходятся, и по расхождению
+уже не понять, где ошибка — в обёртке или в договоре с биржей.
 
 ---
 
@@ -187,6 +223,6 @@ tests/
 
 ```bash
 yarn test                      # Unit тесты
-yarn test:integration:mvp      # MVP интеграционные
-yarn test:integration          # Все интеграционные
+yarn lint                      # Линтер
+yarn test:integration          # Все живые проверки (ставят и закрывают заявки на демо)
 ```

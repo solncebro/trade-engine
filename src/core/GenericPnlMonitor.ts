@@ -36,8 +36,10 @@ import { EMOJI_CHECK, EMOJI_CROSS, EMOJI_DOOR, EMOJI_LONG_DOT, EMOJI_PROFIT, EMO
 import { resolveGuardedExtremePrice } from '../utils/entryKlineGuard';
 import { calculateBreakevenPrice, calculatePercentChange, getMaValue } from '../utils/indicators';
 import { startIntervalScheduler } from '../utils/intervalScheduler';
+import { formatPercent, roundPercent, roundUsdAmount, snapAmountToStep } from '../utils/numberFormat';
 import { deriveOrderPlan } from '../utils/orderSize';
 import { parseOrderSizeInput } from '../utils/orderSizeInput';
+import { formatPrice, snapPriceToTick } from '../utils/priceFormat';
 import { buildAmountList, buildPriceList, parseFirstPriceInput, parseModeInput, validatePriceVsLast } from '../utils/tpSplit';
 
 const LOADING_TEXT = '⏳ Loading...';
@@ -392,7 +394,7 @@ class GenericPnlMonitor extends PositionMonitor {
 
     if (firePnlPercent !== pnlPercent) {
       logger.info(
-        { positionId: position.id, symbol: position.symbol, pnlPercent, decisionPnlPercent: firePnlPercent, threshold: settings.pnlMonitor.profitAutoClosePercent, direction: position.direction },
+        { positionId: position.id, symbol: position.symbol, pnlPercent: roundPercent(pnlPercent), decisionPnlPercent: roundPercent(firePnlPercent), threshold: settings.pnlMonitor.profitAutoClosePercent, direction: position.direction },
         `[PnlMonitor] ${position.symbol} Auto-close fired by extreme touch (decision pnl=${firePnlPercent.toFixed(2)}% vs render pnl=${pnlPercent.toFixed(2)}%, threshold=${settings.pnlMonitor.profitAutoClosePercent}%) [${position.timeframe}]`,
       );
     }
@@ -434,7 +436,7 @@ class GenericPnlMonitor extends PositionMonitor {
     await this.sendMessage(message);
     await this.removePosition(position.id);
 
-    logger.info({ positionId: position.id, symbol: position.symbol, pnlPercent }, `[PnlMonitor] ${position.symbol} Auto-closed at PNL +${pnlPercent.toFixed(1)}%`);
+    logger.info({ positionId: position.id, symbol: position.symbol, pnlPercent: roundPercent(pnlPercent) }, `[PnlMonitor] ${position.symbol} Auto-closed at PNL +${pnlPercent.toFixed(1)}%`);
 
     return true;
   }
@@ -461,7 +463,7 @@ class GenericPnlMonitor extends PositionMonitor {
         level: 'info',
         key: `bhcfire:${position.id}`,
         windowMs: DIAGNOSTIC_LOG_THROTTLE_MS,
-        payload: { positionId: position.id, symbol: position.symbol, pnlPercent, decisionPnlPercent: firePnlPercent, breakevenHalfClosePercent, halfContracts, totalContracts: position.contracts, direction: position.direction, timeframe: position.timeframe },
+        payload: { positionId: position.id, symbol: position.symbol, pnlPercent: roundPercent(pnlPercent), decisionPnlPercent: roundPercent(firePnlPercent), breakevenHalfClosePercent, halfContracts, totalContracts: position.contracts, direction: position.direction, timeframe: position.timeframe },
         message: `[PnlMonitor] ${position.symbol} Breakeven half-close fired by extreme touch (decision pnl=${firePnlPercent.toFixed(2)}% vs render pnl=${pnlPercent.toFixed(2)}%, threshold=${breakevenHalfClosePercent}%), halving ${halfContracts} contracts (of ${position.contracts}) [${position.timeframe}]`,
       });
     } else {
@@ -470,7 +472,7 @@ class GenericPnlMonitor extends PositionMonitor {
         level: 'info',
         key: `bhcfire:${position.id}`,
         windowMs: DIAGNOSTIC_LOG_THROTTLE_MS,
-        payload: { positionId: position.id, symbol: position.symbol, pnlPercent, breakevenHalfClosePercent, halfContracts, totalContracts: position.contracts, direction: position.direction, timeframe: position.timeframe },
+        payload: { positionId: position.id, symbol: position.symbol, pnlPercent: roundPercent(pnlPercent), breakevenHalfClosePercent, halfContracts, totalContracts: position.contracts, direction: position.direction, timeframe: position.timeframe },
         message: `[PnlMonitor] ${position.symbol} Breakeven half-close fired at PNL +${pnlPercent.toFixed(2)}%, halving ${halfContracts} contracts (of ${position.contracts}) [${position.timeframe}]`,
       });
     }
@@ -524,7 +526,7 @@ class GenericPnlMonitor extends PositionMonitor {
     });
 
     logger.info(
-      { positionId: position.id, symbol: position.symbol, remainingContracts, isOrderPlaced, hasInsuranceCycleCompleted: true },
+      { positionId: position.id, symbol: position.symbol, remainingContracts: snapAmountToStep(position.symbol, remainingContracts), isOrderPlaced, hasInsuranceCycleCompleted: true },
       `[PnlMonitor] ${position.symbol} Halve cycle reset after breakeven half-close attempt (isOrderPlaced=${isOrderPlaced}, hasInsuranceCycleCompleted=true) — position back to normal monitoring, insurance creation locked for the rest of position lifetime`,
     );
 
@@ -557,12 +559,12 @@ class GenericPnlMonitor extends PositionMonitor {
 
       if (messageId === null) {
         logger.error(
-          { positionId: position.id, symbol: position.symbol, halfContracts, remainingContracts, pnlPercent },
+          { positionId: position.id, symbol: position.symbol, halfContracts, remainingContracts: snapAmountToStep(position.symbol, remainingContracts), pnlPercent: roundPercent(pnlPercent) },
           `[PnlMonitor] ${position.symbol} Failed to deliver halve notification to Telegram (sendMessage returned null) — halve already executed on exchange`,
         );
       } else {
         logger.info(
-          { positionId: position.id, symbol: position.symbol, messageId, halfContracts, remainingContracts },
+          { positionId: position.id, symbol: position.symbol, messageId, halfContracts, remainingContracts: snapAmountToStep(position.symbol, remainingContracts) },
           `[PnlMonitor] ${position.symbol} Halve notification sent (messageId=${messageId})`,
         );
       }
@@ -587,7 +589,7 @@ class GenericPnlMonitor extends PositionMonitor {
 
       if (isFirstStopLoss || trailDeltaPercent >= trailingStep) {
         logger.info(
-          { positionId: position.id, symbol: position.symbol, pnlPercent, trailingStopLossLevel, currentStopLossLevel: position.currentStopLossLevel, trailDeltaPercent, trailingStep, isFirstStopLoss },
+          { positionId: position.id, symbol: position.symbol, pnlPercent: roundPercent(pnlPercent), trailingStopLossLevel: roundPercent(trailingStopLossLevel), currentStopLossLevel: roundPercent(position.currentStopLossLevel), trailDeltaPercent: roundPercent(trailDeltaPercent), trailingStep, isFirstStopLoss },
           `[PnlMonitor] ${position.symbol} Trail SL: pnl=${pnlPercent.toFixed(2)}% → SL=${trailingStopLossLevel.toFixed(2)}% (Δ=${trailDeltaPercent.toFixed(2)}% from currentStopLossLevel=${position.currentStopLossLevel.toFixed(2)}%, isFirstStopLoss=${isFirstStopLoss})`,
         );
 
@@ -760,8 +762,8 @@ class GenericPnlMonitor extends PositionMonitor {
     }
 
     logger.info(
-      { positionId: position.id, symbol: position.symbol, type, stopLossOrderId: position.stopLossOrderId, currentStopLossLevel: position.currentStopLossLevel, lastAlertMessageId: position.lastAlertMessageId },
-      `[PnlMonitor] ${position.symbol} sendAlarmMessage start type=${type} stopLossOrderId=${position.stopLossOrderId ?? 'null'} currentStopLossLevel=${position.currentStopLossLevel}%`,
+      { positionId: position.id, symbol: position.symbol, type, stopLossOrderId: position.stopLossOrderId, currentStopLossLevel: roundPercent(position.currentStopLossLevel), lastAlertMessageId: position.lastAlertMessageId },
+      `[PnlMonitor] ${position.symbol} sendAlarmMessage start type=${type} stopLossOrderId=${position.stopLossOrderId ?? 'null'} currentStopLossLevel=${formatPercent(position.currentStopLossLevel)}%`,
     );
 
     if (!this.botInstance) {
@@ -783,7 +785,7 @@ class GenericPnlMonitor extends PositionMonitor {
       const stopLossStatus: StopLossStatus = await this.verifyAndRestoreStopLoss(position);
 
       logger.info(
-        { positionId: position.id, symbol: position.symbol, stopLossStatus, stopLossOrderId: position.stopLossOrderId, currentStopLossLevel: position.currentStopLossLevel },
+        { positionId: position.id, symbol: position.symbol, stopLossStatus, stopLossOrderId: position.stopLossOrderId, currentStopLossLevel: roundPercent(position.currentStopLossLevel) },
         `[PnlMonitor] ${position.symbol} sendAlarmMessage verifyAndRestoreStopLoss result=${stopLossStatus} orderId=${position.stopLossOrderId ?? 'null'}`,
       );
 
@@ -1068,7 +1070,7 @@ class GenericPnlMonitor extends PositionMonitor {
         const isHalved = await this.checkBreakevenHalfClose(position, pnlPercent, lastPrice, halveDecisionPnlPercent);
 
         if (isHalved) {
-          logger.info({ positionId: position.id, symbol: position.symbol, pnlPercent, halveDecisionPnlPercent, source }, `[PnlMonitor] ${position.symbol} Reactive checker halved position (source=${source}, decision pnl=${halveDecisionPnlPercent.toFixed(2)}%)`);
+          logger.info({ positionId: position.id, symbol: position.symbol, pnlPercent: roundPercent(pnlPercent), halveDecisionPnlPercent: roundPercent(halveDecisionPnlPercent), source }, `[PnlMonitor] ${position.symbol} Reactive checker halved position (source=${source}, decision pnl=${halveDecisionPnlPercent.toFixed(2)}%)`);
 
           return;
         }
@@ -1080,7 +1082,7 @@ class GenericPnlMonitor extends PositionMonitor {
         const isAutoClosed = await this.checkAutoClose(position, pnlPercent, lastPrice, favourableExtremePnlPercent);
 
         if (isAutoClosed) {
-          logger.info({ positionId: position.id, symbol: position.symbol, pnlPercent, favourableExtremePnlPercent, source }, `[PnlMonitor] ${position.symbol} Reactive checker auto-closed position (source=${source}, decision pnl=${favourableExtremePnlPercent.toFixed(2)}%)`);
+          logger.info({ positionId: position.id, symbol: position.symbol, pnlPercent: roundPercent(pnlPercent), favourableExtremePnlPercent: roundPercent(favourableExtremePnlPercent), source }, `[PnlMonitor] ${position.symbol} Reactive checker auto-closed position (source=${source}, decision pnl=${favourableExtremePnlPercent.toFixed(2)}%)`);
 
           return;
         }
@@ -1182,7 +1184,7 @@ class GenericPnlMonitor extends PositionMonitor {
     const tailLineList: string[] = [];
 
     if (state?.price1 !== null && state?.price1 !== undefined) {
-      tailLineList.push(`First price: \`${state.price1}\``);
+      tailLineList.push(`First price: \`${formatPrice(context.symbol, state.price1)}\``);
     }
 
     if (state?.parts !== null && state?.parts !== undefined) {
@@ -1214,8 +1216,8 @@ class GenericPnlMonitor extends PositionMonitor {
     const lineList: string[] = [
       `🌐 \`${context.symbol}\` ${context.direction.toUpperCase()} — Imported`,
       '',
-      `Entry: \`${context.entryPrice}\``,
-      `Last: \`${lastPrice > 0 ? lastPrice : context.entryPrice}\``,
+      `Entry: \`${formatPrice(context.symbol, context.entryPrice)}\``,
+      `Last: \`${formatPrice(context.symbol, lastPrice > 0 ? lastPrice : context.entryPrice)}\``,
       `Contracts: ${context.contracts}`,
       `PNL: ${pnlSign}${pnlPercent.toFixed(2)}%`,
     ];
@@ -1646,8 +1648,8 @@ class GenericPnlMonitor extends PositionMonitor {
     this.ephemeralPositionByKey.delete(key);
 
     logger.info(
-      { positionId: position.id, symbol, direction, contracts: snap.contracts, entryPrice: snap.entryPrice },
-      `[PnlMonitor] ${symbol} Imported position tracked (id=${position.id}, contracts=${snap.contracts}, entryPrice=${snap.entryPrice})`,
+      { positionId: position.id, symbol, direction, contracts: snap.contracts, entryPrice: snapPriceToTick(symbol, snap.entryPrice) },
+      `[PnlMonitor] ${symbol} Imported position tracked (id=${position.id}, contracts=${snap.contracts}, entryPrice=${formatPrice(symbol, snap.entryPrice)})`,
     );
 
     await loading.clear();
@@ -1922,9 +1924,9 @@ class GenericPnlMonitor extends PositionMonitor {
         isAutoCloseEnabled: false,
       });
 
-      logger.info({ positionId, symbol: position.symbol, acknowledgedThreshold: ackThreshold }, `[PnlMonitor] ${position.symbol} Profit alert acknowledged at ${ackThreshold}% — trailing SL + auto-close disabled (user takes over)`);
+      logger.info({ positionId, symbol: position.symbol, acknowledgedThreshold: roundPercent(ackThreshold) }, `[PnlMonitor] ${position.symbol} Profit alert acknowledged at ${formatPercent(ackThreshold)}% — trailing SL + auto-close disabled (user takes over)`);
       await this.replaceMenu(ctx, {
-        text: escapeMarkdownV2WithFormatting(`${EMOJI_CHECK} ${position.symbol} acknowledged at ${ackThreshold}% — trailing SL + auto-close OFF`),
+        text: escapeMarkdownV2WithFormatting(`${EMOJI_CHECK} ${position.symbol} acknowledged at ${formatPercent(ackThreshold)}% — trailing SL + auto-close OFF`),
       });
     } catch (error: unknown) {
       logger.error({ error, positionId, symbol: position.symbol }, `[PnlMonitor] ${position.symbol} Failed to acknowledge profit alert`);
@@ -2210,8 +2212,8 @@ class GenericPnlMonitor extends PositionMonitor {
     const pnlPercent = this.calculatePnlPercent(position, lastPrice);
 
     logger.info(
-      { positionId: position.id, symbol: position.symbol, entryPrice: position.entryPrice, breakevenPrice, contracts: position.contracts, breakevenHalfClosePercent, timeframe: position.timeframe },
-      `[PnlMonitor] ${position.symbol} Manual SOS marked — halve-at-breakeven enabled (entry=${position.entryPrice}, breakeven=${breakevenPrice}, halve threshold=+${breakevenHalfClosePercent}%) [${position.timeframe}]`,
+      { positionId: position.id, symbol: position.symbol, entryPrice: snapPriceToTick(position.symbol, position.entryPrice), breakevenPrice: snapPriceToTick(position.symbol, breakevenPrice), contracts: position.contracts, breakevenHalfClosePercent, timeframe: position.timeframe },
+      `[PnlMonitor] ${position.symbol} Manual SOS marked — halve-at-breakeven enabled (entry=${formatPrice(position.symbol, position.entryPrice)}, breakeven=${formatPrice(position.symbol, breakevenPrice)}, halve threshold=+${breakevenHalfClosePercent}%) [${position.timeframe}]`,
     );
 
     return formatSosMarkedMessage({
@@ -2307,7 +2309,7 @@ class GenericPnlMonitor extends PositionMonitor {
       plan: null,
     };
 
-    logger.info({ symbol, direction, contracts: snap.contracts, entryPrice: snap.entryPrice }, `[PnlMonitor] ${symbol} Ephemeral Split TP dialog started`);
+    logger.info({ symbol, direction, contracts: snap.contracts, entryPrice: snapPriceToTick(symbol, snap.entryPrice) }, `[PnlMonitor] ${symbol} Ephemeral Split TP dialog started`);
     await this.editTpSplitPromptForEphemeral(ctx, snap, direction);
   }
 
@@ -2359,7 +2361,7 @@ class GenericPnlMonitor extends PositionMonitor {
     state.parts = tpCount;
 
     logger.info(
-      { positionId: context.position?.id ?? null, symbol: context.symbol, isEphemeral: context.isEphemeral, requestedTpSize, tpCount, actualTpSize, totalPositionNotional },
+      { positionId: context.position?.id ?? null, symbol: context.symbol, isEphemeral: context.isEphemeral, requestedTpSize, tpCount, actualTpSize, totalPositionNotional: roundUsdAmount(totalPositionNotional) },
       `[PnlMonitor] ${context.symbol} TP size derive: requested $${requestedTpSize} → ${tpCount} × $${actualTpSize}`,
     );
   }
@@ -2580,7 +2582,7 @@ class GenericPnlMonitor extends PositionMonitor {
       if (!validatePriceVsLast({ price: precisePrice, lastPrice, direction: context.direction })) {
         const directionLabel = formatDirection(context.direction);
         const comparator = context.direction === 'long' ? '>' : '<';
-        const errorText = `First price for ${directionLabel} must be ${comparator} ${lastPrice} (last price). Got ${precisePrice}.`;
+        const errorText = `First price for ${directionLabel} must be ${comparator} ${formatPrice(context.symbol, lastPrice)} (last price). Got ${formatPrice(context.symbol, precisePrice)}.`;
         await this.editTpSplitPrompt(ctx, context, errorText);
 
         return;

@@ -13,6 +13,8 @@ import { extractKlineHighLowSnapshot, resolveFavourableDecisionPrice, resolveUnf
 import { calculatePercentChange } from '../utils/indicators';
 import type { IntervalSchedulerHandle } from '../utils/intervalScheduler';
 import { applyLegacyDefaults } from '../utils/legacyDefaults';
+import { formatPercent, roundPercent } from '../utils/numberFormat';
+import { formatPrice, snapPriceToTick } from '../utils/priceFormat';
 
 const PNL_POLL_INTERVAL_MS = 15_000;
 const STOP_LOSS_ERROR_TEXT_MAX_LENGTH = 150;
@@ -434,8 +436,8 @@ class PositionMonitor {
   protected async verifyAndRestoreStopLoss(position: MonitoredPosition): Promise<StopLossStatus> {
     if (!position.stopLossOrderId) {
       logger.info(
-        { positionId: position.id, symbol: position.symbol, currentStopLossLevel: position.currentStopLossLevel, stopLossLastErrorText: position.stopLossLastErrorText },
-        `[PnlMonitor] ${position.symbol} SL verify — stopLossOrderId is null in memory, returning missing without exchange call (currentStopLossLevel=${position.currentStopLossLevel}%)`,
+        { positionId: position.id, symbol: position.symbol, currentStopLossLevel: roundPercent(position.currentStopLossLevel), stopLossLastErrorText: position.stopLossLastErrorText },
+        `[PnlMonitor] ${position.symbol} SL verify — stopLossOrderId is null in memory, returning missing without exchange call (currentStopLossLevel=${formatPercent(position.currentStopLossLevel)}%)`,
       );
 
       return 'missing';
@@ -445,8 +447,8 @@ class PositionMonitor {
       const order = await this.exchangeConnector.futures.getOrder(position.symbol, position.stopLossOrderId);
 
       logger.info(
-        { positionId: position.id, symbol: position.symbol, orderId: position.stopLossOrderId, orderStatus: order.status, amount: order.amount, filledAmount: order.filledAmount, stopPrice: order.stopPrice, reduceOnly: order.reduceOnly, order },
-        `[PnlMonitor] ${position.symbol} SL verify status=${order.status} orderId=${position.stopLossOrderId} amount=${order.amount} filledAmount=${order.filledAmount} stopPrice=${order.stopPrice} reduceOnly=${order.reduceOnly}`,
+        { positionId: position.id, symbol: position.symbol, orderId: position.stopLossOrderId, orderStatus: order.status, amount: order.amount, filledAmount: order.filledAmount, stopPrice: snapPriceToTick(position.symbol, order.stopPrice), reduceOnly: order.reduceOnly, order },
+        `[PnlMonitor] ${position.symbol} SL verify status=${order.status} orderId=${position.stopLossOrderId} amount=${order.amount} filledAmount=${order.filledAmount} stopPrice=${formatPrice(position.symbol, order.stopPrice)} reduceOnly=${order.reduceOnly}`,
       );
 
       if (order.status === 'open' || order.status === 'closed') {
@@ -458,14 +460,14 @@ class PositionMonitor {
 
     if (this.consecutiveClosedPollTickCountByPositionId.has(position.id)) {
       logger.info(
-        { positionId: position.id, symbol: position.symbol, stopLossOrderId: position.stopLossOrderId, currentStopLossLevel: position.currentStopLossLevel },
+        { positionId: position.id, symbol: position.symbol, stopLossOrderId: position.stopLossOrderId, currentStopLossLevel: roundPercent(position.currentStopLossLevel) },
         `[PnlMonitor] ${position.symbol} SL verify — position is closing externally (consecutiveClosedPollTickCount marker present), skipping recreate`,
       );
 
       return 'missing';
     }
 
-    logger.warn({ positionId: position.id, symbol: position.symbol, orderId: position.stopLossOrderId, stopLossLevel: position.currentStopLossLevel }, `[PnlMonitor] ${position.symbol} Stop-loss order missing, attempting to recreate at ${position.currentStopLossLevel}%`);
+    logger.warn({ positionId: position.id, symbol: position.symbol, orderId: position.stopLossOrderId, stopLossLevel: roundPercent(position.currentStopLossLevel) }, `[PnlMonitor] ${position.symbol} Stop-loss order missing, attempting to recreate at ${formatPercent(position.currentStopLossLevel)}%`);
 
     position.stopLossOrderId = null;
     await this.safeUpdateMonitoredPosition(position.id, { stopLossOrderId: null });
@@ -473,7 +475,7 @@ class PositionMonitor {
     const isRecreated = await this.updateStopLoss(position, position.currentStopLossLevel);
 
     if (isRecreated && position.stopLossOrderId) {
-      logger.info({ positionId: position.id, symbol: position.symbol, stopLossLevel: position.currentStopLossLevel }, `[PnlMonitor] ${position.symbol} Stop-loss recreated at ${position.currentStopLossLevel}%`);
+      logger.info({ positionId: position.id, symbol: position.symbol, stopLossLevel: roundPercent(position.currentStopLossLevel) }, `[PnlMonitor] ${position.symbol} Stop-loss recreated at ${formatPercent(position.currentStopLossLevel)}%`);
 
       return 'recreated';
     }
@@ -484,15 +486,15 @@ class PositionMonitor {
   protected async updateStopLoss(position: MonitoredPosition, stopLossLevel: number): Promise<boolean> {
     if (this.consecutiveClosedPollTickCountByPositionId.has(position.id)) {
       logger.info(
-        { positionId: position.id, symbol: position.symbol, stopLossLevel },
-        `[PnlMonitor] ${position.symbol} updateStopLoss skipped — position is closing externally (stopLossLevel=${stopLossLevel}%)`,
+        { positionId: position.id, symbol: position.symbol, stopLossLevel: roundPercent(stopLossLevel) },
+        `[PnlMonitor] ${position.symbol} updateStopLoss skipped — position is closing externally (stopLossLevel=${formatPercent(stopLossLevel)}%)`,
       );
 
       return false;
     }
 
     if (this.isStopLossUpdateInProgressByPositionId.has(position.id)) {
-      logger.info({ positionId: position.id, symbol: position.symbol, stopLossLevel }, `[PnlMonitor] ${position.symbol} updateStopLoss skipped — already in progress for this position (stopLossLevel=${stopLossLevel}%)`);
+      logger.info({ positionId: position.id, symbol: position.symbol, stopLossLevel: roundPercent(stopLossLevel) }, `[PnlMonitor] ${position.symbol} updateStopLoss skipped — already in progress for this position (stopLossLevel=${formatPercent(stopLossLevel)}%)`);
 
       return false;
     }
@@ -501,13 +503,13 @@ class PositionMonitor {
 
     try {
       if (stopLossLevel < position.currentStopLossLevel) {
-        logger.warn({ positionId: position.id, symbol: position.symbol, stopLossLevel, currentStopLossLevel: position.currentStopLossLevel }, `[PnlMonitor] ${position.symbol} Rejected stop-loss regression ${position.currentStopLossLevel}% → ${stopLossLevel}%`);
+        logger.warn({ positionId: position.id, symbol: position.symbol, stopLossLevel: roundPercent(stopLossLevel), currentStopLossLevel: roundPercent(position.currentStopLossLevel) }, `[PnlMonitor] ${position.symbol} Rejected stop-loss regression ${formatPercent(position.currentStopLossLevel)}% → ${formatPercent(stopLossLevel)}%`);
 
         return false;
       }
 
       if (stopLossLevel === position.currentStopLossLevel && position.stopLossOrderId) {
-        logger.info({ positionId: position.id, symbol: position.symbol, stopLossLevel, orderId: position.stopLossOrderId }, `[PnlMonitor] ${position.symbol} Stop-loss already set at ${stopLossLevel}%, skipping recreate`);
+        logger.info({ positionId: position.id, symbol: position.symbol, stopLossLevel: roundPercent(stopLossLevel), orderId: position.stopLossOrderId }, `[PnlMonitor] ${position.symbol} Stop-loss already set at ${formatPercent(stopLossLevel)}%, skipping recreate`);
 
         return true;
       }
@@ -764,8 +766,8 @@ class PositionMonitor {
       await this.positionStore.saveMonitoredPosition(position);
 
       logger.info(
-        { positionId: position.id, symbol, direction, contracts: snap.contracts, entryPrice: snap.entryPrice },
-        `[PnlMonitor] ${symbol} Fib position imported (id=${position.id}, contracts=${snap.contracts}, entry=${snap.entryPrice}, trailing/auto-close OFF)`,
+        { positionId: position.id, symbol, direction, contracts: snap.contracts, entryPrice: snapPriceToTick(symbol, snap.entryPrice) },
+        `[PnlMonitor] ${symbol} Fib position imported (id=${position.id}, contracts=${snap.contracts}, entry=${formatPrice(symbol, snap.entryPrice)}, trailing/auto-close OFF)`,
       );
 
       return position.id;
@@ -880,8 +882,8 @@ class PositionMonitor {
     await this.safeUpdateMonitoredPosition(position.id, { tpOrderIdList: result.orderIdList });
 
     logger.info(
-      { positionId, symbol: position.symbol, price: priceRounded, orderId: result.orderIdList[0] },
-      `[PnlMonitor] ${position.symbol} Fib take-profit placed @ ${priceRounded}`,
+      { positionId, symbol: position.symbol, price: snapPriceToTick(position.symbol, priceRounded), orderId: result.orderIdList[0] },
+      `[PnlMonitor] ${position.symbol} Fib take-profit placed @ ${formatPrice(position.symbol, priceRounded)}`,
     );
 
     return result.orderIdList[0];
@@ -1324,14 +1326,14 @@ class PositionMonitor {
           positionId: position.id,
           symbol: position.symbol,
           eventSize: event.size,
-          eventEntryPrice: event.entryPrice,
-          eventLiquidationPrice: event.liquidationPrice,
+          eventEntryPrice: snapPriceToTick(position.symbol, event.entryPrice),
+          eventLiquidationPrice: event.liquidationPrice === null ? null : snapPriceToTick(position.symbol, event.liquidationPrice),
           previousContracts,
-          previousEntryPrice,
+          previousEntryPrice: snapPriceToTick(position.symbol, previousEntryPrice),
           isHalveAtBreakevenEnabled: position.isHalveAtBreakevenEnabled,
           timeframe: position.timeframe,
         };
-        const wsUpdateMessage = `[PnlMonitor] ${position.symbol} WS position update event.size=${event.size} event.entryPrice=${event.entryPrice} position.contracts=${previousContracts} position.entryPrice=${previousEntryPrice} isHalveAtBreakevenEnabled=${position.isHalveAtBreakevenEnabled} [${position.timeframe}]`;
+        const wsUpdateMessage = `[PnlMonitor] ${position.symbol} WS position update event.size=${event.size} event.entryPrice=${formatPrice(position.symbol, event.entryPrice)} position.contracts=${previousContracts} position.entryPrice=${formatPrice(position.symbol, previousEntryPrice)} isHalveAtBreakevenEnabled=${position.isHalveAtBreakevenEnabled} [${position.timeframe}]`;
 
         if (isWsUpdateChanged) {
           logger.info(wsUpdatePayload, wsUpdateMessage);
@@ -1341,7 +1343,7 @@ class PositionMonitor {
 
         if (position.entryPrice !== event.entryPrice) {
           position.entryPrice = event.entryPrice;
-          logger.info({ positionId: position.id, symbol: position.symbol, previousEntryPrice, entryPrice: event.entryPrice, timeframe: position.timeframe }, `[PnlMonitor] ${position.symbol} Position WS update entryPrice=${event.entryPrice} (was ${previousEntryPrice}) [${position.timeframe}]`);
+          logger.info({ positionId: position.id, symbol: position.symbol, previousEntryPrice: snapPriceToTick(position.symbol, previousEntryPrice), entryPrice: snapPriceToTick(position.symbol, event.entryPrice), timeframe: position.timeframe }, `[PnlMonitor] ${position.symbol} Position WS update entryPrice=${formatPrice(position.symbol, event.entryPrice)} (was ${formatPrice(position.symbol, previousEntryPrice)}) [${position.timeframe}]`);
 
           await this.onPositionEntryChanged(position, previousEntryPrice, previousContracts, event);
         }

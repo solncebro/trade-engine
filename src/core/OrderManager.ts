@@ -35,6 +35,7 @@ import { startIntervalScheduler } from '../utils/intervalScheduler';
 import type { IntervalSchedulerHandle } from '../utils/intervalScheduler';
 import { loggedCancelBatchOrders, loggedCancelOrder, loggedGetOrder } from '../utils/loggedExchangeCall';
 import { isOrderSuccessful } from '../utils/order.utils';
+import { formatPrice, snapPriceToTick } from '../utils/priceFormat';
 import { sleep } from '../utils/sleep';
 
 const TICK_INTERVAL_MS = 1_000;
@@ -378,8 +379,8 @@ class OrderManager {
 
     return this.runSerializedByKey(serializationKey, async () => {
       logger.info(
-        { positionId, symbol, direction, oldOrderId, triggerPrice, amount, ...metadata },
-        `[OrderManager] ${symbol} enqueueReplaceStopLoss start (positionId=${positionId}, oldOrderId=${oldOrderId ?? 'none'}, triggerPrice=${triggerPrice}, amount=${amount})`,
+        { positionId, symbol, direction, oldOrderId, triggerPrice: snapPriceToTick(symbol, triggerPrice), amount, ...metadata },
+        `[OrderManager] ${symbol} enqueueReplaceStopLoss start (positionId=${positionId}, oldOrderId=${oldOrderId ?? 'none'}, triggerPrice=${formatPrice(symbol, triggerPrice)}, amount=${amount})`,
       );
 
       const previousSnapshot = this.lastPlacedStopLossByPositionId.get(positionId);
@@ -391,16 +392,16 @@ class OrderManager {
         && previousSnapshot.amount === amount
       ) {
         logger.info(
-          { positionId, symbol, snapshotOrderId: previousSnapshot.orderId, callerOldOrderId: oldOrderId, triggerPrice, amount, ...metadata },
-          `[OrderManager] ${symbol} enqueueReplaceStopLoss idempotent skip — SL already set at triggerPrice=${triggerPrice} amount=${amount} (snapshot orderId=${previousSnapshot.orderId}, caller oldOrderId=${oldOrderId})`,
+          { positionId, symbol, snapshotOrderId: previousSnapshot.orderId, callerOldOrderId: oldOrderId, triggerPrice: snapPriceToTick(symbol, triggerPrice), amount, ...metadata },
+          `[OrderManager] ${symbol} enqueueReplaceStopLoss idempotent skip — SL already set at triggerPrice=${formatPrice(symbol, triggerPrice)} amount=${amount} (snapshot orderId=${previousSnapshot.orderId}, caller oldOrderId=${oldOrderId})`,
         );
 
         return { isSuccess: true, orderId: previousSnapshot.orderId, errorText: null };
       }
 
       logger.info(
-        { positionId, symbol, direction, triggerPrice, amount, ...metadata },
-        `[OrderManager] ${symbol} placeStopLoss request direction=${direction} triggerPrice=${triggerPrice} amount=${amount}`,
+        { positionId, symbol, direction, triggerPrice: snapPriceToTick(symbol, triggerPrice), amount, ...metadata },
+        `[OrderManager] ${symbol} placeStopLoss request direction=${direction} triggerPrice=${formatPrice(symbol, triggerPrice)} amount=${amount}`,
       );
 
       let errorText: string | null = null;
@@ -622,8 +623,8 @@ class OrderManager {
     const { symbol, direction, amount, price, contextLabel, metadata = {} } = args;
 
     logger.info(
-      { symbol, direction, amount, price, contextLabel, ...metadata },
-      `[OrderManager] ${symbol} openPositionLimit request direction=${direction} amount=${amount} price=${price} (${contextLabel})`,
+      { symbol, direction, amount, price: snapPriceToTick(symbol, price), contextLabel, ...metadata },
+      `[OrderManager] ${symbol} openPositionLimit request direction=${direction} amount=${amount} price=${formatPrice(symbol, price)} (${contextLabel})`,
     );
 
     let orderId: string | null = null;
@@ -641,8 +642,8 @@ class OrderManager {
       if (isOrderSuccessful(result) && result.orderId) {
         orderId = result.orderId;
         logger.info(
-          { symbol, orderId, amount, price, result, contextLabel, ...metadata },
-          `[OrderManager] ${symbol} openPositionLimit response orderId=${orderId} amount=${amount} price=${price} (${contextLabel})`,
+          { symbol, orderId, amount, price: snapPriceToTick(symbol, price), result, contextLabel, ...metadata },
+          `[OrderManager] ${symbol} openPositionLimit response orderId=${orderId} amount=${amount} price=${formatPrice(symbol, price)} (${contextLabel})`,
         );
       } else {
         errorText = result.errorText ?? 'Unknown error';
@@ -666,8 +667,8 @@ class OrderManager {
     const { symbol, direction, oldOrderId, amount, newPrice, contextLabel, metadata = {}, onOldOrderConfirmed } = args;
 
     logger.info(
-      { symbol, direction, oldOrderId, amount, newPrice, contextLabel, ...metadata },
-      `[OrderManager] ${symbol} enqueueMoveLimitOrder start (oldOrderId=${oldOrderId}, newPrice=${newPrice}, amount=${amount}) — ${contextLabel}`,
+      { symbol, direction, oldOrderId, amount, newPrice: snapPriceToTick(symbol, newPrice), contextLabel, ...metadata },
+      `[OrderManager] ${symbol} enqueueMoveLimitOrder start (oldOrderId=${oldOrderId}, newPrice=${formatPrice(symbol, newPrice)}, amount=${amount}) — ${contextLabel}`,
     );
 
     const oldCancelOutcome = await this.enqueueCancel({
@@ -675,7 +676,7 @@ class OrderManager {
       orderId: oldOrderId,
       modulePrefix: '[OrderManager]',
       contextLabel: `move limit order — cancel old (${contextLabel})`,
-      metadata: { newPrice, amount, ...metadata },
+      metadata: { newPrice: snapPriceToTick(symbol, newPrice), amount, ...metadata },
       onConfirmed: onOldOrderConfirmed,
     });
 
@@ -795,7 +796,7 @@ class OrderManager {
       {
         symbol,
         partCount,
-        partList: partList.map((part, index) => ({ index, price: part.price, amount: part.amount })),
+        partList: partList.map((part, index) => ({ index, price: snapPriceToTick(symbol, part.price), amount: part.amount })),
         contextLabel,
         ...metadata,
       },
@@ -1071,7 +1072,7 @@ class OrderManager {
     if (info.kind === 'cancelled') {
       logger.info({ symbol: entry.symbol, orderId: entry.orderId, attemptCount: entry.attemptCount, ageMs, source: info.source, contextLabel: entry.contextLabel }, `[OrderManager] ${entry.symbol} confirm cancelled (source=${info.source}, attempts=${entry.attemptCount}, ageMs=${ageMs})`);
     } else if (info.kind === 'filled') {
-      logger.info({ symbol: entry.symbol, orderId: entry.orderId, attemptCount: entry.attemptCount, ageMs, source: info.source, filledAmount: info.filledAmount, avgPrice: info.avgPrice, contextLabel: entry.contextLabel }, `[OrderManager] ${entry.symbol} confirm filled (source=${info.source}, filledAmount=${info.filledAmount}, attempts=${entry.attemptCount})`);
+      logger.info({ symbol: entry.symbol, orderId: entry.orderId, attemptCount: entry.attemptCount, ageMs, source: info.source, filledAmount: info.filledAmount, avgPrice: snapPriceToTick(entry.symbol, info.avgPrice), contextLabel: entry.contextLabel }, `[OrderManager] ${entry.symbol} confirm filled (source=${info.source}, filledAmount=${info.filledAmount}, attempts=${entry.attemptCount})`);
     } else {
       logger.info({ symbol: entry.symbol, orderId: entry.orderId, attemptCount: entry.attemptCount, ageMs, source: info.source, filledAmount: info.filledAmount, status: info.status, contextLabel: entry.contextLabel }, `[OrderManager] ${entry.symbol} confirm partial_then_terminal (source=${info.source}, filledAmount=${info.filledAmount}, status=${info.status}, attempts=${entry.attemptCount})`);
     }
