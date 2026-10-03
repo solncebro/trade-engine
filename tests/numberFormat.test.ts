@@ -40,6 +40,29 @@ describe('snapAmountToStep', () => {
   });
 });
 
+describe('snapAmountToStep rounding direction', () => {
+  it('passes the requested rounding to the snapper, nearest by default', () => {
+    const calledWith: string[] = [];
+
+    configureAmountStepSnapper((_symbol, amount, rounding) => {
+      calledWith.push(rounding);
+
+      return amount;
+    });
+
+    snapAmountToStep('BTCUSDT', 1.234);
+    snapAmountToStep('BTCUSDT', 1.234, 'up');
+    snapAmountToStep('BTCUSDT', 1.234, 'down');
+
+    expect(calledWith).toEqual(['nearest', 'up', 'down']);
+  });
+
+  it('returns the input for every mode when nothing is configured', () => {
+    expect(snapAmountToStep('BTCUSDT', 1.234, 'up')).toBe(1.234);
+    expect(snapAmountToStep('BTCUSDT', 1.234, 'down')).toBe(1.234);
+  });
+});
+
 describe('formatAmount', () => {
   it('renders a snapped amount with no floating-point tail', () => {
     configureAmountStepSnapper(snapper);

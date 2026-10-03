@@ -1,6 +1,7 @@
 import {
   CancelBatchOrdersResult,
   ExchangeNameEnum,
+  FeeRate,
   MarketTypeEnum,
   MarketUnitEnum,
   ModifyBatchOrderArgs,
@@ -29,6 +30,7 @@ import {
   ClosePositionLimitArgs,
   ClosePositionMarketArgs,
   Direction,
+  FeeRatePercent,
   OpenPositionBatchLimitArgs,
   OpenPositionBatchLimitResult,
   OpenPositionLimitArgs,
@@ -41,9 +43,14 @@ import {
   PositionManagerModifyOrderArgs,
   PositionStateResult,
   ReadAllPositionsArgs,
+  ReadFeeRateArgs,
+  ReadOpenOrderListArgs,
+  ReadOrderArgs,
+  ReadOrderByClientOrderIdArgs,
   ReadPositionStateArgs,
   SetLeverageArgs,
   SetMarginModeArgs,
+  SetPositionModeArgs,
   SpotMarketBuyByQuoteArgs,
   StopOrderType,
 } from './positionManager.types';
@@ -52,6 +59,8 @@ import { withRetryOn429 } from './withRetryOn429';
 
 import { ExchangeConnector } from '../services/exchangeConnector';
 import { OrderParams, OrderResult } from '../types/orders';
+import { describeError } from '../utils/errorFormatter.utils';
+import { roundPercent } from '../utils/numberFormat';
 import { snapPriceToTick } from '../utils/priceFormat';
 
 const SPOT_SHORT_ERROR_MESSAGE =
@@ -110,6 +119,7 @@ export class PositionManager {
       type: OrderTypeEnum.Limit,
       isReduceOnly: false,
       clientOrderId: args.clientOrderId,
+      timeInForce: args.timeInForce,
     });
 
     return this.executeWrite(
@@ -145,6 +155,7 @@ export class PositionManager {
         type: OrderTypeEnum.Limit,
         isReduceOnly: false,
         clientOrderId: item.clientOrderId,
+        timeInForce: args.timeInForce,
       })
     );
 
@@ -202,6 +213,7 @@ export class PositionManager {
         type: OrderTypeEnum.Limit,
         isReduceOnly: true,
         clientOrderId: item.clientOrderId,
+        timeInForce: args.timeInForce,
       })
     );
 
@@ -279,6 +291,7 @@ export class PositionManager {
       type: OrderTypeEnum.Limit,
       isReduceOnly: true,
       clientOrderId: args.clientOrderId,
+      timeInForce: args.timeInForce,
     });
 
     return this.executeWrite(
@@ -571,6 +584,36 @@ export class PositionManager {
     );
   }
 
+  /**
+   * Switches the whole futures account between one-way and hedge (both sides of a symbol at once), then
+   * builds every later order for that mode. The exchanges refuse the switch while the account holds a
+   * position or an open order — the caller switches only on an empty account. Already in that mode is
+   * not an error.
+   */
+  public async setPositionMode(args: SetPositionModeArgs): Promise<void> {
+    logger.info({ mode: args.mode }, `[PositionManager] setPositionMode request mode=${args.mode}`);
+    await this.executeWrite(
+      () => withRetryOn429({
+        fn: () => this.exchangeConnector.futures.setPositionMode(args.mode),
+        contextLabel: `setPositionMode mode=${args.mode}`,
+      }),
+      'setPositionMode'
+    );
+    this.exchangeConnector.adoptFuturesPositionMode(args.mode);
+    logger.info({ mode: args.mode }, `[PositionManager] setPositionMode response ok mode=${args.mode}`);
+  }
+
+  /**
+   * The futures account's mode as the exchange reports it; undefined — the exchange cannot tell (Bybit
+   * derives it from the positions and says nothing on an account without any).
+   */
+  public async readPositionMode(): Promise<PositionModeEnum | undefined> {
+    return withRetryOn429({
+      fn: () => this.exchangeConnector.futures.fetchPositionMode(),
+      contextLabel: 'fetchPositionMode',
+    });
+  }
+
   private async placeConditional(args: PlaceConditionalArgs): Promise<OrderResult> {
     const isSpot = args.marketType === MarketTypeEnum.Spot;
     const orderType: StopOrderType = args.orderType ?? 'Market';
@@ -622,6 +665,10 @@ export class PositionManager {
       marketType: input.marketType,
       clientOrderId: input.clientOrderId,
     };
+
+    if (input.timeInForce !== undefined) {
+      orderParams.timeInForce = input.timeInForce;
+    }
 
     if (isSpot) {
       return orderParams;
@@ -712,7 +759,7 @@ export class PositionManager {
         message: `[PositionManager] ${symbol} readPositionState fetchPositionSnapshot response contracts=${snapshot?.contracts ?? 'null'} side=${snapshot?.side ?? 'null'} positionIdx=${positionIdx ?? 'any'} direction=${direction}`,
       });
     } catch (error: unknown) {
-      const errorText = error instanceof Error ? error.message : String(error);
+      const errorText = describeError(error);
       logger.warn(
         { symbol, direction, error },
         `[PositionManager] ${symbol} readPositionState fetchPositionSnapshot failed — returning absent/unconfirmed`,
@@ -765,5 +812,179 @@ export class PositionManager {
       logger.warn({ error }, '[PositionManager] readAllPositions failed');
       throw error;
     }
+  }
+
+  // Binance keeps conditional (algo) orders OUT of the plain open-order list — a stop resting on
+  // the symbol is invisible to fetchOpenOrders and must be read separately. Bybit's plain list may
+  // already include them, so both calls run and duplicates (same order.id) are dropped, keeping the
+  // first occurrence.
+  public async readOpenOrderList(args: ReadOpenOrderListArgs): Promise<Order[]> {
+    const { symbol, marketType } = args;
+    const client = this.exchangeConnector.getClient(marketType);
+
+    logger.info(
+      { symbol, marketType },
+      `[PositionManager] ${symbol} readOpenOrderList request marketType=${marketType}`
+    );
+
+    try {
+      if (marketType === MarketTypeEnum.Spot) {
+        const orderList = await withRetryOn429({
+          fn: () => client.fetchOpenOrders(symbol),
+          contextLabel: `readOpenOrderList ${symbol}`,
+        });
+
+        logger.info(
+          { symbol, marketType, count: orderList.length },
+          `[PositionManager] ${symbol} readOpenOrderList response count=${orderList.length}`
+        );
+
+        return orderList;
+      }
+
+      const [plainOrderList, conditionalOrderList] = await Promise.all([
+        withRetryOn429({
+          fn: () => client.fetchOpenOrders(symbol),
+          contextLabel: `readOpenOrderList plain ${symbol}`,
+        }),
+        withRetryOn429({
+          fn: () => client.fetchOpenConditionalOrders('USDT'),
+          contextLabel: `readOpenOrderList conditional ${symbol}`,
+        }),
+      ]);
+
+      const symbolConditionalOrderList = conditionalOrderList.filter(order => order.symbol === symbol);
+      const seenIdSet = new Set<string>();
+      const mergedOrderList: Order[] = [];
+
+      for (const order of [...plainOrderList, ...symbolConditionalOrderList]) {
+        if (seenIdSet.has(order.id)) {
+          continue;
+        }
+
+        seenIdSet.add(order.id);
+        mergedOrderList.push(order);
+      }
+
+      logger.info(
+        { symbol, marketType, plainCount: plainOrderList.length, conditionalCount: symbolConditionalOrderList.length, count: mergedOrderList.length },
+        `[PositionManager] ${symbol} readOpenOrderList response count=${mergedOrderList.length} (plain=${plainOrderList.length}, conditional=${symbolConditionalOrderList.length})`
+      );
+
+      return mergedOrderList;
+    } catch (error: unknown) {
+      logger.warn({ symbol, marketType, error }, `[PositionManager] ${symbol} readOpenOrderList failed`);
+      throw error;
+    }
+  }
+
+  public async readOrder(args: ReadOrderArgs): Promise<Order> {
+    const { symbol, marketType, orderId } = args;
+    const client = this.exchangeConnector.getClient(marketType);
+
+    logger.info(
+      { symbol, marketType, orderId },
+      `[PositionManager] ${symbol} readOrder request orderId=${orderId} marketType=${marketType}`
+    );
+
+    try {
+      const order = await withRetryOn429({
+        fn: () => client.getOrder(symbol, orderId),
+        contextLabel: `readOrder ${symbol} orderId=${orderId}`,
+      });
+
+      logger.info(
+        { symbol, marketType, orderId, status: order.status },
+        `[PositionManager] ${symbol} readOrder response orderId=${orderId} status=${order.status}`
+      );
+
+      return order;
+    } catch (error: unknown) {
+      logger.warn({ symbol, marketType, orderId, error }, `[PositionManager] ${symbol} readOrder failed orderId=${orderId}`);
+      throw error;
+    }
+  }
+
+  public async readOrderByClientOrderId(args: ReadOrderByClientOrderIdArgs): Promise<Order> {
+    const { symbol, marketType, clientOrderId } = args;
+    const client = this.exchangeConnector.getClient(marketType);
+
+    logger.info(
+      { symbol, marketType, clientOrderId },
+      `[PositionManager] ${symbol} readOrderByClientOrderId request clientOrderId=${clientOrderId} marketType=${marketType}`
+    );
+
+    try {
+      const order = await withRetryOn429({
+        fn: () => client.getOrderByClientOrderId(symbol, clientOrderId),
+        contextLabel: `readOrderByClientOrderId ${symbol} clientOrderId=${clientOrderId}`,
+      });
+
+      logger.info(
+        { symbol, marketType, clientOrderId, status: order.status },
+        `[PositionManager] ${symbol} readOrderByClientOrderId response clientOrderId=${clientOrderId} status=${order.status}`
+      );
+
+      return order;
+    } catch (error: unknown) {
+      logger.warn({ symbol, marketType, clientOrderId, error }, `[PositionManager] ${symbol} readOrderByClientOrderId failed clientOrderId=${clientOrderId}`);
+      throw error;
+    }
+  }
+
+  /**
+   * Maker/taker trading fee for the symbol, in PERCENT — never a fraction (exchange-engine
+   * normalizers already parse Binance `makerCommissionRate` / Bybit `makerFeeRate`, which are
+   * fractions such as 0.0002 = 0.02%). A fee rate is an estimate input, not a write — on failure
+   * this returns `null` instead of rethrowing, so callers fall back to a default rather than crash.
+   */
+  public async readFeeRate(args: ReadFeeRateArgs): Promise<FeeRatePercent | null> {
+    const { symbol, marketType } = args;
+    const client = this.exchangeConnector.getClient(marketType);
+
+    logger.info(
+      { symbol, marketType },
+      `[PositionManager] ${symbol} readFeeRate request marketType=${marketType}`
+    );
+
+    let feeRateList: FeeRate[];
+
+    try {
+      feeRateList = await withRetryOn429({
+        fn: () => client.fetchFeeRate(symbol),
+        contextLabel: `readFeeRate ${symbol}`,
+      });
+    } catch (error: unknown) {
+      logger.warn({ symbol, marketType, error }, `[PositionManager] ${symbol} readFeeRate failed`);
+
+      return null;
+    }
+
+    const feeRate = feeRateList.find(item => item.symbol === symbol) ?? feeRateList[0];
+
+    if (feeRate === undefined) {
+      logger.warn({ symbol, marketType }, `[PositionManager] ${symbol} readFeeRate response empty list`);
+
+      return null;
+    }
+
+    const makerPercent = roundPercent(feeRate.makerRate * 100, 12);
+    const takerPercent = roundPercent(feeRate.takerRate * 100, 12);
+
+    if (!Number.isFinite(makerPercent) || !Number.isFinite(takerPercent)) {
+      logger.warn(
+        { symbol, marketType, feeRate },
+        `[PositionManager] ${symbol} readFeeRate response non-finite rate`
+      );
+
+      return null;
+    }
+
+    logger.info(
+      { symbol, marketType, makerPercent, takerPercent },
+      `[PositionManager] ${symbol} readFeeRate response makerPercent=${makerPercent} takerPercent=${takerPercent}`
+    );
+
+    return { makerPercent, takerPercent };
   }
 }

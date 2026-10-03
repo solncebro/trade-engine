@@ -1,8 +1,11 @@
 import { sheets_v4 } from '@googleapis/sheets';
-import { createClient, SupabaseClient } from '@supabase/supabase-js';
+import { SupabaseClient } from '@supabase/supabase-js';
 
+import { JournalSpool } from './journalSpool';
+import type { JournalSpoolEntry, JournalSpoolEventEntry } from './journalSpool.types';
 import type {
   JournalSelectRowsArgs,
+  JournalSheetTarget,
   JournalUpdateRowsArgs,
   MarkOrphanedArgs,
   PersistentTradeJournalConfig,
@@ -13,6 +16,7 @@ import {
   ensureDateColumnFormat,
   ensureSheetHeader,
   fullReplaceSheet,
+  replaceSheetValues,
   syncRecordListToSheet,
 } from './sheetsSync';
 import type { SheetSyncArgs } from './sheetsSync';
@@ -20,6 +24,7 @@ import type { SheetSyncArgs } from './sheetsSync';
 import { logger } from '../../core/logger';
 import { withResultRetry } from '../../core/withRetryOn429';
 import { createDate } from '../../utils/date.utils';
+import { createSupabaseServiceClient } from '../supabase/supabaseStorage';
 
 const DEFAULT_FLUSH_INTERVAL_MS = 3_000;
 const DEFAULT_SHEET_SYNC_DEBOUNCE_MS = 30_000;
@@ -27,6 +32,18 @@ const SUPABASE_PAGE_SIZE = 1_000;
 const MS_PER_DAY = 86_400_000;
 const SUPABASE_MAX_ATTEMPTS = 3;
 const SUPABASE_RETRY_BASE_DELAY_MS = 500;
+
+interface QueuedJournalEvent {
+  tradeKey: string;
+  row: Record<string, unknown>;
+}
+
+interface BatchPersistOutcome {
+  /** The summaries are in the database — terminal ones may leave RAM. */
+  isSummaryPersisted: boolean;
+  /** The summaries are in the database OR in the on-disk spool — no RAM re-queue needed. */
+  isSummarySafe: boolean;
+}
 
 // Generic, buffered trade journal: batches trade summaries and events in RAM, flushes them to Supabase
 // in bulk, and mirrors the summaries into Google Sheets. It owns the Supabase and Sheets clients so a
@@ -41,10 +58,14 @@ export class PersistentTradeJournal {
   private readonly sheetSyncDebounceMs: number;
   private readonly liveSheetMirror: boolean;
   private readonly retryBaseDelayMs: number;
+  private readonly sheetTargetList: readonly JournalSheetTarget[];
+  private readonly spool: JournalSpool | null;
+  private isSpoolPending = false;
+  private serialChain: Promise<void> = Promise.resolve();
   private readonly summaryById: Map<string, Record<string, unknown>> = new Map();
   private readonly seqById: Map<string, number> = new Map();
   private readonly dirtyIdSet: Set<string> = new Set();
-  private eventQueueList: Record<string, unknown>[] = [];
+  private eventQueueList: QueuedJournalEvent[] = [];
   private supabaseClient: SupabaseClient | null = null;
   private isSupabaseEnabled = false;
   private isSheetsEnabled = false;
@@ -61,9 +82,11 @@ export class PersistentTradeJournal {
     this.sheetSyncDebounceMs = config.sheetSyncDebounceMs ?? DEFAULT_SHEET_SYNC_DEBOUNCE_MS;
     this.liveSheetMirror = config.liveSheetMirror ?? false;
     this.retryBaseDelayMs = config.retryBaseDelayMs ?? SUPABASE_RETRY_BASE_DELAY_MS;
+    this.sheetTargetList = config.sheetTargetList ?? [];
+    this.spool = config.spoolFilePath !== undefined && config.spoolFilePath !== null ? new JournalSpool(config.spoolFilePath) : null;
 
     if (config.supabaseUrl !== null && config.supabaseServiceKey !== null) {
-      this.supabaseClient = createClient(config.supabaseUrl, config.supabaseServiceKey);
+      this.supabaseClient = createSupabaseServiceClient({ url: config.supabaseUrl, serviceKey: config.supabaseServiceKey });
       this.isSupabaseEnabled = true;
     }
 
@@ -77,19 +100,24 @@ export class PersistentTradeJournal {
       try {
         this.sheetsClient = createSheetsClient(this.googleSheetsCredentialsPath);
 
-        await ensureSheetHeader({ sheets: this.sheetsClient, spreadsheetId: this.googleSheetsSpreadsheetId, columnList: this.schema.sheetColumnList });
-        await ensureDateColumnFormat({
-          sheets: this.sheetsClient,
-          spreadsheetId: this.googleSheetsSpreadsheetId,
-          columnList: this.schema.sheetColumnList,
-          dateColumnList: this.schema.sheetDateColumnList,
-        });
+        for (const sheetName of this.sheetNameList) {
+          await ensureSheetHeader({ sheets: this.sheetsClient, spreadsheetId: this.googleSheetsSpreadsheetId, columnList: this.schema.sheetColumnList, sheetName });
+          await ensureDateColumnFormat({
+            sheets: this.sheetsClient,
+            spreadsheetId: this.googleSheetsSpreadsheetId,
+            columnList: this.schema.sheetColumnList,
+            dateColumnList: this.schema.sheetDateColumnList,
+            sheetName,
+          });
+        }
       } catch (error: unknown) {
         logger.error({ error }, '[PersistentTradeJournal] Failed to initialize Google Sheets — disabling Sheets channel');
         this.isSheetsEnabled = false;
         this.sheetsClient = null;
       }
     }
+
+    await this.initializeSpool();
 
     if (this.isEnabled()) {
       this.flushTimer = setInterval(() => {
@@ -100,9 +128,67 @@ export class PersistentTradeJournal {
     }
 
     logger.info(
-      { isSupabaseEnabled: this.isSupabaseEnabled, isSheetsEnabled: this.isSheetsEnabled },
-      `[PersistentTradeJournal] Initialized (supabase: ${this.isSupabaseEnabled}, sheets: ${this.isSheetsEnabled})`,
+      { isSupabaseEnabled: this.isSupabaseEnabled, isSheetsEnabled: this.isSheetsEnabled, spoolFilePath: this.spool?.getFilePath() ?? null },
+      `[PersistentTradeJournal] Initialized (supabase: ${this.isSupabaseEnabled}, sheets: ${this.isSheetsEnabled}, spool: ${this.spool !== null})`,
     );
+  }
+
+  /** The journal's own Supabase client (null when Supabase is off) — for Storage uploads and other
+   *  tables, so an app never builds a second client from the same key. */
+  getSupabaseClient(): SupabaseClient | null {
+    return this.supabaseClient;
+  }
+
+  // A restart must continue where the spool left off: seed the per-trade event counters from it (or a
+  // new event would reuse a spooled seq and be skipped as a duplicate on replay), then try to replay.
+  private async initializeSpool(): Promise<void> {
+    if (this.spool === null || !this.isSupabaseEnabled) {
+      return;
+    }
+
+    let entryList: JournalSpoolEntry[];
+
+    try {
+      entryList = await this.spool.readEntryList();
+    } catch (error: unknown) {
+      logger.error({ error, filePath: this.spool.getFilePath() }, '[PersistentTradeJournal] Failed to read the on-disk spool at startup — it will be retried on the next flush');
+      this.isSpoolPending = true;
+
+      return;
+    }
+
+    if (entryList.length === 0) {
+      return;
+    }
+
+    this.isSpoolPending = true;
+    this.seedSeqCountersFromSpool(entryList);
+
+    logger.warn({ entryCount: entryList.length }, `[PersistentTradeJournal] Found ${entryList.length} unsaved journal row(s) on disk from a previous run — replaying`);
+
+    await this.runSerialized(async () => {
+      await this.replaySpool();
+    });
+  }
+
+  private seedSeqCountersFromSpool(entryList: JournalSpoolEntry[]): void {
+    const seqColumn = this.schema.event.seqColumn;
+
+    if (seqColumn === null) {
+      return;
+    }
+
+    for (const entry of entryList) {
+      if (entry.kind !== 'event') {
+        continue;
+      }
+
+      const seq = Number(entry.row[seqColumn]);
+
+      if (Number.isFinite(seq) && seq > (this.seqById.get(entry.tradeKey) ?? 0)) {
+        this.seqById.set(entry.tradeKey, seq);
+      }
+    }
   }
 
   isEnabled(): boolean {
@@ -164,7 +250,7 @@ export class PersistentTradeJournal {
       row[this.schema.event.seqColumn] = seq;
     }
 
-    this.eventQueueList.push(row);
+    this.eventQueueList.push({ tradeKey: tradeId, row });
   }
 
   // Immediately persist a single summary, bypassing the batched flush. Used before dropping a closed
@@ -203,7 +289,9 @@ export class PersistentTradeJournal {
     try {
       await this.flush();
     } catch (error: unknown) {
-      logger.warn({ error }, '[PersistentTradeJournal] Final flush on shutdown failed — some journal rows may be lost');
+      logger.warn({ error, isSpoolEnabled: this.spool !== null }, this.spool === null
+        ? '[PersistentTradeJournal] Final flush on shutdown failed — some journal rows may be lost'
+        : '[PersistentTradeJournal] Final flush on shutdown failed — unsaved rows are in the on-disk spool when it was writable');
     }
   }
 
@@ -234,11 +322,24 @@ export class PersistentTradeJournal {
     }
 
     const loadedIdList: string[] = [];
+    const spooledSummaryByKey = await this.readSpooledSummaryByKey();
 
     for (const row of (data ?? []) as Record<string, unknown>[]) {
       const id = String(row[this.schema.summaryKeyColumn]);
-      this.summaryById.set(id, row);
+      // A summary still waiting in the spool is NEWER than its database row — it is the one the
+      // database refused. Loading the older row would let the next replay write it back over the newer.
+      this.summaryById.set(id, spooledSummaryByKey.get(id) ?? row);
       loadedIdList.push(id);
+    }
+
+    // A trade whose very first write never reached the database lives only in the spool.
+    for (const id of missingIdList) {
+      const spooledRow = spooledSummaryByKey.get(id);
+
+      if (!this.summaryById.has(id) && spooledRow !== undefined) {
+        this.summaryById.set(id, spooledRow);
+        loadedIdList.push(id);
+      }
     }
 
     await this.restoreEventSeqCounters(loadedIdList);
@@ -481,7 +582,7 @@ export class PersistentTradeJournal {
         return;
       }
 
-      await syncRecordListToSheet(this.buildSheetSyncArgs(rowList));
+      await this.writeToSheetTargets(rowList, 'sync');
 
       logger.info({ tradeCount: rowList.length, lookbackDays }, `[PersistentTradeJournal] Sheets reconcile completed — ${rowList.length} trade(s) pushed`);
     } catch (error: unknown) {
@@ -505,13 +606,54 @@ export class PersistentTradeJournal {
     try {
       const rowList = await this.fetchAllSummaryRows();
 
-      await fullReplaceSheet(this.buildSheetSyncArgs(rowList));
+      await this.writeToSheetTargets(rowList, 'full');
 
       logger.info({ recordCount: rowList.length }, `[PersistentTradeJournal] Full sync completed — ${rowList.length} record(s) written`);
 
       return { recordCount: rowList.length };
     } finally {
       this.isSheetSyncInProgress = false;
+    }
+  }
+
+  /**
+   * Rewrite a whole named sheet with a ready table (header row included) — a summary sheet like
+   * "Сводка" whose layout is not one row per trade. The sheet is created when missing. False when the
+   * Sheets channel is off; a Sheets API failure is thrown so the caller can tell it apart and retry.
+   */
+  async replaceNamedSheet(sheetName: string, rowList: (string | number)[][]): Promise<boolean> {
+    if (!this.isSheetsEnabled || this.sheetsClient === null || this.googleSheetsSpreadsheetId === null) {
+      return false;
+    }
+
+    return replaceSheetValues({ sheets: this.sheetsClient, spreadsheetId: this.googleSheetsSpreadsheetId, sheetName, valueMatrix: rowList });
+  }
+
+  /** No targets configured: one pass over the FIRST sheet with every row (`undefined` name). */
+  private get sheetNameList(): (string | undefined)[] {
+    return this.sheetTargetList.length === 0 ? [undefined] : this.sheetTargetList.map((target) => target.sheetName);
+  }
+
+  // Every write path (live mirror, reconcile, full sync) goes through here, so a trader's sheet can
+  // never disagree with the main one about which rows it shows. A full rewrite also runs for a target
+  // with no rows left — that is how stale rows disappear from it.
+  private async writeToSheetTargets(rowList: Record<string, unknown>[], mode: 'sync' | 'full'): Promise<void> {
+    const writeSheet = mode === 'sync' ? syncRecordListToSheet : fullReplaceSheet;
+
+    if (this.sheetTargetList.length === 0) {
+      await writeSheet(this.buildSheetSyncArgs(rowList));
+
+      return;
+    }
+
+    for (const target of this.sheetTargetList) {
+      const targetRowList = rowList.filter((row) => target.shouldIncludeRow(row));
+
+      if (mode === 'sync' && targetRowList.length === 0) {
+        continue;
+      }
+
+      await writeSheet(this.buildSheetSyncArgs(targetRowList, target.sheetName));
     }
   }
 
@@ -555,8 +697,22 @@ export class PersistentTradeJournal {
     return allRowList;
   }
 
-  private async flush(): Promise<void> {
-    if (this.eventQueueList.length === 0 && this.dirtyIdSet.size === 0) {
+  // Flushes (timer tick, shutdown) and spool replays run one after another: a replay reads the spool,
+  // writes it and then deletes it, and an append slipping in between would be deleted unsaved.
+  private runSerialized(task: () => Promise<void>): Promise<void> {
+    const run = this.serialChain.then(task);
+
+    this.serialChain = run.catch(() => undefined);
+
+    return run;
+  }
+
+  private flush(): Promise<void> {
+    return this.runSerialized(() => this.flushOnce());
+  }
+
+  private async flushOnce(): Promise<void> {
+    if (this.eventQueueList.length === 0 && this.dirtyIdSet.size === 0 && !this.isSpoolPending) {
       return;
     }
 
@@ -576,15 +732,16 @@ export class PersistentTradeJournal {
       }
     }
 
-    const isSummaryOk = this.isSupabaseEnabled
-      ? await this.flushToSupabase(eventQueueSnapshotList, dirtySummaryList)
-      : true;
+    const outcome: BatchPersistOutcome = this.isSupabaseEnabled
+      ? await this.persistBatch(eventQueueSnapshotList, dirtySummaryList)
+      : { isSummaryPersisted: true, isSummarySafe: true };
 
     // DB outage: re-queue ONLY the summaries — their upsert is idempotent (onConflict on the key), so a
-    // re-write after a lost ack is safe. Events are NOT re-queued here: they carry fixed primary keys and
-    // a plain re-queue would loop forever on a duplicate-key error and grow the queue without bound, so
-    // flushToSupabase retries then DROPS the event batch on final failure (as the original journal did).
-    if (!isSummaryOk) {
+    // re-write after a lost ack is safe. Without a spool events are NOT re-queued here: they carry fixed
+    // primary keys and a plain re-queue would loop forever on a duplicate-key error and grow the queue
+    // without bound, so flushToSupabase retries then DROPS the event batch on final failure (as the
+    // original journal did). With a spool both already sit on disk and nothing is re-queued in RAM.
+    if (!outcome.isSummarySafe) {
       for (const id of dirtyIdSnapshotList) {
         this.dirtyIdSet.add(id);
       }
@@ -594,13 +751,17 @@ export class PersistentTradeJournal {
       await this.flushToSheets(dirtySummaryList);
     }
 
-    if (!isSummaryOk) {
+    if (!outcome.isSummaryPersisted) {
       return;
     }
 
-    // Evict terminal summaries that persisted and are not pending again (e.g. re-queued by the Sheets
-    // mirror). Keeping them would leak memory for every closed trade.
-    for (const id of dirtyIdSnapshotList) {
+    this.evictPersistedTerminalSummaries(dirtyIdSnapshotList);
+  }
+
+  // Evict terminal summaries that persisted and are not pending again (e.g. re-queued by the Sheets
+  // mirror). Keeping them would leak memory for every closed trade.
+  private evictPersistedTerminalSummaries(idList: Iterable<string>): void {
+    for (const id of idList) {
       const summary = this.summaryById.get(id);
 
       if (summary !== undefined && this.isTerminal(summary) && !this.dirtyIdSet.has(id)) {
@@ -610,43 +771,239 @@ export class PersistentTradeJournal {
     }
   }
 
-  // Persists the dirty summaries and the event batch. Returns whether the SUMMARY write ok (the caller
-  // re-queues summaries on false). Events are retried then DROPPED on final failure — never re-queued —
-  // so the audit-log queue stays bounded and a duplicate-key error cannot wedge the pipeline forever.
-  private async flushToSupabase(eventQueueSnapshotList: Record<string, unknown>[], dirtySummaryList: Record<string, unknown>[]): Promise<boolean> {
+  private async persistBatch(eventQueueSnapshotList: QueuedJournalEvent[], dirtySummaryList: Record<string, unknown>[]): Promise<BatchPersistOutcome> {
+    if (this.spool === null) {
+      const isSummaryOk = await this.flushToSupabase(eventQueueSnapshotList.map((event) => event.row), dirtySummaryList);
+
+      return { isSummaryPersisted: isSummaryOk, isSummarySafe: isSummaryOk };
+    }
+
+    const isSummaryOk = dirtySummaryList.length === 0 || await this.writeSummaryList(dirtySummaryList, 'flushSummaries');
+    const isEventOk = eventQueueSnapshotList.length === 0 || await this.writeEventList(eventQueueSnapshotList.map((event) => event.row), 'flushEvents');
+
+    if (isSummaryOk && isEventOk) {
+      // The database answers again: bring back whatever an earlier outage left on disk. Order inside
+      // the spool is kept; the order of events of one trade is carried by their seq column anyway.
+      if (this.isSpoolPending) {
+        await this.replaySpool();
+      }
+
+      return { isSummaryPersisted: true, isSummarySafe: true };
+    }
+
+    const isSpooled = await this.appendToSpool(isSummaryOk ? [] : dirtySummaryList, isEventOk ? [] : eventQueueSnapshotList);
+
+    if (!isSpooled && !isEventOk) {
+      logger.error({ eventCount: eventQueueSnapshotList.length }, '[PersistentTradeJournal] Events refused by the database AND by the on-disk spool — this batch is lost');
+    }
+
+    return { isSummaryPersisted: isSummaryOk, isSummarySafe: isSummaryOk || isSpooled };
+  }
+
+  private async appendToSpool(summaryList: Record<string, unknown>[], eventList: QueuedJournalEvent[]): Promise<boolean> {
+    if (this.spool === null) {
+      return false;
+    }
+
+    const entryList: JournalSpoolEntry[] = [
+      ...summaryList.map((row): JournalSpoolEntry => ({ kind: 'summary', key: String(row[this.schema.summaryKeyColumn]), row: { ...row } })),
+      ...eventList.map((event): JournalSpoolEntry => ({ kind: 'event', tradeKey: event.tradeKey, row: event.row })),
+    ];
+
+    if (entryList.length === 0) {
+      return true;
+    }
+
+    const isAppended = await this.spool.appendEntryList(entryList);
+
+    if (isAppended) {
+      this.isSpoolPending = true;
+      logger.warn(
+        { summaryCount: summaryList.length, eventCount: eventList.length, filePath: this.spool.getFilePath() },
+        `[PersistentTradeJournal] Database refused ${summaryList.length} summary(ies) and ${eventList.length} event(s) — kept in the on-disk spool for replay`,
+      );
+    }
+
+    return isAppended;
+  }
+
+  // Replays the spool into the database. Idempotent: summaries are upserted by key (RAM wins over the
+  // spool copy — it is newer), events already present (same trade key + seq, e.g. an insert whose
+  // answer was lost) are skipped. The spool is deleted only after everything in it is confirmed;
+  // when only the events fail, it is atomically rewritten to hold just the events.
+  private async replaySpool(): Promise<boolean> {
+    if (this.spool === null || !this.isSpoolPending) {
+      return true;
+    }
+
+    let entryList: JournalSpoolEntry[];
+
+    try {
+      entryList = await this.spool.readEntryList();
+    } catch (error: unknown) {
+      logger.error({ error, filePath: this.spool.getFilePath() }, '[PersistentTradeJournal] Failed to read the on-disk spool for replay');
+
+      return false;
+    }
+
+    const summaryRowByKey = new Map<string, Record<string, unknown>>();
+    const eventEntryList: JournalSpoolEventEntry[] = [];
+
+    for (const entry of entryList) {
+      if (entry.kind === 'summary') {
+        summaryRowByKey.set(entry.key, entry.row);
+      } else {
+        eventEntryList.push(entry);
+      }
+    }
+
+    const summaryList = [...summaryRowByKey].map(([key, row]) => this.summaryById.get(key) ?? row);
+
+    if (summaryList.length > 0 && !(await this.writeSummaryList(summaryList, 'replaySpoolSummaries'))) {
+      return false;
+    }
+
+    if (eventEntryList.length > 0) {
+      const pendingEventEntryList = await this.dropAlreadyStoredEvents(eventEntryList);
+      const isEventOk = pendingEventEntryList !== null
+        && (pendingEventEntryList.length === 0 || await this.writeEventList(pendingEventEntryList.map((entry) => entry.row), 'replaySpoolEvents'));
+
+      if (!isEventOk) {
+        await this.rewriteSpool(eventEntryList);
+
+        return false;
+      }
+    }
+
+    const isCleared = await this.rewriteSpool([]);
+
+    if (!isCleared) {
+      return false;
+    }
+
+    this.isSpoolPending = false;
+    this.evictPersistedTerminalSummaries(summaryRowByKey.keys());
+
+    logger.info(
+      { summaryCount: summaryList.length, eventCount: eventEntryList.length },
+      `[PersistentTradeJournal] Replayed the on-disk spool — ${summaryList.length} summary(ies), ${eventEntryList.length} event(s)`,
+    );
+
+    return true;
+  }
+
+  private async rewriteSpool(entryList: JournalSpoolEntry[]): Promise<boolean> {
+    if (this.spool === null) {
+      return false;
+    }
+
+    try {
+      await this.spool.replaceEntryList(entryList);
+
+      return true;
+    } catch (error: unknown) {
+      // The old file stays as it was — a later replay re-sends it and the key/seq checks skip the dupes.
+      logger.error({ error, filePath: this.spool.getFilePath() }, '[PersistentTradeJournal] Failed to rewrite the on-disk spool');
+
+      return false;
+    }
+  }
+
+  // An event insert whose answer was lost may already be in the table. Without a seq column there is
+  // no key to recognise it by, so every spooled event is re-sent. Null = could not read (replay later).
+  private async dropAlreadyStoredEvents(eventEntryList: JournalSpoolEventEntry[]): Promise<JournalSpoolEventEntry[] | null> {
+    const { tradeKeyColumn, seqColumn } = this.schema.event;
+    const client = this.supabaseClient;
+
+    if (seqColumn === null || client === null) {
+      return eventEntryList;
+    }
+
+    const buildEventKey = (tradeKey: unknown, seq: unknown): string => `${String(tradeKey)}\u0000${String(seq)}`;
+    const tradeKeyList = [...new Set(eventEntryList.map((entry) => String(entry.row[tradeKeyColumn] ?? entry.tradeKey)))];
+    const { data, error } = await withResultRetry({
+      fn: async () => client.from(this.schema.eventsTable).select(`${tradeKeyColumn},${seqColumn}`).in(tradeKeyColumn, tradeKeyList),
+      contextLabel: 'replaySpoolExistingEvents',
+      maxRetries: SUPABASE_MAX_ATTEMPTS,
+      baseDelayMs: this.retryBaseDelayMs,
+    });
+
+    if (error !== null) {
+      return null;
+    }
+
+    const storedEventKeySet = new Set(((data ?? []) as unknown as Record<string, unknown>[]).map((row) => buildEventKey(row[tradeKeyColumn], row[seqColumn])));
+
+    return eventEntryList.filter((entry) => !storedEventKeySet.has(buildEventKey(entry.row[tradeKeyColumn] ?? entry.tradeKey, entry.row[seqColumn])));
+  }
+
+  private async readSpooledSummaryByKey(): Promise<Map<string, Record<string, unknown>>> {
+    const summaryByKey = new Map<string, Record<string, unknown>>();
+
+    if (this.spool === null || !this.isSpoolPending) {
+      return summaryByKey;
+    }
+
+    try {
+      for (const entry of await this.spool.readEntryList()) {
+        if (entry.kind === 'summary') {
+          summaryByKey.set(entry.key, entry.row);
+        }
+      }
+    } catch (error: unknown) {
+      logger.warn({ error }, '[PersistentTradeJournal] Could not read the on-disk spool while rehydrating — using database rows only');
+    }
+
+    return summaryByKey;
+  }
+
+  private async writeSummaryList(summaryList: Record<string, unknown>[], contextLabel: string): Promise<boolean> {
     const client = this.supabaseClient;
 
     if (client === null) {
       return true;
     }
 
-    let isSummaryOk = true;
+    const { error } = await withResultRetry({
+      fn: async () => client.from(this.schema.tradesTable).upsert(summaryList, { onConflict: this.schema.summaryKeyColumn }),
+      contextLabel,
+      maxRetries: SUPABASE_MAX_ATTEMPTS,
+      baseDelayMs: this.retryBaseDelayMs,
+    });
 
-    if (dirtySummaryList.length > 0) {
-      const { error } = await withResultRetry({
-        fn: async () => client.from(this.schema.tradesTable).upsert(dirtySummaryList, { onConflict: this.schema.summaryKeyColumn }),
-        contextLabel: 'flushSummaries',
-        maxRetries: SUPABASE_MAX_ATTEMPTS,
-        baseDelayMs: this.retryBaseDelayMs,
-      })
+    return error === null;
+  }
 
-      if (error !== null) {
-        logger.error({ error, summaryCount: dirtySummaryList.length }, '[PersistentTradeJournal] Failed to upsert summaries after retries — re-queuing (idempotent upsert)');
-        isSummaryOk = false;
-      }
+  private async writeEventList(eventRowList: Record<string, unknown>[], contextLabel: string): Promise<boolean> {
+    const client = this.supabaseClient;
+
+    if (client === null) {
+      return true;
     }
 
-    if (eventQueueSnapshotList.length > 0) {
-      const { error } = await withResultRetry({
-        fn: async () => client.from(this.schema.eventsTable).insert(eventQueueSnapshotList),
-        contextLabel: 'flushEvents',
-        maxRetries: SUPABASE_MAX_ATTEMPTS,
-        baseDelayMs: this.retryBaseDelayMs,
-      })
+    const { error } = await withResultRetry({
+      fn: async () => client.from(this.schema.eventsTable).insert(eventRowList),
+      contextLabel,
+      maxRetries: SUPABASE_MAX_ATTEMPTS,
+      baseDelayMs: this.retryBaseDelayMs,
+    });
 
-      if (error !== null) {
-        logger.error({ error, eventCount: eventQueueSnapshotList.length }, '[PersistentTradeJournal] Failed to insert events after retries — dropping this batch to keep the queue bounded');
-      }
+    return error === null;
+  }
+
+  // Persists the dirty summaries and the event batch (no spool). Returns whether the SUMMARY write ok
+  // (the caller re-queues summaries on false). Events are retried then DROPPED on final failure — never
+  // re-queued — so the audit-log queue stays bounded and a duplicate-key error cannot wedge the pipeline.
+  private async flushToSupabase(eventRowList: Record<string, unknown>[], dirtySummaryList: Record<string, unknown>[]): Promise<boolean> {
+    let isSummaryOk = true;
+
+    if (dirtySummaryList.length > 0 && !(await this.writeSummaryList(dirtySummaryList, 'flushSummaries'))) {
+      logger.error({ summaryCount: dirtySummaryList.length }, '[PersistentTradeJournal] Failed to upsert summaries after retries — re-queuing (idempotent upsert)');
+      isSummaryOk = false;
+    }
+
+    if (eventRowList.length > 0 && !(await this.writeEventList(eventRowList, 'flushEvents'))) {
+      logger.error({ eventCount: eventRowList.length }, '[PersistentTradeJournal] Failed to insert events after retries — dropping this batch to keep the queue bounded');
     }
 
     return isSummaryOk;
@@ -682,7 +1039,7 @@ export class PersistentTradeJournal {
     this.isSheetSyncInProgress = true;
 
     try {
-      await syncRecordListToSheet(this.buildSheetSyncArgs(dirtySummaryList));
+      await this.writeToSheetTargets(dirtySummaryList, 'sync');
       this.lastSheetSyncMs = nowMs;
     } catch (error: unknown) {
       logger.error({ error, summaryCount: dirtySummaryList.length }, '[PersistentTradeJournal] Failed to sync summaries to Google Sheets');
@@ -695,7 +1052,7 @@ export class PersistentTradeJournal {
     }
   }
 
-  private buildSheetSyncArgs(recordList: Record<string, unknown>[]): SheetSyncArgs {
+  private buildSheetSyncArgs(recordList: Record<string, unknown>[], sheetName?: string): SheetSyncArgs {
     return {
       sheets: this.sheetsClient as sheets_v4.Sheets,
       spreadsheetId: this.googleSheetsSpreadsheetId as string,
@@ -704,6 +1061,7 @@ export class PersistentTradeJournal {
       dateColumnList: this.schema.sheetDateColumnList,
       percentColumnList: this.schema.sheetPercentColumnList,
       recordList,
+      sheetName,
     };
   }
 

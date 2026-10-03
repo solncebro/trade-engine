@@ -49,6 +49,7 @@ await connector.initialize(); // ставит тиковую сетку для f
 formatPrice('PROMUSDT', 2.961579786096256); // "2.9616" — ровно то, что лежит в заявке
 formatPrice('PROMUSDT', null);              // "—"
 snapPriceToTick('PROMUSDT', 2.961579786096256); // 2.9616 (число, для базы/журнала)
+snapPriceToTick('PROMUSDT', 2.96151, 'up');     // 2.9616 — не ниже цены ('down' — не выше, по умолчанию 'nearest')
 ```
 
 Сырую цену показывать человеку нельзя нигде — ни в Telegram, ни в тревогах, ни в логах, ни в журнале: длинный хвост плавающей точки нечитаем и не совпадает с ценой, которая реально стоит на бирже. Без коннектора (бэктест, утилиты) источник сетки ставится вручную — `configurePriceTickSnapper(...)`.
@@ -257,6 +258,48 @@ bounds and keeps the shared shape. Note there is no premium addend in the args: 
 formula is `Min(Mark × (1+Y), Max(Index, Mark × (1+X)))`, and the home-grown `premiumAvg` term
 inflated the band exactly on pinned pumps.
 
+### Persisted list document — memory that survives a restart
+
+`PersistedListDocument<TRecord>` keeps a keyed list in memory (the truth while the process lives) and
+mirrors it, in the background, into one document — typically a Firebase sibling document next to the
+app's settings. The caller never waits on a write; a failed read or write is retried every 30 s on an
+unref'd timer; a document that could not be read is never written over (its content is unknown);
+the late re-read merges the document into memory, memory winning, and keys removed meanwhile stay
+removed. Connect it in four steps:
+
+1. Describe one record: a key function, a parser (`raw → record | null`, null drops the entry) and a
+   serializer (`record → what goes into recordList`).
+2. Give it document IO — any `{ read(name), write(name, data) }`; with `FirebaseServiceBase` that is
+   `readSiblingDocument` / `writeSiblingDocument`. Pass `io: null` for a memory-only store (tests).
+3. Construct and `await load()` once at startup (a failed read does not throw; it resolves `false`, and
+   writes stay withheld until a retried read succeeds).
+4. Use `get` / `has` / `list` / `set` / `remove` / `clear` (removing an absent key writes nothing while
+   the document is read); call `await flush()` on shutdown, then `stop()` to clear a pending retry timer.
+
+```typescript
+import { PersistedListDocument } from '@solncebro/trade-engine';
+
+const setupDocument = new PersistedListDocument<Setup>({
+  io: { read: name => firebase.readSiblingDocument(name), write: (name, data) => firebase.writeSiblingDocument(name, data) },
+  documentName: 'setups',
+  logger,
+  logLabel: '[Setups]',
+  keyOf: setup => setup.symbol,
+  parse: parseSetup,
+  serialize: setup => ({ ...setup }),
+  // optional: selectDropped: list => [...list].sort(byNewest).slice(20), retryMs: 30_000
+});
+
+await setupDocument.load();
+setupDocument.set(setup); // returns at once; the write runs in the background
+await setupDocument.flush(); // on shutdown
+setupDocument.stop(); // clears a pending retry
+```
+
+`get` / `list` hand out the stored objects; a store with mutable records clones them at its own
+boundary. The document is `{ recordList, updatedAtMs }` — a list, never a map keyed by record, so a
+merge-written document cannot resurrect a removed key.
+
 ## Exports
 
 ### Classes
@@ -264,12 +307,15 @@ inflated the band exactly on pinned pumps.
 | Class | Description |
 |-------|------------|
 | `ExchangeConnector` | Exchange connection, tickers, symbol resolution, low-level `createOrder`; optional `futuresPositionMode` for futures `positionSide` behavior. Lazy-init `connector.positionManager`. |
-| `PositionManager` | High-level semantic API for spot/futures (`openPositionLimit/Market`, `closePositionLimit/Market`, `placeStopLoss/TakeProfit`, `cancelOrder/cancelBatchOrders`, `spotMarketBuyByQuote`, `setLeverage/setMarginMode`). Hides `positionSide`/`positionIdx`/`reduceOnly`/`closePosition`/`workingType`/`triggerDirection`/`triggerBy`/`orderFilter`/`marketUnit` from callers; takes business arguments (`symbol`, `marketType`, `direction`, `amount`, `price`/`triggerPrice`). Spot + `direction='short'` throws. |
+| `PositionManager` | High-level semantic API for spot/futures (`openPositionLimit/Market`, `closePositionLimit/Market`, `placeStopLoss/TakeProfit`, `cancelOrder/cancelBatchOrders`, `spotMarketBuyByQuote`, `setLeverage/setMarginMode`), plus reads (`readOpenOrderList`, `readOrder`, `readOrderByClientOrderId`, `readFeeRate` — percent, never a fraction). Hides `positionSide`/`positionIdx`/`reduceOnly`/`closePosition`/`workingType`/`triggerDirection`/`triggerBy`/`orderFilter`/`marketUnit` from callers; takes business arguments (`symbol`, `marketType`, `direction`, `amount`, `price`/`triggerPrice`). Spot + `direction='short'` throws. |
 | `OrderExecutor` | Base class for order execution with TP/SL and emergency exit (legacy path; new code uses `PositionManager`). Builds the closing order itself — opposite side, price shifted by a percent, trigger for the stop loss, `reduceOnly` on futures, `positionSide` carried over from the entry |
-| `TelegramNotifier` | Telegraf bot for sending notifications and registering commands |
-| `TelegramCommandHandler<T>` | Command handler with typed settings (boolean/numeric) |
-| `TelegramMessageListener` | MTProto client for listening to Telegram channel messages |
-| `FirebaseServiceBase<T>` | Firestore CRUD with real-time subscription |
+| `TelegramNotifier` | Telegram bot for notifications and commands, built entirely from `@solncebro/telegram-engine` pieces (`createBot`, access guard, broadcaster/reporter) |
+| `TelegramCommandHandler<T>` | Command handler with typed settings (boolean/numeric); argument parsing from `@solncebro/telegram-engine` |
+| `TelegramMessageListener` | **Deprecated** — thin wrapper over `createUserClient` of `@solncebro/telegram-engine` with the old names and events; new code uses the user client directly |
+| `FirebaseServiceBase<T>` | Firestore CRUD with real-time subscription; self-healing listener, snapshot watchdog, on-disk last-good copy, connection events, immediate read-your-write, sibling documents and map items |
+| `PersistedListDocument<TRecord>` | In-memory keyed list mirrored write-behind into one document (list-shaped, never written over when unread, late read merged with memory winning, unref'd 30 s retry, `flush()` for shutdown) |
+| `UserDataStreamRouter` | One private (user-data) stream per client fanned out to many subscribers, with error isolation and drop / restore / resync events; `connector.getUserDataStreamRouter()` |
+| `SubAccountGateway` | `connector.subAccounts`: list sub-accounts, transfer master ⇄ sub-account with the caller's idempotency id, transfer status, sub-account balances; results, never throws; demo mode answers `isNotSupported` |
 | `ConfigManager` | Environment variable validation |
 | `OrderBookTracker` | Live merged order book per subscribed symbol (Binance partial-depth slices, Bybit snapshot + deltas, sequence-gap resubscribe); used by `ExchangeConnector.subscribeOrderBook/getOrderBook` |
 | `StreamSubscriptionWatchdog` | Stream-type-agnostic subscription health watchdog; behaviour per stream comes from a `StreamWatchdogStrategy` (`OrderbookWatchdogStrategy`, `PublicTradeWatchdogStrategy`, `MarkPriceWatchdogStrategy`, `KlineWatchdogStrategy`) |
@@ -290,6 +336,10 @@ inflated the band exactly on pinned pumps.
 | `TriggerByEnum` | `MarkPrice`, `LastPrice`, `IndexPrice` (Bybit Linear conditional trigger source) |
 | `TimeInForceEnum` | `Gtc`, `Ioc`, `Fok`, `PostOnly` |
 | `TradeSymbolTypeEnum` | `Spot`, `Swap`, `Future` |
+| `WalletTypeEnum` | `Spot`, `UsdtFutures`, `Funding` (sub-account transfers and balances) |
+| `SubAccountStatusEnum` | `Active`, `Frozen`, `LoginBanned`, `Unknown` |
+| `SubAccountTransferDirectionEnum` | `MasterToSub`, `SubToMaster` |
+| `SubAccountTransferStatusEnum` | `Success`, `Pending`, `Failed` |
 
 ### Types
 
@@ -313,13 +363,71 @@ inflated the band exactly on pinned pumps.
 | `isOrderSuccessful(result)` | Check if order has orderId |
 | `isSpot(marketType)` | Check if market type is spot |
 | `normalizeSymbol(symbol)` | Remove exchange suffixes (`:`, `/`, `.`, `-`) |
+| `parseRawSymbolInput(raw)` | Human / signal input (`$pepe`, `#BTC`, `BTC/USDT`, `BTCUSDT.P`, `PEPE/USDT:USDT`) → `PEPEUSDT`; `null` for empty input |
+| `connector.resolveFuturesSymbol(raw)` / `resolveSpotSymbol(raw)` | Input → the exchange's symbol `{ symbol, isFound }`: 1000-prefix by tickers, Bybit multiplier suffix (`SHIB1000USDT`), spec load for a fresh listing |
+| `connector.findSymbolWithPrefix(symbol, marketType)` | Like `resolveSymbolWithPrefix`, but a miss is `null` |
+| `connector.waitForTickersReady(timeoutMs?)` | Waits for the first ticker snapshot after `initialize()`; `false` on timeout, never throws |
+| `connector.shareMarketDataFrom(primary)` | Before `initialize()`: a sub-account connector reuses the primary's instruments, tickers and leverage tiers |
+| `connector.ensureSpotTradeSymbolLoaded(symbol)` | Spot spec of a symbol, loading it if new |
+| `fitLeverage(args)` | Leverage whose tier cap fits the whole entry plan, lowered by free margin |
+| `estimateIsolatedLiquidationPrice` / `computeMaxLeverageBeforeStop` / `resolveEntryLeverage` | Isolated liquidation price; the highest leverage that keeps liquidation beyond the stop with a percent buffer; the final entry leverage |
+| `readAccountBalance(client)` / `readFreeMarginUsd(client)` / `readSpotQuoteBalance(args)` | Account balance in USD; `null` = unreadable, not zero |
+| `readCapitalBase(args)` | Realized (wallet) USDT of the master + listed sub-accounts; total `null` if any account is unreadable |
+| `computeBreakevenWithFees(avgEntry, feePercent, direction)` | Breakeven price including entry and exit fees (percent) |
+| `isPostOnlyRejection({ errorCode, rejectReason })` | Recognises a post-only order refused for taking liquidity (Binance futures -5022, Bybit `EC_PostOnlyWillTakeLiquidity`) |
+| `readPositiveNumber` / `readOptionalString` / `readEnum` / `readBoolean` / `parseChatIdList` | Typed env readers: unset → fallback, malformed → throws |
+| `createGracefulShutdownHandler(args)` / `registerShutdownSignals(handler)` / `installProcessErrorGuards()` | Ordered, capped, re-entry-safe shutdown; SIGINT/SIGTERM once; log-and-survive guards |
+| `createSequentialQueue(args)` | Fire-and-forget background queue, strict order, drain on shutdown |
+| `startAlignedScheduler(args)` / `millisecondsUntilNextAlignedTick(args)` | Wall-clock aligned ticks (e.g. :29:30 / :59:30) with a double-fire guard |
+| `createSupabaseServiceClient(args)` / `uploadFileToStorage(args)` | Supabase client + Storage upload with retry, result instead of throw |
+| `replaceSheetValues(args)` | Rewrite a whole Google Sheets tab with a ready table |
 | `formatTimestamp(ts)` | Format timestamp to `HH:mm:ss.SSS` |
 | `createLogger(args?)` | Create pino logger with optional BetterStack transport |
-| `sliceAskVolumeWithinBand(args)` | Ask liquidity that fits within a price band above a reference price (pure) |
+| `sliceBookVolumeWithinBand(args)` | Liquidity of either book side (`side: 'ask' \| 'bid'`) within a price band from a reference price (pure) |
+| `sliceAskVolumeWithinBand(args)` | Ask liquidity that fits within a price band above a reference price (pure); thin wrapper over `sliceBookVolumeWithinBand` |
 | `resolveOrderBookStreamDepth(exchangeName)` | Stream depth the order-book tracker subscribes at (Binance 20, Bybit 50) |
 | `sleep(ms)` | Promise-wrapped `setTimeout` — the one pause primitive for the library and its consumers |
+| `describeError(error)` | The text of any caught value (Error message, object `message`, else stringified) — the one helper for log lines and `errorText`; apps must not keep their own copy |
 | `withTimeout(promise, ms, message)` | Race a promise against a timer |
 | `withRetryOn429(args)` / `withResultRetry(args)` | Retry wrappers (exponential backoff on 429/5xx; result-based retry). `withReadRetry` was removed in 3.22.0 — it was the same function under a second name |
+
+### Sub-accounts (master account key)
+
+```typescript
+import { WalletTypeEnum, readCapitalBase } from '@solncebro/trade-engine';
+import { randomUUID } from 'node:crypto';
+
+const listResult = await connector.subAccounts.listSubAccounts();
+
+const transferId = randomUUID(); // keep it: the only way to ask later whether a lost transfer happened
+const outcome = await connector.subAccounts.transferToSubAccount({
+  subAccountId: '1234567', // Binance: sub-account e-mail; Bybit: UID
+  asset: 'USDT',
+  amount: 100,
+  fromWalletType: WalletTypeEnum.UsdtFutures,
+  toWalletType: WalletTypeEnum.UsdtFutures,
+  transferId,
+});
+
+if (!outcome.isSuccess) {
+  // outcome.errorText / outcome.errorCode; outcome.isNotSupported in demo mode or on OKX
+}
+
+const capital = await readCapitalBase({
+  masterClient: connector.futures,
+  subAccountGateway: connector.subAccounts,
+  subAccountIdList: ['1234567'],
+});
+// capital.totalWalletBalance — null when any account could not be read
+```
+
+Transfers are never retried by the library; ask `fetchTransferStatus({ subAccountId, direction, transferId })` with the same id.
+
+### Telegram
+
+All Telegram code of this package runs on `@solncebro/telegram-engine` (>= 0.6.0); `telegraf` and `telegram`
+(gramjs) come through it and are no longer direct dependencies. For listening to channels as a user (albums,
+edits, deletions, history, invites, connection watchdog) use `createUserClient` from `@solncebro/telegram-engine`.
 
 ## Migration notes
 
@@ -335,7 +443,8 @@ Every removal or rename ships with a "what to do" row in `CHANGELOG.md` → `###
 ## Requirements
 
 - Node.js >= 22
-- `@solncebro/exchange-engine` >= 0.13.0
+- `@solncebro/exchange-engine` >= 0.26.0 (installed as a dependency; apps never import it directly)
+- `@solncebro/telegram-engine` >= 0.6.0
 
 ## License
 

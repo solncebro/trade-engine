@@ -13,6 +13,7 @@ import type {
   EnqueueCancelArgs,
   EnqueueCancelBatchArgs,
   EnqueueClosePositionMarketArgs,
+  EnqueueOpenPositionMarketArgs,
   ExhaustedCancelInfo,
   ExhaustedReason,
   ImmediateBatchOutcome,
@@ -20,6 +21,7 @@ import type {
   ImmediateCancelResult,
   MoveLimitOrderArgs,
   MoveLimitOrderResult,
+  OpenPositionMarketResult,
   OrderManagerDiagnostics,
   PendingCancelEntry,
   ReplaceStopLossArgs,
@@ -31,6 +33,7 @@ import { TelegramNotifier } from '../services/telegramNotifier';
 import type { OrderUpdateEvent } from '../types/index';
 import { MarketTypeEnum, TriggerByEnum } from '../types/index';
 import { chunkList } from '../utils/chunk';
+import { describeError } from '../utils/errorFormatter.utils';
 import { startIntervalScheduler } from '../utils/intervalScheduler';
 import type { IntervalSchedulerHandle } from '../utils/intervalScheduler';
 import { loggedCancelBatchOrders, loggedCancelOrder, loggedGetOrder } from '../utils/loggedExchangeCall';
@@ -43,6 +46,8 @@ const PER_ENTRY_COOLDOWN_MS = 2_000;
 const PARALLELISM_LIMIT = 5;
 const MAX_ATTEMPTS = 8;
 const IMMEDIATE_VERIFY_WAIT_MS = 1_500;
+// Confirmations kept for a caller still inside its verify wait; bounded, it only has to outlive that wait.
+const RECENT_CONFIRMED_INFO_LIMIT = 500;
 const HEARTBEAT_INTERVAL_MS = 30_000;
 const ALERT_THRESHOLD_AGE_MS = 10_000;
 // When idle (no pending cancels, nothing in flight) the heartbeat is throttled to a
@@ -89,6 +94,9 @@ class OrderManager {
   private tickSchedulerHandle: IntervalSchedulerHandle | null = null;
   private heartbeatSchedulerHandle: IntervalSchedulerHandle | null = null;
   private lastAlertHash: string | null = null;
+
+  /** The last confirmations by order id: a cancel confirmed from the stream while its caller still waited answers by what really happened. */
+  private readonly recentConfirmedInfoByOrderId = new Map<string, ConfirmedCancelInfo>();
 
   constructor(args: OrderManagerArgs) {
     this.exchangeConnector = args.exchangeConnector;
@@ -374,7 +382,7 @@ class OrderManager {
   }
 
   async enqueueReplaceStopLoss(args: ReplaceStopLossArgs): Promise<ReplaceStopLossResult> {
-    const { positionId, symbol, direction, oldOrderId, triggerPrice, amount, metadata = {}, onOldOrderConfirmed } = args;
+    const { positionId, symbol, direction, oldOrderId, triggerPrice, amount, metadata = {}, onOldOrderConfirmed, clientOrderId } = args;
     const serializationKey = `position:${positionId}`;
 
     return this.runSerializedByKey(serializationKey, async () => {
@@ -400,7 +408,7 @@ class OrderManager {
       }
 
       logger.info(
-        { positionId, symbol, direction, triggerPrice: snapPriceToTick(symbol, triggerPrice), amount, ...metadata },
+        { positionId, symbol, direction, triggerPrice: snapPriceToTick(symbol, triggerPrice), amount, clientOrderId, ...metadata },
         `[OrderManager] ${symbol} placeStopLoss request direction=${direction} triggerPrice=${formatPrice(symbol, triggerPrice)} amount=${amount}`,
       );
 
@@ -421,7 +429,7 @@ class OrderManager {
           amount,
           triggerBy: TriggerByEnum.LastPrice,
           orderType: 'Market',
-          clientOrderId: this.buildClientOrderId(),
+          clientOrderId: clientOrderId ?? this.buildClientOrderId(),
         });
 
         if (isOrderSuccessful(result) && result.orderId) {
@@ -438,7 +446,7 @@ class OrderManager {
           );
         }
       } catch (error: unknown) {
-        errorText = error instanceof Error ? error.message : String(error);
+        errorText = describeError(error);
         logger.error(
           { error, positionId, symbol, errorText, ...metadata },
           `[OrderManager] ${symbol} placeStopLoss threw: ${errorText}`,
@@ -474,13 +482,61 @@ class OrderManager {
     });
   }
 
-  async enqueueClosePositionMarket(args: EnqueueClosePositionMarketArgs): Promise<ClosePositionMarketResult> {
-    const { positionId, symbol, direction, amount, contextLabel, metadata = {} } = args;
+  /** An opening market order (an entry "at the market now"), serialized with the position's other orders. */
+  async enqueueOpenPositionMarket(args: EnqueueOpenPositionMarketArgs): Promise<OpenPositionMarketResult> {
+    const { positionId, symbol, direction, amount, contextLabel, metadata = {}, clientOrderId } = args;
     const serializationKey = `position:${positionId}`;
 
     return this.runSerializedByKey(serializationKey, async () => {
       logger.info(
-        { positionId, symbol, direction, amount, contextLabel, ...metadata },
+        { positionId, symbol, direction, amount, contextLabel, clientOrderId, ...metadata },
+        `[OrderManager] ${symbol} openPositionMarket request direction=${direction} amount=${amount} (${contextLabel})`,
+      );
+
+      let orderId: string | null = null;
+      let errorText: string | null = null;
+
+      try {
+        const result = await this.exchangeConnector.positionManager.openPositionMarket({
+          symbol,
+          marketType: MarketTypeEnum.Futures,
+          direction,
+          amount,
+          ...(clientOrderId === undefined ? {} : { clientOrderId }),
+        });
+
+        if (isOrderSuccessful(result) && result.orderId) {
+          orderId = result.orderId;
+          logger.info(
+            { positionId, symbol, orderId, amount, result, contextLabel, ...metadata },
+            `[OrderManager] ${symbol} openPositionMarket response orderId=${orderId} amount=${amount} (${contextLabel})`,
+          );
+        } else {
+          errorText = result.errorText ?? 'Unknown error';
+          logger.error(
+            { positionId, symbol, errorText, result, contextLabel, ...metadata },
+            `[OrderManager] ${symbol} openPositionMarket response failed: ${errorText} (${contextLabel})`,
+          );
+        }
+      } catch (error: unknown) {
+        errorText = describeError(error);
+        logger.error(
+          { error, positionId, symbol, errorText, contextLabel, ...metadata },
+          `[OrderManager] ${symbol} openPositionMarket threw: ${errorText} (${contextLabel})`,
+        );
+      }
+
+      return { isSuccess: orderId !== null, orderId, errorText };
+    });
+  }
+
+  async enqueueClosePositionMarket(args: EnqueueClosePositionMarketArgs): Promise<ClosePositionMarketResult> {
+    const { positionId, symbol, direction, amount, contextLabel, metadata = {}, clientOrderId } = args;
+    const serializationKey = `position:${positionId}`;
+
+    return this.runSerializedByKey(serializationKey, async () => {
+      logger.info(
+        { positionId, symbol, direction, amount, contextLabel, clientOrderId, ...metadata },
         `[OrderManager] ${symbol} closePositionMarket request direction=${direction} amount=${amount} (${contextLabel})`,
       );
 
@@ -493,6 +549,7 @@ class OrderManager {
           marketType: MarketTypeEnum.Futures,
           direction,
           amount,
+          ...(clientOrderId === undefined ? {} : { clientOrderId }),
         });
 
         if (isOrderSuccessful(result) && result.orderId) {
@@ -509,7 +566,7 @@ class OrderManager {
           );
         }
       } catch (error: unknown) {
-        errorText = error instanceof Error ? error.message : String(error);
+        errorText = describeError(error);
         logger.error(
           { error, positionId, symbol, errorText, contextLabel, ...metadata },
           `[OrderManager] ${symbol} closePositionMarket threw: ${errorText} (${contextLabel})`,
@@ -620,51 +677,59 @@ class OrderManager {
   }
 
   async enqueueCreateLimitOrder(args: CreateLimitOrderArgs): Promise<CreateLimitOrderResult> {
-    const { symbol, direction, amount, price, contextLabel, metadata = {} } = args;
+    const { symbol, direction, amount, price, contextLabel, metadata = {}, timeInForce, isReduceOnly = false, clientOrderId } = args;
+    const methodLabel = isReduceOnly ? 'closePositionLimit' : 'openPositionLimit';
 
     logger.info(
-      { symbol, direction, amount, price: snapPriceToTick(symbol, price), contextLabel, ...metadata },
-      `[OrderManager] ${symbol} openPositionLimit request direction=${direction} amount=${amount} price=${formatPrice(symbol, price)} (${contextLabel})`,
+      { symbol, direction, amount, price: snapPriceToTick(symbol, price), timeInForce, contextLabel, clientOrderId, ...metadata },
+      `[OrderManager] ${symbol} ${methodLabel} request direction=${direction} amount=${amount} price=${formatPrice(symbol, price)} (${contextLabel})`,
     );
 
     let orderId: string | null = null;
     let errorText: string | null = null;
+    let errorCode: number | string | null = null;
 
     try {
-      const result = await this.exchangeConnector.positionManager.openPositionLimit({
+      const limitArgs = {
         symbol,
         marketType: MarketTypeEnum.Futures,
         direction,
         amount,
         price,
-      });
+        ...(timeInForce === undefined ? {} : { timeInForce }),
+        ...(clientOrderId === undefined ? {} : { clientOrderId }),
+      };
+      const result = isReduceOnly
+        ? await this.exchangeConnector.positionManager.closePositionLimit(limitArgs)
+        : await this.exchangeConnector.positionManager.openPositionLimit(limitArgs);
 
       if (isOrderSuccessful(result) && result.orderId) {
         orderId = result.orderId;
         logger.info(
           { symbol, orderId, amount, price: snapPriceToTick(symbol, price), result, contextLabel, ...metadata },
-          `[OrderManager] ${symbol} openPositionLimit response orderId=${orderId} amount=${amount} price=${formatPrice(symbol, price)} (${contextLabel})`,
+          `[OrderManager] ${symbol} ${methodLabel} response orderId=${orderId} amount=${amount} price=${formatPrice(symbol, price)} (${contextLabel})`,
         );
       } else {
         errorText = result.errorText ?? 'Unknown error';
+        errorCode = result.errorCode ?? null;
         logger.error(
-          { symbol, errorText, result, contextLabel, ...metadata },
-          `[OrderManager] ${symbol} openPositionLimit response failed: ${errorText} (${contextLabel})`,
+          { symbol, errorText, errorCode, result, contextLabel, ...metadata },
+          `[OrderManager] ${symbol} ${methodLabel} response failed: ${errorText} (${contextLabel})`,
         );
       }
     } catch (error: unknown) {
-      errorText = error instanceof Error ? error.message : String(error);
+      errorText = describeError(error);
       logger.error(
         { error, symbol, errorText, contextLabel, ...metadata },
-        `[OrderManager] ${symbol} openPositionLimit threw: ${errorText} (${contextLabel})`,
+        `[OrderManager] ${symbol} ${methodLabel} threw: ${errorText} (${contextLabel})`,
       );
     }
 
-    return { isSuccess: orderId !== null, orderId, errorText };
+    return { isSuccess: orderId !== null, orderId, errorText, errorCode };
   }
 
   async enqueueMoveLimitOrder(args: MoveLimitOrderArgs): Promise<MoveLimitOrderResult> {
-    const { symbol, direction, oldOrderId, amount, newPrice, contextLabel, metadata = {}, onOldOrderConfirmed } = args;
+    const { symbol, direction, oldOrderId, amount, newPrice, contextLabel, metadata = {}, onOldOrderConfirmed, timeInForce, isReduceOnly } = args;
 
     logger.info(
       { symbol, direction, oldOrderId, amount, newPrice: snapPriceToTick(symbol, newPrice), contextLabel, ...metadata },
@@ -691,6 +756,8 @@ class OrderManager {
       price: newPrice,
       contextLabel: `move limit order — place new (${contextLabel})`,
       metadata,
+      timeInForce,
+      isReduceOnly,
     });
 
     return { isSuccess: placeResult.isSuccess, orderId: placeResult.orderId, errorText: placeResult.errorText, oldCancelOutcome };
@@ -746,7 +813,7 @@ class OrderManager {
         const subResult = await sendSubBatch(subBatchItemList, isFirstSubBatch);
         aggregatedTransmissionResultList.push(...subResult);
       } catch (error: unknown) {
-        const errorText = error instanceof Error ? error.message : String(error);
+        const errorText = describeError(error);
         logger.error(
           { error, symbol, subBatchIndex: subBatchIndex + 1, subBatchCount, contextLabel, ...metadata },
           `[OrderManager] ${symbol} ${subBatchLogLabel} sub-batch [${subBatchIndex + 1}/${subBatchCount}] threw — ${errorText} (${contextLabel})`,
@@ -954,6 +1021,15 @@ class OrderManager {
     await sleep(IMMEDIATE_VERIFY_WAIT_MS);
 
     if (!this.pendingByOrderId.has(entry.orderId)) {
+      // Confirmed from the stream during the wait: the confirmation says whether the order was cancelled or
+      // FILLED — a fill in this window must not be answered as a cancel (a caller would then treat a live
+      // position as gone, or place a replacement on top of a filled order).
+      const confirmed = this.recentConfirmedInfoByOrderId.get(entry.orderId);
+
+      if (confirmed !== undefined && confirmed.kind !== 'cancelled') {
+        return { immediateResult: 'filled', filledAmount: confirmed.filledAmount, avgPrice: confirmed.kind === 'filled' ? confirmed.avgPrice : 0, isStillTracked: false };
+      }
+
       const immediateResult: ImmediateCancelResult = 'cancelled';
 
       return { immediateResult, isStillTracked: false };
@@ -1066,6 +1142,7 @@ class OrderManager {
     }
 
     this.pendingByOrderId.delete(entry.orderId);
+    this.rememberConfirmedInfo(info);
 
     const ageMs = Date.now() - entry.firstAttemptAtMs;
 
@@ -1082,6 +1159,18 @@ class OrderManager {
         await callback(info);
       } catch (error: unknown) {
         logger.error({ error, symbol: entry.symbol, orderId: entry.orderId }, `[OrderManager] ${entry.symbol} onConfirmed callback threw orderId=${entry.orderId}`);
+      }
+    }
+  }
+
+  private rememberConfirmedInfo(info: ConfirmedCancelInfo): void {
+    this.recentConfirmedInfoByOrderId.set(info.orderId, info);
+
+    if (this.recentConfirmedInfoByOrderId.size > RECENT_CONFIRMED_INFO_LIMIT) {
+      const oldestOrderId = this.recentConfirmedInfoByOrderId.keys().next().value;
+
+      if (oldestOrderId !== undefined) {
+        this.recentConfirmedInfoByOrderId.delete(oldestOrderId);
       }
     }
   }

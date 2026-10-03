@@ -9,9 +9,13 @@ export {
   OrderTypeEnum,
   PositionModeEnum,
   PositionSideEnum,
+  SubAccountStatusEnum,
+  SubAccountTransferDirectionEnum,
+  SubAccountTransferStatusEnum,
   TimeInForceEnum,
   TradeSymbolTypeEnum,
   TriggerByEnum,
+  WalletTypeEnum,
   WebSocketConnectionTypeEnum,
   WorkingTypeEnum,
 } from '@solncebro/exchange-engine';

@@ -12,6 +12,7 @@ import type {
 } from './streamSubscriptionWatchdog.types';
 
 import { logger } from '../core/logger';
+import { describeError } from '../utils/errorFormatter.utils';
 import { withTimeout } from '../utils/timeout';
 
 const DEFAULT_REST_REFETCH_LIMIT = 100;
@@ -276,7 +277,7 @@ class KlineWatchdogStrategy implements StreamWatchdogStrategy {
         `${this.clientLabel} fetchKlines timeout for ${symbol} ${interval}`
       );
     } catch (error: unknown) {
-      const errorMessage = error instanceof Error ? error.message : String(error);
+      const errorMessage = describeError(error);
 
       logger.error({ error, symbol, interval }, `${LOG_PREFIX} ${this.clientLabel} ${symbol} fetchKlines failed: ${errorMessage} [${interval}]`);
 

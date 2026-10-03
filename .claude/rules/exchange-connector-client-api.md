@@ -64,8 +64,8 @@
 - `subscribePublicTrades(args: SubscribePublicTradesArgs)` / `unsubscribePublicTrades(args)` — Bybit V5 топик `publicTrade.{symbol}`.
 
 **Precision:**
-- `amountToPrecision(symbol, amount)` → `number` — округление количества
-- `priceToPrecision(symbol, price)` → `number` — округление цены
+- `amountToPrecision(symbol, amount, rounding?)` → `number` — округление количества
+- `priceToPrecision(symbol, price, rounding?)` → `number` — округление цены; `rounding: StepRounding` — `'nearest'` (по умолчанию), `'up'`, `'down'`
 - `getMinOrderQty(symbol)` → `number` — минимальный объём ордера
 - `getMinNotional(symbol)` → `number` — минимальный notional
 

@@ -6,6 +6,7 @@ import {
   OrderSideEnum,
   OrderTypeEnum,
   PositionSideEnum,
+  TimeInForceEnum,
   TriggerByEnum,
   WorkingTypeEnum,
 } from '@solncebro/exchange-engine';
@@ -40,6 +41,9 @@ export interface OrderParams {
   /** Скользящий стоп: цена, с которой он начинает вести за ценой. */
   activationPrice?: number;
   clientOrderId?: string;
+  /** Срок действия НЕрыночной заявки (например `PostOnly` — только в стакан). Не задан — «до отмены»;
+   *  у рыночной всегда «исполнить и отменить остаток», это поле её не касается. */
+  timeInForce?: TimeInForceEnum;
   params?: Record<string, unknown>;
 }
 

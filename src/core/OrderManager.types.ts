@@ -1,6 +1,6 @@
 import type { Direction } from './positionManager.types';
 
-import { MarginModeEnum } from '../types/index';
+import { MarginModeEnum, TimeInForceEnum } from '../types/index';
 
 type ConfirmedCancelInfo =
   | { kind: 'cancelled'; orderId: string; source: 'ws' | 'rest'; attemptCount: number; ageMs: number }
@@ -85,6 +85,9 @@ interface ReplaceStopLossArgs {
   amount: number;
   metadata?: Record<string, unknown>;
   onOldOrderConfirmed?: ConfirmedCallback;
+  /** The caller's own id, written to its store BEFORE sending, so a lost answer can be looked up
+   *  later. Given → used as is; else (stops only) the orderLinkIdPrefix-generated id. */
+  clientOrderId?: string;
 }
 
 interface ReplaceStopLossResult {
@@ -100,6 +103,26 @@ interface EnqueueClosePositionMarketArgs {
   amount: number;
   contextLabel: string;
   metadata?: Record<string, unknown>;
+  /** The caller's own id, written to its store BEFORE sending, so a lost answer can be looked up
+   *  later. Given → used as is; else (stops only) the orderLinkIdPrefix-generated id. */
+  clientOrderId?: string;
+}
+
+interface EnqueueOpenPositionMarketArgs {
+  positionId: string;
+  symbol: string;
+  direction: Direction;
+  amount: number;
+  contextLabel: string;
+  metadata?: Record<string, unknown>;
+  /** The caller's own id, written to its store BEFORE sending, so a lost answer can be looked up later. */
+  clientOrderId?: string;
+}
+
+interface OpenPositionMarketResult {
+  isSuccess: boolean;
+  orderId: string | null;
+  errorText: string | null;
 }
 
 interface ClosePositionMarketResult {
@@ -125,17 +148,27 @@ interface CreateTpSplitFanResult {
 
 interface CreateLimitOrderArgs {
   symbol: string;
+  /** The POSITION's direction — for a reduce-only order too (the close side is derived from it). */
   direction: Direction;
   amount: number;
   price: number;
   contextLabel: string;
   metadata?: Record<string, unknown>;
+  /** Default «до отмены» (GTC). */
+  timeInForce?: TimeInForceEnum;
+  /** True: a reduce-only closing limit (PositionManager.closePositionLimit); default — an opening one. */
+  isReduceOnly?: boolean;
+  /** The caller's own id, written to its store BEFORE sending, so a lost answer can be looked up
+   *  later. Given → used as is; else (stops only) the orderLinkIdPrefix-generated id. */
+  clientOrderId?: string;
 }
 
 interface CreateLimitOrderResult {
   isSuccess: boolean;
   orderId: string | null;
   errorText: string | null;
+  /** The exchange's refusal code when the order was refused (see isPostOnlyRejection). */
+  errorCode?: number | string | null;
 }
 
 interface MoveLimitOrderArgs {
@@ -147,6 +180,8 @@ interface MoveLimitOrderArgs {
   contextLabel: string;
   metadata?: Record<string, unknown>;
   onOldOrderConfirmed?: ConfirmedCallback;
+  timeInForce?: TimeInForceEnum;
+  isReduceOnly?: boolean;
 }
 
 interface MoveLimitOrderResult {
@@ -197,6 +232,8 @@ export type {
   OrderManagerDiagnostics,
   ReplaceStopLossArgs,
   ReplaceStopLossResult,
+  EnqueueOpenPositionMarketArgs,
+  OpenPositionMarketResult,
   EnqueueClosePositionMarketArgs,
   ClosePositionMarketResult,
   CreateTpSplitFanArgs,

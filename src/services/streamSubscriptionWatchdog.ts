@@ -14,6 +14,7 @@ import type {
 } from './streamSubscriptionWatchdog.types';
 
 import { logger } from '../core/logger';
+import { describeError } from '../utils/errorFormatter.utils';
 import { sleep } from '../utils/sleep';
 
 const DEFAULT_CHECK_INTERVAL_MS = 15_000;
@@ -312,7 +313,7 @@ export class StreamSubscriptionWatchdog {
 
       return result;
     } catch (error: unknown) {
-      const errorMessage = error instanceof Error ? error.message : String(error);
+      const errorMessage = describeError(error);
       logger.error({ error, key }, `${LOG_PREFIX} ${this.streamLabel} recover threw for ${key}`);
 
       return { key, status: 'failed', errorText: errorMessage };

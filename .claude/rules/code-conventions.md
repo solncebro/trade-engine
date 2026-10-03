@@ -56,6 +56,19 @@ logger.warn(`${symbol}: trigger ${formatPrice(symbol, recomputedPrice)}`); // "t
 Источник тиковой сетки ставится автоматически в `ExchangeConnector.initialize()`. Правило действует и в приложениях-потребителях библиотеки.
 
 
+### ⛔️ Текст ошибки — только через `describeError`
+
+Любое пойманное значение превращается в текст (лог, тревога, `errorText`) только помощником `describeError(error)` из `src/utils/errorFormatter.utils.ts` (экспортирован из пакета, 3.24.0). Своих копий — `const describeError = …`, `getErrorMessage`, встроенного `error instanceof Error ? error.message : String(error)` — не заводить ни в библиотеке, ни в приложениях-потребителях: до 3.24.0 таких копий было по одной на файл, и они расходились в мелочах (пустое сообщение, `null`). `describeExchangeRefusal` — то же чтение под именем для слов биржи.
+
+```typescript
+// Неправильно
+const errorText = error instanceof Error ? error.message : String(error);
+
+// Правильно
+import { describeError } from '@solncebro/trade-engine'; // внутри библиотеки — из '../utils/errorFormatter.utils'
+const errorText = describeError(error);
+```
+
 ### Ошибки — не исключения
 
 Торговые операции возвращают структурированный результат вместо throw:

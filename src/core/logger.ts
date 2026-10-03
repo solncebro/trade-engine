@@ -24,7 +24,8 @@ function buildLogtailIngestUrl(hostnameOrUrl: string): string {
 
 export function createLogger(args?: CreateLoggerArgs): Logger {
   const {
-    level = process.env.LOG_LEVEL ?? 'info',
+    // An empty LOG_LEVEL= line in .env is a common template leftover; pino refuses '' and the app dies at start.
+    level = process.env.LOG_LEVEL?.trim() || 'info',
     isConsoleEnabled = true,
     isFileEnabled = false,
     filePath = './logs/output.logs',

@@ -24,7 +24,7 @@
 
 ### 1. Транспортный слой (получение сигналов)
 
-- **TelegramMessageListener** — MTProto-клиент (`telegram` lib), слушает сообщения в каналах. Extends `EventEmitter`, поддерживает множественные обработчики.
+- **TelegramMessageListener** — устаревшая обёртка над `createUserClient` из `@solncebro/telegram-engine` (3.24.0), слушает сообщения в каналах. Extends `EventEmitter`, поддерживает множественные обработчики. Новый код — `createUserClient` напрямую.
 - **WebSocket** — внешний WS-сервер отправляет `TestMessage` с полями `{sendTime, scrapedTime, sourceTime, source, title, id}`.
 - Отдельного standalone-эмулятора `websocketEmulator.utils.ts` в библиотеке больше нет — он принадлежал приложению-потребителю и был удалён; вместе с ним из зависимостей убраны `ws`/`@types/ws`.
 
@@ -59,7 +59,7 @@
 
 ### 3. Коннекторы бирж
 
-**ExchangeConnector** — обёртка над `@solncebro/exchange-engine` `>=0.22.0 <1.0.0` (из реестра npm, диапазон — с 3.21.0):
+**ExchangeConnector** — обёртка над `@solncebro/exchange-engine` `>=0.26.0 <1.0.0` (из реестра npm, диапазон — с 3.21.0, нижняя граница 0.26.0 — с 3.24.0):
 
 | Компонент | Детали |
 |-----------|--------|
@@ -78,7 +78,7 @@
 
 ### 4. Интеграции
 
-- **TelegramNotifier** — Telegraf-бот для отправки уведомлений и регистрации команд
+- **TelegramNotifier** — бот уведомлений и команд, собранный из деталей `@solncebro/telegram-engine` (3.24.0: весь Telegram пакета — через telegram-engine, прямых импортов `telegraf`/`telegram` нет)
 - **TelegramCommandHandler<T>** — обработчик команд с типизированными настройками (boolean/numeric)
 - **FirebaseServiceBase<T>** — базовый класс Firestore CRUD с real-time подпиской через `onSnapshot()`
 

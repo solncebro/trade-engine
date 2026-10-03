@@ -49,9 +49,16 @@ jest.mock('@solncebro/exchange-engine', () => {
         ),
         setLeverage: jest.fn().mockImplementation(async (leverage: number) => ({ confirmedLeverage: leverage })),
         setMarginMode: jest.fn().mockResolvedValue(undefined),
+        setPositionMode: jest.fn().mockResolvedValue(undefined),
+        fetchPositionMode: jest.fn().mockResolvedValue(undefined),
         fetchPositionSnapshot: jest.fn().mockResolvedValue(null),
         fetchPositionList: jest.fn().mockResolvedValue([]),
         fetchAllPositions: jest.fn().mockResolvedValue([]),
+        getOrder: jest.fn().mockResolvedValue({ id: 'oid', symbol: 'BTCUSDT', status: 'open' }),
+        getOrderByClientOrderId: jest.fn().mockResolvedValue({ id: 'oid', symbol: 'BTCUSDT', status: 'open' }),
+        fetchOpenOrders: jest.fn().mockResolvedValue([]),
+        fetchOpenConditionalOrders: jest.fn().mockResolvedValue([]),
+        fetchFeeRate: jest.fn().mockResolvedValue([]),
       },
       spot: {
         amountToPrecision: (_s: string, a: number) => a,
@@ -69,6 +76,11 @@ jest.mock('@solncebro/exchange-engine', () => {
         modifyBatchOrders: jest.fn().mockImplementation(async (orderList: Array<{ orderId: string }>) =>
           orderList.map(({ orderId }) => ({ orderId, isSuccess: true, errorCode: null, errorText: null }))
         ),
+        getOrder: jest.fn().mockResolvedValue({ id: 'oid', symbol: 'BTCUSDT', status: 'open' }),
+        getOrderByClientOrderId: jest.fn().mockResolvedValue({ id: 'oid', symbol: 'BTCUSDT', status: 'open' }),
+        fetchOpenOrders: jest.fn().mockResolvedValue([]),
+        fetchOpenConditionalOrders: jest.fn().mockResolvedValue([]),
+        fetchFeeRate: jest.fn().mockResolvedValue([]),
       },
       close: jest.fn(),
     })),
@@ -809,6 +821,41 @@ describe('PositionManager — setup helpers', () => {
   });
 });
 
+describe('PositionManager — position mode', () => {
+  it('setPositionMode switches the account, then orders carry the position side', async () => {
+    const conn = createConnector(ExchangeNameEnum.Binance, PositionModeEnum.OneWay);
+    const setModeSpy = conn.futures.setPositionMode as jest.Mock;
+    const openArgs = { symbol: 'BTCUSDT', marketType: MarketTypeEnum.Futures, direction: 'short' as const, amount: 1 };
+
+    const before = await conn.positionManager.openPositionMarket(openArgs);
+
+    expect(before.actualExchangeParams?.positionSide).toBeUndefined();
+
+    await conn.positionManager.setPositionMode({ mode: PositionModeEnum.Hedge });
+    const after = await conn.positionManager.openPositionMarket(openArgs);
+
+    expect(setModeSpy).toHaveBeenCalledWith(PositionModeEnum.Hedge);
+    expect(conn.futuresPositionMode).toBe(PositionModeEnum.Hedge);
+    expect(after.actualExchangeParams?.positionSide).toBe(PositionSideEnum.Short);
+  });
+
+  it('a refused switch keeps the old mode', async () => {
+    const conn = createConnector(ExchangeNameEnum.Bybit, PositionModeEnum.OneWay);
+    (conn.futures.setPositionMode as jest.Mock).mockRejectedValueOnce(new Error('position exists'));
+
+    await expect(conn.positionManager.setPositionMode({ mode: PositionModeEnum.Hedge })).rejects.toThrow('position exists');
+    expect(conn.futuresPositionMode).toBe(PositionModeEnum.OneWay);
+  });
+
+  it('readPositionMode passes the exchange answer through, undefined included', async () => {
+    const conn = createConnector(ExchangeNameEnum.Bybit, PositionModeEnum.OneWay);
+    (conn.futures.fetchPositionMode as jest.Mock).mockResolvedValueOnce(PositionModeEnum.Hedge);
+
+    expect(await conn.positionManager.readPositionMode()).toBe(PositionModeEnum.Hedge);
+    expect(await conn.positionManager.readPositionMode()).toBeUndefined();
+  });
+});
+
 describe('PositionManager — cancel routing', () => {
   it('cancelOrder routes to spot client for marketType=Spot', async () => {
     const conn = createConnector(ExchangeNameEnum.Bybit, PositionModeEnum.OneWay);
@@ -1354,5 +1401,143 @@ describe('PositionManager — readAllPositions', () => {
     await expect(
       conn.positionManager.readAllPositions({ marketType: MarketTypeEnum.Futures }),
     ).rejects.toThrow('rate limit');
+  });
+});
+
+describe('PositionManager — readOpenOrderList', () => {
+  it('futures: merges plain + conditional, filters conditional by symbol, dedupes by id', async () => {
+    const conn = createConnector(ExchangeNameEnum.Bybit, PositionModeEnum.OneWay);
+    (conn.futures.fetchOpenOrders as jest.Mock).mockResolvedValueOnce([
+      { id: 'o1', symbol: 'BTCUSDT', status: 'open' },
+      { id: 'o2', symbol: 'BTCUSDT', status: 'open' },
+    ]);
+    (conn.futures.fetchOpenConditionalOrders as jest.Mock).mockResolvedValueOnce([
+      { id: 'o2', symbol: 'BTCUSDT', status: 'open', isConditional: true },
+      { id: 'o3', symbol: 'BTCUSDT', status: 'open', isConditional: true },
+      { id: 'o4', symbol: 'ETHUSDT', status: 'open', isConditional: true },
+    ]);
+
+    const result = await conn.positionManager.readOpenOrderList({
+      symbol: 'BTCUSDT',
+      marketType: MarketTypeEnum.Futures,
+    });
+
+    expect(conn.futures.fetchOpenConditionalOrders).toHaveBeenCalledWith('USDT');
+    expect(result.map(order => order.id).sort()).toEqual(['o1', 'o2', 'o3']);
+  });
+
+  it('spot: calls only fetchOpenOrders', async () => {
+    const conn = createConnector(ExchangeNameEnum.Bybit, PositionModeEnum.OneWay);
+    (conn.spot.fetchOpenOrders as jest.Mock).mockResolvedValueOnce([
+      { id: 'o1', symbol: 'BTCUSDT', status: 'open' },
+    ]);
+
+    const result = await conn.positionManager.readOpenOrderList({
+      symbol: 'BTCUSDT',
+      marketType: MarketTypeEnum.Spot,
+    });
+
+    expect(result).toHaveLength(1);
+    expect(conn.spot.fetchOpenConditionalOrders).not.toHaveBeenCalled();
+  });
+
+  it('rethrows on a failing fetch', async () => {
+    const conn = createConnector(ExchangeNameEnum.Bybit, PositionModeEnum.OneWay);
+    (conn.futures.fetchOpenOrders as jest.Mock).mockRejectedValueOnce(new Error('network error'));
+
+    await expect(
+      conn.positionManager.readOpenOrderList({ symbol: 'BTCUSDT', marketType: MarketTypeEnum.Futures }),
+    ).rejects.toThrow('network error');
+  });
+});
+
+describe('PositionManager — readOrder / readOrderByClientOrderId', () => {
+  it('readOrder passes args through and returns the order', async () => {
+    const conn = createConnector(ExchangeNameEnum.Bybit, PositionModeEnum.OneWay);
+    (conn.futures.getOrder as jest.Mock).mockResolvedValueOnce({ id: 'oid-1', symbol: 'BTCUSDT', status: 'closed' });
+
+    const result = await conn.positionManager.readOrder({
+      symbol: 'BTCUSDT',
+      marketType: MarketTypeEnum.Futures,
+      orderId: 'oid-1',
+    });
+
+    expect(conn.futures.getOrder).toHaveBeenCalledWith('BTCUSDT', 'oid-1');
+    expect(result.id).toBe('oid-1');
+  });
+
+  it('readOrder rethrows on failure', async () => {
+    const conn = createConnector(ExchangeNameEnum.Bybit, PositionModeEnum.OneWay);
+    (conn.futures.getOrder as jest.Mock).mockRejectedValueOnce(new Error('not found'));
+
+    await expect(
+      conn.positionManager.readOrder({ symbol: 'BTCUSDT', marketType: MarketTypeEnum.Futures, orderId: 'oid-1' }),
+    ).rejects.toThrow('not found');
+  });
+
+  it('readOrderByClientOrderId passes args through and returns the order', async () => {
+    const conn = createConnector(ExchangeNameEnum.Bybit, PositionModeEnum.OneWay);
+    (conn.futures.getOrderByClientOrderId as jest.Mock).mockResolvedValueOnce({ id: 'oid-2', symbol: 'BTCUSDT', status: 'open' });
+
+    const result = await conn.positionManager.readOrderByClientOrderId({
+      symbol: 'BTCUSDT',
+      marketType: MarketTypeEnum.Futures,
+      clientOrderId: 'cid-1',
+    });
+
+    expect(conn.futures.getOrderByClientOrderId).toHaveBeenCalledWith('BTCUSDT', 'cid-1');
+    expect(result.id).toBe('oid-2');
+  });
+
+  it('readOrderByClientOrderId rethrows on failure', async () => {
+    const conn = createConnector(ExchangeNameEnum.Bybit, PositionModeEnum.OneWay);
+    (conn.futures.getOrderByClientOrderId as jest.Mock).mockRejectedValueOnce(new Error('not found'));
+
+    await expect(
+      conn.positionManager.readOrderByClientOrderId({ symbol: 'BTCUSDT', marketType: MarketTypeEnum.Futures, clientOrderId: 'cid-1' }),
+    ).rejects.toThrow('not found');
+  });
+});
+
+describe('PositionManager — readFeeRate', () => {
+  it('converts exchange fractions to percent', async () => {
+    const conn = createConnector(ExchangeNameEnum.Bybit, PositionModeEnum.OneWay);
+    (conn.futures.fetchFeeRate as jest.Mock).mockResolvedValueOnce([
+      { symbol: 'BTCUSDT', makerRate: 0.0002, takerRate: 0.00055 },
+    ]);
+
+    const result = await conn.positionManager.readFeeRate({ symbol: 'BTCUSDT', marketType: MarketTypeEnum.Futures });
+
+    expect(result).toEqual({ makerPercent: 0.02, takerPercent: 0.055 });
+  });
+
+  it('picks the item matching the requested symbol', async () => {
+    const conn = createConnector(ExchangeNameEnum.Bybit, PositionModeEnum.OneWay);
+    (conn.futures.fetchFeeRate as jest.Mock).mockResolvedValueOnce([
+      { symbol: 'ETHUSDT', makerRate: 0.0001, takerRate: 0.0001 },
+      { symbol: 'BTCUSDT', makerRate: 0.0002, takerRate: 0.0004 },
+    ]);
+
+    const result = await conn.positionManager.readFeeRate({ symbol: 'BTCUSDT', marketType: MarketTypeEnum.Futures });
+
+    expect(result).toEqual({ makerPercent: 0.02, takerPercent: 0.04 });
+  });
+
+  it('returns null on an empty list', async () => {
+    const conn = createConnector(ExchangeNameEnum.Bybit, PositionModeEnum.OneWay);
+    (conn.futures.fetchFeeRate as jest.Mock).mockResolvedValueOnce([]);
+
+    const result = await conn.positionManager.readFeeRate({ symbol: 'BTCUSDT', marketType: MarketTypeEnum.Futures });
+
+    expect(result).toBeNull();
+  });
+
+  it('returns null when the fetch throws', async () => {
+    const conn = createConnector(ExchangeNameEnum.Bybit, PositionModeEnum.OneWay);
+    (conn.futures.fetchFeeRate as jest.Mock).mockRejectedValueOnce(new Error('network error'));
+
+    const result = await conn.positionManager.readFeeRate({ symbol: 'BTCUSDT', marketType: MarketTypeEnum.Futures });
+
+    expect(result).toBeNull();
   });
 });

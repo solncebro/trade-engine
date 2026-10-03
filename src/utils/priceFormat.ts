@@ -1,3 +1,5 @@
+import type { StepRounding } from '@solncebro/exchange-engine';
+
 /**
  * THE single door every price number goes through before a human sees it — Telegram messages, health
  * alerts, log lines, journal rows, anything.
@@ -11,8 +13,11 @@
  * connector (backtest, tooling) can install its own snapper via `configurePriceTickSnapper`.
  */
 
-/** Puts a price onto the symbol's tick grid. Returns the input unchanged for an unknown symbol. */
-type PriceTickSnapper = (symbol: string, price: number) => number;
+/**
+ * Puts a price onto the symbol's tick grid in the given direction. Returns the input unchanged for an
+ * unknown symbol.
+ */
+type PriceTickSnapper = (symbol: string, price: number, rounding: StepRounding) => number;
 
 /**
  * Digit cap for a price that could NOT be snapped (no snapper configured, symbol filters not loaded,
@@ -35,17 +40,18 @@ function configurePriceTickSnapper(snapper: PriceTickSnapper | null): void {
 }
 
 /**
- * The price as the exchange would hold it. An unknown symbol, an unconfigured or a throwing snapper
+ * The price as the exchange would hold it (`rounding`: closest tick, the tick at or above, or at or
+ * below — one rounding for every direction, none of it lives here). An unknown symbol, an unconfigured or a throwing snapper
  * keeps the input: an approximate-but-readable number is never worth breaking a message — or an order
  * path — over.
  */
-function snapPriceToTick(symbol: string, price: number): number {
+function snapPriceToTick(symbol: string, price: number, rounding: StepRounding = 'nearest'): number {
   if (tickSnapper === null || !Number.isFinite(price)) {
     return price;
   }
 
   try {
-    const snapped = tickSnapper(symbol, price);
+    const snapped = tickSnapper(symbol, price, rounding);
 
     return Number.isFinite(snapped) ? snapped : price;
   } catch {

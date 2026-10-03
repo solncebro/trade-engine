@@ -1,4 +1,4 @@
-import { sliceAskVolumeWithinBand } from '../src/utils/orderBookSlice';
+import { sliceAskVolumeWithinBand, sliceBookVolumeWithinBand } from '../src/utils/orderBookSlice';
 
 const ASK_LIST = [
   { price: 100, quantity: 10 },
@@ -76,5 +76,73 @@ describe('sliceAskVolumeWithinBand', () => {
 
     expect(slice.qty).toBe(4);
     expect(slice.levelCount).toBe(1);
+  });
+});
+
+describe('sliceBookVolumeWithinBand', () => {
+  const BID_LIST = [
+    { price: 100, quantity: 10 },
+    { price: 99.8, quantity: 20 },
+    { price: 99.5, quantity: 30 },
+    { price: 99, quantity: 40 },
+  ];
+
+  it('walks the ask side upwards exactly like the ask-only slice', () => {
+    const universal = sliceBookVolumeWithinBand({ side: 'ask', levelList: ASK_LIST, referencePrice: 100, bandPercent: 0.5, remainingQty: 1_000 });
+    const askOnly = sliceAskVolumeWithinBand({ askList: ASK_LIST, referencePrice: 100, bandPercent: 0.5, remainingQty: 1_000 });
+
+    expect(universal.qty).toBe(askOnly.qty);
+    expect(universal.levelCount).toBe(askOnly.levelCount);
+    expect(universal.bestPrice).toBe(askOnly.bestAskPrice);
+    expect(universal.boundaryPrice).toBeCloseTo(askOnly.boundaryPrice, 9);
+  });
+
+  it('walks the bid side downwards to a boundary below the reference', () => {
+    // 100 × 0.995 = 99.5 — the 99.5 level still belongs, the 99 level does not.
+    const slice = sliceBookVolumeWithinBand({ side: 'bid', levelList: BID_LIST, referencePrice: 100, bandPercent: 0.5, remainingQty: 1_000 });
+
+    expect(slice.qty).toBe(60);
+    expect(slice.levelCount).toBe(3);
+    expect(slice.bestPrice).toBe(100);
+    expect(slice.isBeyondBand).toBe(false);
+    expect(slice.boundaryPrice).toBeCloseTo(99.5, 9);
+  });
+
+  it('anchors the bid band to the reference, not to the current best bid', () => {
+    const bidList = [
+      { price: 99.7, quantity: 5 },
+      { price: 99.5, quantity: 7 },
+      { price: 99.4, quantity: 9 },
+    ];
+    const slice = sliceBookVolumeWithinBand({ side: 'bid', levelList: bidList, referencePrice: 100, bandPercent: 0.5, remainingQty: 1_000 });
+
+    expect(slice.qty).toBe(12);
+    expect(slice.levelCount).toBe(2);
+  });
+
+  it('reports a bid side that fell below the band', () => {
+    const slice = sliceBookVolumeWithinBand({ side: 'bid', levelList: [{ price: 99.4, quantity: 50 }], referencePrice: 100, bandPercent: 0.5, remainingQty: 1_000 });
+
+    expect(slice).toMatchObject({ qty: 0, isBeyondBand: true, bestPrice: 99.4, levelCount: 0 });
+  });
+
+  it('never exceeds the remainder on the bid side and skips empty levels', () => {
+    const bidList = [
+      { price: 100, quantity: 0 },
+      { price: 99.9, quantity: 4 },
+      { price: 99.8, quantity: 40 },
+    ];
+    const slice = sliceBookVolumeWithinBand({ side: 'bid', levelList: bidList, referencePrice: 100, bandPercent: 0.5, remainingQty: 10 });
+
+    expect(slice.qty).toBe(10);
+    expect(slice.levelCount).toBe(2);
+  });
+
+  it('returns an empty slice on an empty side or a non-positive input, for both sides', () => {
+    for (const side of ['ask', 'bid'] as const) {
+      expect(sliceBookVolumeWithinBand({ side, levelList: [], referencePrice: 100, bandPercent: 0.5, remainingQty: 10 })).toMatchObject({ qty: 0, bestPrice: null, isBeyondBand: false });
+      expect(sliceBookVolumeWithinBand({ side, levelList: BID_LIST, referencePrice: 0, bandPercent: 0.5, remainingQty: 10 }).qty).toBe(0);
+      expect(sliceBookVolumeWithinBand({ side, levelList: BID_LIST, referencePrice: 100, bandPercent: 0.5, remainingQty: 0 }).qty).toBe(0);
+    }
   });
 });

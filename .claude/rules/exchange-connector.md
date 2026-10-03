@@ -15,7 +15,7 @@
 
 ## Зависимость
 
-Использует `@solncebro/exchange-engine` `>=0.22.0 <1.0.0` (из реестра npm; открытый диапазон вместо точной версии — с 3.21.0, чтобы в дереве потребителя не заводилось второй копии слоя связи). Все низкоуровневые операции делегируются этой библиотеке. **Прямые импорты из `@solncebro/exchange-engine` сторонними потребителями запрещены** — единая точка входа `@solncebro/trade-engine`.
+Использует `@solncebro/exchange-engine` `>=0.26.0 <1.0.0` (с 3.24.0: субсчета, обрыв и возврат личного потока, ступени плеча; из реестра npm; открытый диапазон вместо точной версии — с 3.21.0, чтобы в дереве потребителя не заводилось второй копии слоя связи). Все низкоуровневые операции делегируются этой библиотеке. **Прямые импорты из `@solncebro/exchange-engine` сторонними потребителями запрещены** — единая точка входа `@solncebro/trade-engine`.
 
 Начиная с exchange-engine 0.22.1 он объявляет `@solncebro/websocket-engine` `>=0.6.0 <1.0.0` одолженной (peer) зависимостью и собственной копии канала не заводит — trade-engine поэтому тоже объявляет `@solncebro/websocket-engine` прямой зависимостью (не импортирует его сам), чтобы в процессе потребителя канал всегда был ровно один.
 
@@ -45,7 +45,7 @@ await connector.initialize();
 
 Третий параметр `onNotify` — опциональный callback для получения критических уведомлений от биржи. Начиная с `exchange-engine` 0.9.0, обработчик CRITICAL-сообщений **не вызывает `process.exit(1)` автоматически** — потребитель должен реализовать собственную логику завершения при необходимости.
 
-Четвёртый параметр `futuresPositionMode` (по умолчанию `PositionModeEnum.OneWay`) задаёт режим для логики `positionSide` при создании **futures**-ордеров; значение доступно как публичное поле `connector.futuresPositionMode`.
+Четвёртый параметр `futuresPositionMode` (по умолчанию `PositionModeEnum.OneWay`) задаёт начальный режим для логики `positionSide` при создании **futures**-ордеров; текущее значение читается геттером `connector.futuresPositionMode` (3.24.0). Режим можно сменить во время работы: `PositionManager.setPositionMode({ mode })` переключает его на самой бирже и сразу же после этого — локально (сам вызывает `connector.adoptFuturesPositionMode(mode)`); `connector.adoptFuturesPositionMode(mode)` меняет только локальное значение, без обращения к бирже — им пользуются, когда режим уже известен (например прочитан при запуске через `PositionManager.readPositionMode()`).
 
 **Пятый параметр `klineWatchdogConfig`** (3.5.0, опционально, `KlineSubscriptionWatchdogConfig`) — настройки `KlineSubscriptionWatchdog`. Если задан, методы `subscribeKlines`/`unsubscribeKlines` оборачиваются Proxy для отслеживания timestamp каждой подписки. Default: `isEnabled: true`. См. `src/services/klineSubscriptionWatchdog.ts`.
 
@@ -127,6 +127,52 @@ connector.stopWatchingMarkPrices();  // отписка + очистка кэша
 
 Имена символов OKX не проходят через `normalizeSymbol` (в отличие от Bybit): `exchange-engine` уже склеивает части идентификатора инструмента в обычное имя (`BTC-USDT-SWAP` → `BTCUSDT`), разделителей в нём не бывает.
 
+## Разрешение символа из ввода человека (3.24.0)
+
+`parseRawSymbolInput(raw)` (src/utils/symbol.utils.ts) — «$pepe», «#BTC», «BTC/USDT», «BTCUSDT.P»,
+«PEPE/USDT:USDT», «1000PEPE» → `PEPEUSDT` и т. п.; без котировки дописывает USDT, пустой ввод → null.
+`normalizeSymbol` — другое: чистит разделители у имени, которое дала биржа.
+
+`resolveFuturesSymbol(raw)` / `resolveSpotSymbol(raw)` → `{ symbol, isFound }` (`ResolvedSymbol`):
+1. разбор ввода; 2. `waitForTickersReady(15 с)`; 3. `findSymbolWithPrefix` (как есть, затем 10…1000000 спереди);
+4. множитель ПОСЛЕ основы — у Bybit `SHIB1000USDT` (только здесь, `resolveSymbolWithPrefix` так не ищет);
+5. `ensureFuturesTradeSymbolLoaded` / `ensureSpotTradeSymbolLoaded` — спецификация, при нужде догрузка.
+`findSymbolWithPrefix` — промах = null; `resolveSymbolWithPrefix` — прежний: промах = предупреждение + исходное имя.
+
+## Готовность тикеров (3.24.0)
+
+`initialize()` запускает кэш тикеров без ожидания. `waitForTickersReady(timeoutMs = 30000, marketType = Futures)`
+ждёт первый снимок рынка; не бросает, `false` — не дождались (чтение упало, следующий круг через 30 с).
+
+## Коннектор без ключей (3.24.0)
+
+Пустой `apiKey` или `secret` — коннектор только для открытых рыночных данных. На бирже, где таблица ступеней
+плеча отдаётся лишь подписанным запросом (Binance), ступени не читаются вовсе (ни в `initialize()`, ни суточным
+кругом, ни догрузкой — `ensureFuturesLeverageTierListLoaded` → `false`), одна строка в лог уровня отладки.
+Bybit и OKX читают ступени без ключа.
+
+## Общие рыночные данные: главный счёт и субсчета (3.24.0)
+
+`follower.shareMarketDataFrom(primary)` — до `follower.initialize()`, главный инициализирован раньше.
+Та же биржа и тот же режим демо/боевой, цепочки запрещены (всё — исключение при вызове).
+Ведомый: копирует спецификации инструментов главного в свой клиент (по ним его округление цены и количества),
+тикеры читает из карты главного (та же `Map`), ступени плеча и их догрузку отдаёт главному, суточное обновление
+и опрос тикеров не запускает. Любая перезагрузка инструментов у главного (суточная, по требованию, вызванная
+ведомым) копируется всем ведомым. Своё у каждого: заявки, позиции, баланс, плечо/режим маржи, очередь записи,
+личный поток, стакан. `isMarketDataFollower()`. `disconnect()` ведомого снимает его с главного.
+
+## Личный поток счёта (3.24.0)
+
+`getUserDataStreamRouter(marketType = Futures)` — один `UserDataStreamRouter` на рынок коннектора.
+Подписать всех (`subscribe({ name, onOrderUpdate, onConnectionLost, onResyncRequired, ... })`), затем один `connect()`.
+Прямой `connector.futures.connectUserDataStream` вторым потребителем больше не звать.
+
+## Субсчета (3.24.0)
+
+`connector.subAccounts` — `SubAccountGateway` (ключ главного счёта): список, переводы в обе стороны с номером
+вызывающего, состояние перевода, остатки субсчёта; результаты вместо исключений; демо-режим и OKX → `isNotSupported`.
+База капитала «главный + субсчета» — `readCapitalBase`. Подробно — `services.md`, раздел «Субсчета».
+
 ## Заявки и позиции — в отдельном файле
 
 Создание ордеров, отличия OKX и методы `PositionManager` вынесены в [`exchange-connector-orders.md`](exchange-connector-orders.md) (см. таблицу «Детальная документация» вверху).
@@ -153,9 +199,18 @@ connector.stopWatchingMarkPrices();  // отписка + очистка кэша
 | `get spot` | `ExchangeClient` | Прямой доступ к spot-клиенту |
 | `get futures` | `ExchangeClient` | Прямой доступ к futures-клиенту |
 | `get positionManager` | `PositionManager` | Lazy-init высокоуровневый API ордеров и позиций (3.4.0) |
-| `futuresPositionMode` | `PositionModeEnum` | Режим позиций для futures (задаётся в конструкторе, по умолчанию `OneWay`) |
+| `get futuresPositionMode` | `PositionModeEnum` | Текущий режим позиций для futures (в конструкторе — начальное значение, по умолчанию `OneWay`; меняется `PositionManager.setPositionMode()` и `adoptFuturesPositionMode()`) (3.24.0) |
+| `adoptFuturesPositionMode(mode)` | `void` | Только локально принять режим без обращения к бирже — после того как биржа его уже подтвердила или как он был прочитан (3.24.0) |
 | `initialize()` | `Promise<void>` | Загрузка символов, старт тикеров |
 | `resolveSymbolWithPrefix(symbol, marketType)` | `string` | Поиск символа с префиксом |
+| `findSymbolWithPrefix(symbol, marketType)` | `string \| null` | То же, промах = null (3.24.0) |
+| `resolveFuturesSymbol(raw)` / `resolveSpotSymbol(raw)` | `Promise<ResolvedSymbol>` | Ввод человека/сигнала → имя на бирже `{ symbol, isFound }` (3.24.0) |
+| `waitForTickersReady(timeoutMs?, marketType?)` | `Promise<boolean>` | Ожидание первого снимка тикеров (3.24.0) |
+| `ensureSpotTradeSymbolLoaded(symbol)` | `Promise<boolean>` | Спецификация спотового символа, при нужде догрузка (3.24.0) |
+| `getFuturesOrderRules(symbol)` | `FuturesOrderRules \| null` | Сетка цены/объёма и пороги размера заявки (`{ symbol, tickSize, stepSize, minAmount, minNotionalUsd }`) для точки безубыточности с поправкой на комиссию и деления объёма на лоты; `null`, пока спецификация не загружена (`ensureFuturesTradeSymbolLoaded`) (3.24.0) |
+| `shareMarketDataFrom(primary)` / `isMarketDataFollower()` | `void` / `boolean` | Общие рыночные данные главного счёта и субсчетов (3.24.0) |
+| `getUserDataStreamRouter(marketType?)` | `UserDataStreamRouter` | Один личный поток на рынок (3.24.0) |
+| `get subAccounts` | `SubAccountGateway` | Субсчета главного счёта (3.24.0) |
 | `getTicker(symbol, marketType)` | `Ticker \| undefined` | Текущий тикер из кэша |
 | `startWatchingMarkPrices()` | `void` | Подписка на real-time mark price (idempotent) |
 | `stopWatchingMarkPrices()` | `void` | Отписка и очистка кэша mark price |

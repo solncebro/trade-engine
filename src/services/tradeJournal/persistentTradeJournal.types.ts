@@ -25,6 +25,13 @@ export interface TradeJournalSchema {
   event: TradeJournalEventSchema;
 }
 
+/** One sheet (tab) of the spreadsheet and the summary rows it shows — e.g. "Сделки" with every row and
+ *  one sheet per trader with that trader's rows. Missing sheets are created with the header. */
+export interface JournalSheetTarget {
+  sheetName: string;
+  shouldIncludeRow: (row: Record<string, unknown>) => boolean;
+}
+
 export interface PersistentTradeJournalConfig {
   schema: TradeJournalSchema;
   supabaseUrl: string | null;
@@ -35,6 +42,13 @@ export interface PersistentTradeJournalConfig {
   sheetSyncDebounceMs?: number;
   liveSheetMirror?: boolean;
   retryBaseDelayMs?: number;
+  /** JSONL file for rows the database did not take after every retry. With it nothing is lost across a
+   *  DB outage or a restart: failed summaries AND events land here and are replayed on `initialize()`
+   *  and after the next successful flush. Omitted/null: RAM only, as before — failed events are dropped. */
+  spoolFilePath?: string | null;
+  /** Named sheets for the live mirror, the reconcile and the full sync. Omitted/empty: the FIRST sheet
+   *  gets every row, as before. */
+  sheetTargetList?: JournalSheetTarget[];
 }
 
 export interface MarkOrphanedArgs {

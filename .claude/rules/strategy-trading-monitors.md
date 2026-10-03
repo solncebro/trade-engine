@@ -99,6 +99,8 @@ interface PnlConfig {
 
 **Отправка централизована в telegram-engine.** Все send/edit-reply-markup/delete сообщений идут через `createSender` из `@solncebro/telegram-engine` (поле `this.sender`, ленивый `getBot: () => this.botInstance?.bot`) — у `GenericPnlMonitor` нет своего отправителя и прямых `bot.telegram.sendMessage`. Алерты (`sendMessage`, profit/loss с inline-клавиатурой) шлются через `sender.sendMessage({ message, peer, useMarkdownV2, returnMessageId, replyMarkup })` с экранированием `escapeMarkdownV2WithFormatting`; снятие кнопок старого алерта — `sender.editMessageReplyMarkup`; удаление пользовательских сообщений — `sender.deleteMessage`. Прямой `bot.telegram` остаётся только у `setMyCommands` (регистрация команд) и у `resolveSurface` (telegram-хэндл отдаётся в `menuReplacer` telegram-engine).
 
+**Доступ (3.24.0).** Пускать ли обновление в бота, решает `createAccessGuard` + `createAccessControl({ allowedPeerList: [chatId], shouldAllowAllWhenEmpty: false })` из telegram-engine (поле `this.accessGuard`); первая промежуточная функция бота зовёт `accessGuard.isAllowedContext(ctx)`. `accessGuard.middleware` не используется: он сам ловит ошибки обработчиков, а они должны доходить до сторожа падений `createBot`, который шлёт в чат «⚠️ Oops …». Типы `Context` / `Telegraf` — из telegram-engine.
+
 `setupBot()` создаёт бота (через хук `createBotInstance` → `createBot`), регистрирует reply-кнопки `💠 Positions` / `✖️ Close menu` и трёхуровневое inline-меню. callback_data-префиксы:
 
 - **Level 1 (список):** `pnl_position_detail:{id}`, `pnl_eph_detail:{symbol}:{direction}`, `pnl_positions_back`, `pnl_positions_close`.

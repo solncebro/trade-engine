@@ -1,3 +1,7 @@
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+
 import { PersistentTradeJournal } from '../src/services/tradeJournal/persistentTradeJournal';
 import type { TradeJournalSchema } from '../src/services/tradeJournal/persistentTradeJournal.types';
 
@@ -9,18 +13,29 @@ jest.mock('@googleapis/sheets', () => ({
   sheets: () => ({}),
 }));
 
-const sheetWriteList: { call: string; recordList: Record<string, unknown>[] }[] = [];
+const sheetWriteList: { call: string; recordList: Record<string, unknown>[]; sheetName?: string }[] = [];
+const ensuredSheetNameList: (string | undefined)[] = [];
+const replacedSheetList: { sheetName: string; valueMatrix: (string | number)[][] }[] = [];
 
 jest.mock('../src/services/tradeJournal/sheetsSync', () => ({
   createSheetsClient: () => ({}),
   toSheetsSerialDate: (timestampMs: number) => timestampMs,
-  ensureSheetHeader: async () => true,
-  ensureDateColumnFormat: async () => {},
-  syncRecordListToSheet: async (args: { recordList: Record<string, unknown>[] }) => {
-    sheetWriteList.push({ call: 'sync', recordList: args.recordList });
+  ensureSheetHeader: async (args: { sheetName?: string }) => {
+    ensuredSheetNameList.push(args.sheetName);
+
+    return true;
   },
-  fullReplaceSheet: async (args: { recordList: Record<string, unknown>[] }) => {
-    sheetWriteList.push({ call: 'full', recordList: args.recordList });
+  ensureDateColumnFormat: async () => {},
+  syncRecordListToSheet: async (args: { recordList: Record<string, unknown>[]; sheetName?: string }) => {
+    sheetWriteList.push({ call: 'sync', recordList: args.recordList, sheetName: args.sheetName });
+  },
+  fullReplaceSheet: async (args: { recordList: Record<string, unknown>[]; sheetName?: string }) => {
+    sheetWriteList.push({ call: 'full', recordList: args.recordList, sheetName: args.sheetName });
+  },
+  replaceSheetValues: async (args: { sheetName: string; valueMatrix: (string | number)[][] }) => {
+    replacedSheetList.push({ sheetName: args.sheetName, valueMatrix: args.valueMatrix });
+
+    return true;
   },
 }));
 
@@ -635,5 +650,300 @@ describe('PersistentTradeJournal one-shot retry', () => {
     mockControl.failInserts = 0;
 
     await expect(journal.selectRows({ table: 'test_rungs', match: { id: 'R1' } })).resolves.toHaveLength(0);
+  });
+});
+
+describe('PersistentTradeJournal on-disk spool', () => {
+  let spoolDirectory: string;
+  let spoolFilePath: string;
+
+  function createSpooledJournal(): PersistentTradeJournal {
+    return new PersistentTradeJournal({
+      schema: TEST_SCHEMA,
+      supabaseUrl: 'https://example.supabase.co',
+      supabaseServiceKey: 'service_key',
+      googleSheetsSpreadsheetId: null,
+      googleSheetsCredentialsPath: null,
+      retryBaseDelayMs: 1,
+      spoolFilePath,
+    });
+  }
+
+  function readSpoolLineList(): Record<string, unknown>[] {
+    if (!existsSync(spoolFilePath)) {
+      return [];
+    }
+
+    return readFileSync(spoolFilePath, 'utf8').split('\n').filter((line) => line !== '').map((line) => JSON.parse(line) as Record<string, unknown>);
+  }
+
+  beforeEach(() => {
+    mockTableByName.clear();
+    mockControl.failUpserts = 0;
+    mockControl.failInserts = 0;
+    mockControl.failSelects = 0;
+    spoolDirectory = mkdtempSync(path.join(tmpdir(), 'journal-spool-'));
+    spoolFilePath = path.join(spoolDirectory, 'nested', 'journal.jsonl');
+  });
+
+  afterEach(() => {
+    rmSync(spoolDirectory, { recursive: true, force: true });
+  });
+
+  it('keeps a failed summary AND its events on disk instead of dropping them, then replays on the next successful flush', async () => {
+    const journal = createSpooledJournal();
+    await journal.initialize();
+    mockControl.failUpserts = 99;
+    mockControl.failInserts = 99;
+
+    journal.putSummary('T', { id: 'T', symbol: 'BTCUSDT', status: 'open', mode: 'paper' });
+    journal.enqueueEvent('T', { trade_id: 'T', event_type: 'open' });
+    journal.enqueueEvent('T', { trade_id: 'T', event_type: 'sl_armed' });
+    await journal.shutdown();
+
+    expect(tradesTable()).toHaveLength(0);
+    expect(eventsTable()).toHaveLength(0);
+    expect(readSpoolLineList().map((line) => line.kind)).toEqual(['summary', 'event', 'event']);
+
+    mockControl.failUpserts = 0;
+    mockControl.failInserts = 0;
+    await journal.shutdown();
+
+    expect(tradesTable()).toHaveLength(1);
+    expect(eventsTable().map((row) => [row.event_type, row.seq])).toEqual([['open', 1], ['sl_armed', 2]]);
+    expect(existsSync(spoolFilePath)).toBe(false);
+  });
+
+  it('survives a restart: a new process replays the spool on initialize()', async () => {
+    const firstRun = createSpooledJournal();
+    await firstRun.initialize();
+    mockControl.failUpserts = 99;
+    mockControl.failInserts = 99;
+
+    firstRun.putSummary('T', { id: 'T', symbol: 'BTCUSDT', status: 'closed', mode: 'paper' });
+    firstRun.enqueueEvent('T', { trade_id: 'T', event_type: 'closed' });
+    await firstRun.shutdown();
+
+    mockControl.failUpserts = 0;
+    mockControl.failInserts = 0;
+
+    const secondRun = createSpooledJournal();
+    await secondRun.initialize();
+
+    expect(tradesTable()[0].status).toBe('closed');
+    expect(eventsTable()).toHaveLength(1);
+    expect(existsSync(spoolFilePath)).toBe(false);
+
+    await secondRun.shutdown();
+  });
+
+  it('does not duplicate an event whose insert landed but whose answer was lost', async () => {
+    mockTableByName.set('test_events', [{ trade_id: 'T', seq: 1, event_type: 'open' }]);
+    spoolFilePath = path.join(spoolDirectory, 'journal.jsonl');
+    writeFileSync(spoolFilePath, [
+      JSON.stringify({ kind: 'event', tradeKey: 'T', row: { trade_id: 'T', seq: 1, event_type: 'open' } }),
+      JSON.stringify({ kind: 'event', tradeKey: 'T', row: { trade_id: 'T', seq: 2, event_type: 'closed' } }),
+      '',
+    ].join('\n'));
+
+    const journal = createSpooledJournal();
+    await journal.initialize();
+
+    expect(eventsTable().map((row) => row.seq)).toEqual([1, 2]);
+    await journal.shutdown();
+  });
+
+  it('skips a torn last line left by a crash mid-write and replays the rest', async () => {
+    spoolFilePath = path.join(spoolDirectory, 'journal.jsonl');
+    writeFileSync(spoolFilePath, `${JSON.stringify({ kind: 'summary', key: 'T', row: { id: 'T', status: 'open' } })}\n{"kind":"eve`);
+
+    const journal = createSpooledJournal();
+    await journal.initialize();
+
+    expect(tradesTable()).toHaveLength(1);
+    expect(existsSync(spoolFilePath)).toBe(false);
+    await journal.shutdown();
+  });
+
+  it('continues the event seq from the spool when the database is still down at startup', async () => {
+    spoolFilePath = path.join(spoolDirectory, 'journal.jsonl');
+    writeFileSync(spoolFilePath, `${JSON.stringify({ kind: 'event', tradeKey: 'T', row: { trade_id: 'T', seq: 2, event_type: 'sl_armed' } })}\n`);
+    mockControl.failInserts = 99;
+    mockControl.failSelects = 99;
+
+    const journal = createSpooledJournal();
+    await journal.initialize();
+
+    journal.enqueueEvent('T', { trade_id: 'T', event_type: 'closed' });
+    await journal.shutdown();
+
+    expect(readSpoolLineList().map((line) => (line.row as Record<string, unknown>).seq)).toEqual([2, 3]);
+
+    mockControl.failInserts = 0;
+    mockControl.failSelects = 0;
+    await journal.shutdown();
+
+    expect(eventsTable().map((row) => row.seq)).toEqual([2, 3]);
+  });
+
+  // The spool copy is what the database refused; a later patch in RAM is newer and must win.
+  it('never writes an older spooled summary over a newer one in RAM', async () => {
+    const journal = createSpooledJournal();
+    await journal.initialize();
+    mockControl.failUpserts = 99;
+
+    journal.putSummary('T', { id: 'T', symbol: 'BTCUSDT', status: 'open', mode: 'paper' });
+    await journal.shutdown();
+
+    mockControl.failUpserts = 0;
+    journal.patchSummary('T', { status: 'tp_hit' });
+    await journal.shutdown();
+
+    expect(tradesTable()).toHaveLength(1);
+    expect(tradesTable()[0].status).toBe('tp_hit');
+  });
+
+  it('rehydrates a resumed trade from the spool when its newest version never reached the database', async () => {
+    mockTableByName.set('test_trades', [{ id: 'T', symbol: 'BTCUSDT', status: 'open', mode: 'paper' }]);
+    spoolFilePath = path.join(spoolDirectory, 'journal.jsonl');
+    writeFileSync(spoolFilePath, `${JSON.stringify({ kind: 'summary', key: 'T', row: { id: 'T', symbol: 'BTCUSDT', status: 'tp_hit', mode: 'paper' } })}\n`);
+    mockControl.failUpserts = 99;
+
+    const journal = createSpooledJournal();
+    await journal.initialize();
+    await journal.rehydrateSummaries(['T']);
+
+    expect(journal.getSummary('T')?.status).toBe('tp_hit');
+
+    mockControl.failUpserts = 0;
+    await journal.shutdown();
+
+    expect(tradesTable()[0].status).toBe('tp_hit');
+  });
+
+  it('keeps only the events on disk when the summaries replayed but the events did not', async () => {
+    const journal = createSpooledJournal();
+    await journal.initialize();
+    mockControl.failUpserts = 99;
+    mockControl.failInserts = 99;
+
+    journal.putSummary('T', { id: 'T', symbol: 'BTCUSDT', status: 'open', mode: 'paper' });
+    journal.enqueueEvent('T', { trade_id: 'T', event_type: 'open' });
+    await journal.shutdown();
+
+    mockControl.failUpserts = 0;
+    await journal.shutdown();
+
+    expect(tradesTable()).toHaveLength(1);
+    expect(readSpoolLineList().map((line) => line.kind)).toEqual(['event']);
+
+    mockControl.failInserts = 0;
+    await journal.shutdown();
+
+    expect(eventsTable()).toHaveLength(1);
+    expect(existsSync(spoolFilePath)).toBe(false);
+  });
+
+  it('exposes its Supabase client for Storage uploads', () => {
+    expect(createSpooledJournal().getSupabaseClient()).not.toBeNull();
+    expect(createJournal(false).getSupabaseClient()).toBeNull();
+  });
+});
+
+describe('PersistentTradeJournal named sheet targets', () => {
+  beforeEach(() => {
+    mockTableByName.clear();
+    mockControl.failUpserts = 0;
+    mockControl.failInserts = 0;
+    mockControl.failSelects = 0;
+    sheetWriteList.length = 0;
+    ensuredSheetNameList.length = 0;
+    replacedSheetList.length = 0;
+  });
+
+  function createTargetedJournal(): PersistentTradeJournal {
+    return new PersistentTradeJournal({
+      schema: TEST_SCHEMA,
+      supabaseUrl: 'https://example.supabase.co',
+      supabaseServiceKey: 'service_key',
+      googleSheetsSpreadsheetId: 'sheet-1',
+      googleSheetsCredentialsPath: '/tmp/credentials.json',
+      retryBaseDelayMs: 1,
+      liveSheetMirror: true,
+      sheetTargetList: [
+        { sheetName: 'Сделки', shouldIncludeRow: () => true },
+        { sheetName: 'Иван', shouldIncludeRow: (row) => row.trader === 'Иван' },
+        { sheetName: 'Пётр', shouldIncludeRow: (row) => row.trader === 'Пётр' },
+      ],
+    });
+  }
+
+  it('prepares every target sheet at startup', async () => {
+    const journal = createTargetedJournal();
+    await journal.initialize();
+    await journal.shutdown();
+
+    expect(ensuredSheetNameList).toEqual(['Сделки', 'Иван', 'Пётр']);
+  });
+
+  it('mirrors each row into the main sheet and its own trader sheet only', async () => {
+    const journal = createTargetedJournal();
+    await journal.initialize();
+
+    journal.putSummary('A', { id: 'A', trader: 'Иван', status: 'closed' });
+    await journal.shutdown();
+
+    expect(sheetWriteList.map((write) => [write.sheetName, write.recordList.map((row) => row.id)])).toEqual([
+      ['Сделки', ['A']],
+      ['Иван', ['A']],
+    ]);
+  });
+
+  it('full sync rewrites every target, an empty one included', async () => {
+    const journal = createTargetedJournal();
+    await journal.initialize();
+    await journal.insertRow('test_trades', { id: 'A', trader: 'Иван', updated_at: 1 });
+
+    await journal.fullSyncToSheet();
+    await journal.shutdown();
+
+    expect(sheetWriteList.filter((write) => write.call === 'full').map((write) => [write.sheetName, write.recordList.length])).toEqual([
+      ['Сделки', 1],
+      ['Иван', 1],
+      ['Пётр', 0],
+    ]);
+  });
+
+  it('writes a summary sheet through replaceNamedSheet', async () => {
+    const journal = createTargetedJournal();
+    await journal.initialize();
+
+    await expect(journal.replaceNamedSheet('Сводка', [['Трейдер', 'Сделок'], ['Иван', 1]])).resolves.toBe(true);
+    await journal.shutdown();
+
+    expect(replacedSheetList).toEqual([{ sheetName: 'Сводка', valueMatrix: [['Трейдер', 'Сделок'], ['Иван', 1]] }]);
+  });
+
+  it('replaceNamedSheet reports false when the Sheets channel is off', async () => {
+    await expect(createJournal().replaceNamedSheet('Сводка', [['x']])).resolves.toBe(false);
+  });
+
+  it('keeps the first-sheet behaviour when no targets are configured', async () => {
+    const journal = new PersistentTradeJournal({
+      schema: TEST_SCHEMA,
+      supabaseUrl: 'https://example.supabase.co',
+      supabaseServiceKey: 'service_key',
+      googleSheetsSpreadsheetId: 'sheet-1',
+      googleSheetsCredentialsPath: '/tmp/credentials.json',
+      retryBaseDelayMs: 1,
+      liveSheetMirror: true,
+    });
+    await journal.initialize();
+
+    journal.putSummary('A', { id: 'A', status: 'closed' });
+    await journal.shutdown();
+
+    expect(ensuredSheetNameList).toEqual([undefined]);
+    expect(sheetWriteList.map((write) => write.sheetName)).toEqual([undefined]);
   });
 });

@@ -9,7 +9,7 @@ import {
   OrderSideEnum,
   OrderTypeEnum,
 } from '../types';
-import { formatErrorMessage } from '../utils/errorFormatter.utils';
+import { describeExchangeRefusal, formatErrorMessage } from '../utils/errorFormatter.utils';
 import { isOrderSuccessful, isSpot } from '../utils/order.utils';
 
 export class OrderExecutor {
@@ -81,7 +81,7 @@ export class OrderExecutor {
 
       return {
         ...orderResultBase,
-        errorText: formattedErrorMessage,
+        errorText: describeExchangeRefusal(error),
       };
     }
   }

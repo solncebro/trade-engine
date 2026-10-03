@@ -1,8 +1,7 @@
 import { EventEmitter } from 'events';
 
-import { Api, TelegramClient } from 'telegram';
-import { NewMessage, NewMessageEvent } from 'telegram/events';
-import { StringSession } from 'telegram/sessions';
+import { createUserClient } from '@solncebro/telegram-engine';
+import type { TelegramUserMessage, UserClient } from '@solncebro/telegram-engine';
 
 import { logger } from '../core/logger';
 import type { TelegramMessageListenerArgs } from '../types/telegram';
@@ -11,59 +10,67 @@ import { ReadlineHelper } from '../utils/readline.utils';
 export interface TelegramIncomingMessage {
   chatId: string;
   senderId: string;
-  message: Api.Message;
+  message: TelegramUserMessage['raw'];
 }
 
 export type TelegramMessageHandler = (
   message: TelegramIncomingMessage
 ) => void | Promise<void>;
 
+// Album parts are handed out one by one, as before the migration; 0 keeps the delay to one tick.
+const ALBUM_WAIT_MS = 0;
+
+/**
+ * @deprecated Use `createUserClient` from `@solncebro/telegram-engine` directly (album assembly,
+ * edits and deletions, history, connection watchdog). This class is a thin compatibility wrapper
+ * over it with the old names, methods and events ('message', 'connected', 'disconnected', 'error').
+ */
 export class TelegramMessageListener extends EventEmitter {
-  private client: TelegramClient;
-  private isConnected = false;
-  private readlineHelper: ReadlineHelper;
+  private userClient: UserClient;
+  private isStarted = false;
+  private readlineHelper: ReadlineHelper | null = null;
   private messageHandlerList: TelegramMessageHandler[] = [];
+  private unsubscribe: (() => void) | null = null;
 
   constructor(args: TelegramMessageListenerArgs) {
     super();
 
     const { apiId, apiHash, appSession } = args;
 
-    this.readlineHelper = new ReadlineHelper();
-
-    const stringSession = new StringSession(appSession);
-    this.client = new TelegramClient(stringSession, apiId, apiHash, {
-      connectionRetries: 5,
+    this.userClient = createUserClient({
+      apiId,
+      apiHash,
+      sessionString: appSession,
+      albumWaitMs: ALBUM_WAIT_MS,
+      loginPrompt: {
+        askPhoneNumber: () => this.askQuestion('phone number ? '),
+        askPassword: () => this.askQuestion('password? '),
+        askPhoneCode: () => this.askQuestion('code ? '),
+      },
+      // The pre-migration listener printed a freshly created session so the operator could save it;
+      // interactive login stays useless without that.
+      onSessionChanged: sessionString => {
+        logger.info('New session created. Save this session string:');
+        logger.info(sessionString);
+      },
+      onLog: (level, message, data) => logger[level](data ?? {}, `[Telegram] ${message}`),
     });
+  }
+
+  private askQuestion(question: string): Promise<string> {
+    this.readlineHelper ??= new ReadlineHelper();
+
+    return this.readlineHelper.askQuestion(question);
   }
 
   public async start(): Promise<void> {
     try {
-      await this.client.connect();
+      await this.userClient.start();
 
-      const isAuthorized = await this.client.checkAuthorization();
-
-      if (!isAuthorized) {
-        await this.client.start({
-          phoneNumber: async () =>
-            await this.readlineHelper.askQuestion('phone number ? '),
-          password: async () =>
-            await this.readlineHelper.askQuestion('password? '),
-          phoneCode: async () =>
-            await this.readlineHelper.askQuestion('code ? '),
-          onError: error => logger.error({ error }, 'Telegram client error'),
-        });
-
-        logger.info('New session created. Save this session string:');
-        logger.info(this.client.session.save());
-      }
-
-      this.isConnected = true;
-
-      this.client.addEventHandler(
-        (event: NewMessageEvent) => this.handleMessage(event.message),
-        new NewMessage()
-      );
+      this.isStarted = true;
+      this.unsubscribe = this.userClient.subscribe({
+        onNewMessage: message => this.handleUserMessage(message),
+      });
 
       logger.info('Telegram client started successfully');
 
@@ -77,18 +84,26 @@ export class TelegramMessageListener extends EventEmitter {
     }
   }
 
-  private async handleMessage(message: Api.Message): Promise<void> {
-    try {
-      const senderIdValue = message.senderId?.valueOf();
-      const chatIdValue = message.chatId?.valueOf();
+  private async handleUserMessage(userMessage: TelegramUserMessage): Promise<void> {
+    for (const part of userMessage.partList) {
+      await this.handleMessagePart(userMessage.chatId, part);
+    }
+  }
 
-      if (!senderIdValue || !chatIdValue) {
+  private async handleMessagePart(
+    chatId: string,
+    message: TelegramUserMessage['raw']
+  ): Promise<void> {
+    try {
+      const senderIdValue = message.senderId?.toString();
+
+      if (!senderIdValue || !chatId) {
         return;
       }
 
       const incomingMessage: TelegramIncomingMessage = {
-        chatId: String(chatIdValue),
-        senderId: String(senderIdValue),
+        chatId,
+        senderId: senderIdValue,
         message,
       };
 
@@ -130,26 +145,25 @@ export class TelegramMessageListener extends EventEmitter {
   }
 
   public stop(): void {
-    try {
-      if (this.isConnected) {
-        this.client.disconnect();
+    this.unsubscribe?.();
+    this.unsubscribe = null;
 
-        this.isConnected = false;
-      }
-
-      this.readlineHelper.close();
-
-      logger.info('Telegram client stopped');
-
-      this.emit('disconnected');
-    } catch (error) {
-      logger.error({ error }, 'Error stopping Telegram client');
-
-      this.emit('error', error);
+    if (this.isStarted) {
+      this.isStarted = false;
+      this.userClient.stop().catch((error: unknown) => {
+        logger.error({ error }, 'Error stopping Telegram client');
+      });
     }
+
+    this.readlineHelper?.close();
+    this.readlineHelper = null;
+
+    logger.info('Telegram client stopped');
+
+    this.emit('disconnected');
   }
 
   public getIsConnected(): boolean {
-    return this.isConnected;
+    return this.isStarted && this.userClient.isConnected();
   }
 }

@@ -1,4 +1,4 @@
-import { Context } from 'telegraf';
+import type { Context } from '@solncebro/telegram-engine';
 
 export type CommandHandler = (context: Context) => Promise<void>;
 

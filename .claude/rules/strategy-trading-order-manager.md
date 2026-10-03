@@ -27,6 +27,7 @@ class OrderManager {
 
   // High-level ordered operations (per-position FIFO via runSerializedByKey)
   enqueueReplaceStopLoss(args: ReplaceStopLossArgs): Promise<ReplaceStopLossResult>
+  enqueueOpenPositionMarket(args: EnqueueOpenPositionMarketArgs): Promise<OpenPositionMarketResult>
   enqueueClosePositionMarket(args: EnqueueClosePositionMarketArgs): Promise<ClosePositionMarketResult>
   enqueueCreateTpSplitFan(args: CreateTpSplitFanArgs): Promise<CreateTpSplitFanResult>
 
@@ -44,8 +45,23 @@ class OrderManager {
 
 ### Ключевые поведения
 
+- `enqueueCreateLimitOrder` / `enqueueMoveLimitOrder` (3.24.0): `timeInForce?`, `isReduceOnly?` (true — закрывающая лимитка
+  через `closePositionLimit`, `direction` — направление ПОЗИЦИИ); результат несёт `errorCode?`.
+
+- **Явный `clientOrderId` (3.24.0).** `CreateLimitOrderArgs`, `ReplaceStopLossArgs`, `EnqueueOpenPositionMarketArgs`,
+  `EnqueueClosePositionMarketArgs` принимают необязательный `clientOrderId` — свой номер заявки, записанный в
+  хранилище приложения ДО отправки, чтобы потерянный ответ биржи можно было позже найти по этому номеру
+  (`PositionManager.readOrderByClientOrderId`). Задан — используется как есть; не задан — у `enqueueCreateLimitOrder`,
+  `enqueueOpenPositionMarket` и `enqueueClosePositionMarket` номера нет вовсе, у `enqueueReplaceStopLoss` по-прежнему
+  подставляется номер, собранный `buildClientOrderId()` из `orderLinkIdPrefix`.
+
+- **`enqueueOpenPositionMarket`** — открывающая рыночная заявка («по рынку сейчас»), результат
+  `{ isSuccess, orderId, errorText }`, отказ биржи не бросает исключение (только `enqueueOpenPositionMarket` threw
+  логируется и возвращается как `errorText`). Тот же по устройству код, что и у `enqueueClosePositionMarket`, только
+  вызывает `PositionManager.openPositionMarket` вместо `closePositionMarket`.
+
 - **Гарантированная отмена.** `enqueueCancel` после отправки ждёт `IMMEDIATE_VERIFY_WAIT_MS` WS-подтверждения, затем REST `getOrder` (`waitForImmediateVerify`). Tick-loop (`runTick`, каждые `TICK_INTERVAL_MS`) дожимает pending entry'ы с cooldown'ом и параллелизмом `PARALLELISM_LIMIT`, до `MAX_ATTEMPTS` попыток; при исчерпании — `exhaustEntry` шлёт Telegram-alert через `telegramNotifier.sendMessage`. `ImmediateCancelOutcome.immediateResult` ∈ `'cancelled' | 'filled' | 'pending' | 'failed_to_send'`.
-- **Per-position FIFO.** `runSerializedByKey(key, fn)` (приватный async-mutex). `enqueueReplaceStopLoss` / `enqueueClosePositionMarket` / `enqueueCreateTpSplitFan` / `enqueueCreateMultiOrderBatch` сериализуются по ключу `position:${positionId}`. `enqueueCreateLimitOrder` / `enqueueMoveLimitOrder` НЕ сериализуются (caller держит свой lock).
+- **Per-position FIFO.** `runSerializedByKey(key, fn)` (приватный async-mutex). `enqueueReplaceStopLoss` / `enqueueOpenPositionMarket` / `enqueueClosePositionMarket` / `enqueueCreateTpSplitFan` / `enqueueCreateMultiOrderBatch` сериализуются по ключу `position:${positionId}`. `enqueueCreateLimitOrder` / `enqueueMoveLimitOrder` НЕ сериализуются (caller держит свой lock).
 - **Идемпотентность SL по `triggerPrice + amount`.** `enqueueReplaceStopLoss` под mutex'ом сверяет `lastPlacedStopLossByPositionId.get(positionId)` — при совпадении `triggerPrice + amount` и `oldOrderId !== null` возвращает existing `orderId` без exchange-вызова. Защита от concurrent-дубликатов SL.
 - **Sub-batch splitting ≤10.** Bybit V5 batch-фрейм принимает максимум `EXCHANGE_BATCH_MAX_SIZE = 10` ордеров. `enqueueCreateMultiOrderBatch` и `enqueueCreateTpSplitFan` делят список через приватный `transmitBatchInSubBatches` (closest-first порядок — caller задаёт `orderedIndexList`), задержка `BATCH_INTER_SUB_BATCH_DELAY_MS` между под-пачками, `leverage`/`marginMode` только в первой под-пачке. `enqueueCancelBatch` чанкит без задержки (отмена латенси-критична). Multi keep-partial (`isPartial` + `failedPartList` + `placedOrderIdByCanonicalIndex`); TP — all-or-nothing rollback.
 - **WS hook.** `handleOrderUpdate(event)` снимает запись с tracker'а на terminal-event (canceled/expired/closed) и вызывает `onConfirmed` — должен вызываться ПЕРВЫМ в `onOrderUpdate`-dispatcher приложения, до consumer'ов state.

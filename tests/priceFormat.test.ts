@@ -36,6 +36,44 @@ describe('snapPriceToTick', () => {
   });
 });
 
+describe('snapPriceToTick rounding direction', () => {
+  it('passes the requested rounding to the snapper', () => {
+    const calledWith: string[] = [];
+
+    configurePriceTickSnapper((_symbol, price, rounding) => {
+      calledWith.push(rounding);
+
+      return price;
+    });
+
+    snapPriceToTick('PROMUSDT', 2.96151);
+    snapPriceToTick('PROMUSDT', 2.96151, 'up');
+    snapPriceToTick('PROMUSDT', 2.96151, 'down');
+
+    expect(calledWith).toEqual(['nearest', 'up', 'down']);
+  });
+
+  it('formatPrice always snaps to the nearest tick', () => {
+    const calledWith: string[] = [];
+
+    configurePriceTickSnapper((_symbol, price, rounding) => {
+      calledWith.push(rounding);
+
+      return price;
+    });
+
+    formatPrice('PROMUSDT', 2.96151);
+
+    expect(calledWith).toEqual(['nearest']);
+  });
+
+  it('returns the input for every mode when nothing is configured', () => {
+    expect(snapPriceToTick('PROMUSDT', 2.96151, 'up')).toBe(2.96151);
+    expect(snapPriceToTick('PROMUSDT', 2.96151, 'down')).toBe(2.96151);
+    expect(snapPriceToTick('PROMUSDT', 2.96151, 'nearest')).toBe(2.96151);
+  });
+});
+
 describe('formatPrice', () => {
   it('renders a snapped price with no floating-point tail', () => {
     configurePriceTickSnapper(snapper);

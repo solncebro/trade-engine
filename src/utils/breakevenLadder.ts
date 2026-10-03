@@ -29,4 +29,24 @@ function computeBreakevenLadder(args: ComputeBreakevenLadderArgs): BreakevenLadd
   return { priceList, amountList };
 }
 
-export { computeBreakevenLadder };
+// True breakeven price once the fee is paid on BOTH the entry and the exit (f = feePercent / 100;
+// the fee is given in percent, e.g. 0.02 for a 0.02 % maker fee):
+//   long  — sell proceeds after fee must cover the fee-loaded entry cost → P = avgEntry × (1 + f) / (1 − f).
+//   short — buy-back cost with fee must stay within the fee-reduced sell proceeds → P = avgEntry × (1 − f) / (1 + f).
+// Returns avgEntry unchanged when the fee is zero or invalid (NaN, negative, 100 % or more).
+// Ported from volume-breaker (fibLevels.ts), where it was private to the Fib strategy.
+function computeBreakevenWithFees(avgEntry: number, feePercent: number, direction: 'long' | 'short'): number {
+  const feeFraction = feePercent / 100;
+
+  if (!Number.isFinite(feeFraction) || feeFraction <= 0 || feeFraction >= 1) {
+    return avgEntry;
+  }
+
+  if (direction === 'long') {
+    return (avgEntry * (1 + feeFraction)) / (1 - feeFraction);
+  }
+
+  return (avgEntry * (1 - feeFraction)) / (1 + feeFraction);
+}
+
+export { computeBreakevenLadder, computeBreakevenWithFees };

@@ -22,8 +22,19 @@ const result = await connector.createOrder({
 - **reduceOnly.** Читается и из top-level `OrderParams.reduceOnly`, и из nested `params.reduceOnly` (top-level ранее терялся, фикс 3.4.0).
 - **Дополнительные поля** (futures, если заданы): `triggerBy`, `closeOnTrigger`, `closePosition`, `workingType`, `triggerDirection`. **На spot**: `orderFilter` (Bybit), `marketUnit` (Bybit), `quoteOrderQty`. **Универсально**: `clientOrderId`, `callbackRate` (3.16.0, проценты — скользящий стоп на любом рынке), `activationPrice` (3.16.0, приводится к сетке цены символа).
 - **Market.** Поле `price` в `OrderParams` может передаваться для удобства, но для `OrderTypeEnum.Market` не форвардится в wire-параметры.
-- **timeInForce.** Все биржи: `IOC` для Market, `GTC` для Limit-like (в т.ч. `StopLimit`/`TakeProfitLimit` на spot).
+- **timeInForce.** Все биржи: `IOC` для Market; прочие — `orderParams.timeInForce ?? GTC` (в т.ч. `StopLimit`/`TakeProfitLimit` на spot). См. «Срок действия» ниже.
 - **Stop Loss.** `triggerPrice` (через `stopPrice`) и `triggerDirection` если указаны.
+
+### Срок действия (timeInForce, 3.24.0)
+
+`OrderParams.timeInForce?: TimeInForceEnum`. `buildCreateOrderArgs`: рыночная — всегда `Ioc`; любая другая —
+`orderParams.timeInForce ?? Gtc`. Поле есть у `openPositionLimit`, `closePositionLimit`,
+`openPositionBatchLimit` / `closePositionBatchLimit` (на весь пакет). `PostOnly` нижняя библиотека переводит
+сама (Binance фьючерсы — GTX, Binance спот — LIMIT_MAKER).
+
+`isPostOnlyRejection({ errorCode?, rejectReason? })` (src/utils/orderRejection.utils.ts): Binance фьючерсы — синхронный
+отказ -5022 (`OrderResult.errorCode`), Bybit — заявка принята и снята, причина `EC_PostOnlyWillTakeLiquidity`
+приходит в `OrderUpdateEvent.rejectReason`. Binance спот и OKX не покрыты — коды не подтверждены.
 
 ### Чем OKX отличается от Binance и Bybit
 
@@ -46,6 +57,11 @@ const result = await connector.createOrder({
 | `closePositionBatchLimit(args: ClosePositionBatchLimitArgs)` | `Promise<ClosePositionBatchLimitResult>` | Пакетное закрытие лимитными `reduceOnly`-ордерами по одному символу (`itemList`); пустой `itemList` → `[]` |
 | `readPositionState(args: ReadPositionStateArgs)` | `Promise<PositionStateResult>` | **Только futures** (иначе throws). Возвращает discriminated union: `{ kind: 'present', position }` / `{ kind: 'absent', confidence, reason }` / `{ kind: 'ambiguous', reason, position }`. Учитывает Hedge/OneWay (`positionIdx`, `side`) |
 | `readAllPositions(args: ReadAllPositionsArgs)` | `Promise<Position[]>` | **Только futures** (иначе throws). `connector.futures.fetchAllPositions()`; при ошибке re-throws |
+| `readOpenOrderList(args: ReadOpenOrderListArgs)` | `Promise<Order[]>` | Все открытые заявки по символу. Futures: параллельно `fetchOpenOrders(symbol)` + `fetchOpenConditionalOrders('USDT')` (условные отфильтрованы по `symbol`), слиты и дедуплицированы по `order.id` — Binance не кладёт условные заявки в обычный список, у Bybit обычный список их может уже содержать. Spot: только `fetchOpenOrders(symbol)`. Отказ — предупреждение в лог и повторный throw (не путать «заявок нет» с отказом чтения) |
+| `readOrder(args: ReadOrderArgs)` | `Promise<Order>` | Одна заявка по её номеру биржи (`client.getOrder`); при ошибке — предупреждение в лог и re-throw |
+| `readOrderByClientOrderId(args: ReadOrderByClientOrderIdArgs)` | `Promise<Order>` | Одна заявка по СВОЕМУ номеру (`client.getOrderByClientOrderId`) — приложение, записавшее номер в своё хранилище до отправки, находит заявку по нему после потерянного ответа; при ошибке — предупреждение в лог и re-throw |
+| `readFeeRate(args: ReadFeeRateArgs)` | `Promise<FeeRatePercent \| null>` | Комиссия мейкера/тейкера символа в ПРОЦЕНТАХ (`{ makerPercent, takerPercent }`) — `exchange-engine` отдаёт доли (0.0002 = 0.02 %), переведено один раз. Пустой список ответа биржи или нечисловой результат → `null`; отказ чтения → предупреждение в лог и `null` (НЕ throw — комиссия оценочная, вызывающий подставляет значение по умолчанию) |
 
 - `OpenPositionBatchLimitResult` / `ClosePositionBatchLimitResult` = `PositionBatchLimitItemResult[]`, где `PositionBatchLimitItemResult = { isSuccess, orderId: string | null, errorText: string | null }`.
 - `PositionStateResult` reasons: `PositionAbsenceReason = 'no_record' | 'zero_contracts' | 'fetch_error'`, `PositionAmbiguityReason = 'side_mismatch' | 'idx_mismatch'`.
+- `FeeRatePercent = { makerPercent: number; takerPercent: number }` — всегда проценты, никогда доли и никогда базисные пункты.

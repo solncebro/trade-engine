@@ -1,4 +1,4 @@
-import { MarginModeEnum, MarketTypeEnum, OrderSideEnum, OrderTypeEnum, Position, TriggerByEnum } from '@solncebro/exchange-engine';
+import { MarginModeEnum, MarketTypeEnum, OrderSideEnum, OrderTypeEnum, Position, PositionModeEnum, TimeInForceEnum, TriggerByEnum } from '@solncebro/exchange-engine';
 
 export type Direction = 'long' | 'short';
 
@@ -10,6 +10,34 @@ export interface ReadPositionStateArgs {
 
 export interface ReadAllPositionsArgs {
   marketType: MarketTypeEnum;
+}
+
+export interface ReadOpenOrderListArgs {
+  symbol: string;
+  marketType: MarketTypeEnum;
+}
+
+export interface ReadOrderArgs {
+  symbol: string;
+  marketType: MarketTypeEnum;
+  orderId: string;
+}
+
+export interface ReadOrderByClientOrderIdArgs {
+  symbol: string;
+  marketType: MarketTypeEnum;
+  clientOrderId: string;
+}
+
+export interface ReadFeeRateArgs {
+  symbol: string;
+  marketType: MarketTypeEnum;
+}
+
+/** Maker/taker trading fee, in PERCENT (never a fraction, never basis points). */
+export interface FeeRatePercent {
+  makerPercent: number;
+  takerPercent: number;
 }
 
 export type PositionAbsenceReason = 'no_record' | 'zero_contracts' | 'fetch_error';
@@ -46,6 +74,7 @@ export interface BuildOrderParamsInput {
   type: OrderTypeEnum;
   isReduceOnly: boolean;
   clientOrderId?: string;
+  timeInForce?: TimeInForceEnum;
 }
 
 export interface ApplyFuturesSetupArgs {
@@ -64,6 +93,8 @@ export interface OpenPositionLimitArgs {
   leverage?: number;
   marginMode?: MarginModeEnum;
   clientOrderId?: string;
+  /** Default «до отмены» (GTC); `PostOnly` — only as a maker. */
+  timeInForce?: TimeInForceEnum;
 }
 
 export interface OpenPositionMarketArgs {
@@ -83,6 +114,8 @@ export interface ClosePositionLimitArgs {
   amount: number;
   price: number;
   clientOrderId?: string;
+  /** Default «до отмены» (GTC); `PostOnly` — only as a maker. */
+  timeInForce?: TimeInForceEnum;
 }
 
 export interface ClosePositionMarketArgs {
@@ -145,6 +178,10 @@ export interface SetLeverageArgs {
   leverage: number;
 }
 
+export interface SetPositionModeArgs {
+  mode: PositionModeEnum;
+}
+
 export interface SetMarginModeArgs {
   symbol: string;
   marginMode: MarginModeEnum;
@@ -187,6 +224,8 @@ export interface OpenPositionBatchLimitArgs {
   itemList: OpenPositionBatchLimitItem[];
   leverage?: number;
   marginMode?: MarginModeEnum;
+  /** Applies to every item; default «до отмены» (GTC). */
+  timeInForce?: TimeInForceEnum;
 }
 
 export interface ClosePositionBatchLimitItem {
@@ -200,6 +239,8 @@ export interface ClosePositionBatchLimitArgs {
   symbol: string;
   marketType: MarketTypeEnum;
   itemList: ClosePositionBatchLimitItem[];
+  /** Applies to every item; default «до отмены» (GTC). */
+  timeInForce?: TimeInForceEnum;
 }
 
 export interface PositionBatchLimitItemResult {

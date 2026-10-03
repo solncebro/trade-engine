@@ -19,6 +19,8 @@ export interface SheetSyncArgs {
   dateColumnList: readonly string[];
   percentColumnList: readonly string[];
   recordList: Record<string, unknown>[];
+  /** Target sheet (tab) by title, created with the header when missing. Omitted: the FIRST sheet. */
+  sheetName?: string;
 }
 
 export interface EnsureDateColumnFormatArgs {
@@ -26,15 +28,26 @@ export interface EnsureDateColumnFormatArgs {
   spreadsheetId: string;
   columnList: readonly string[];
   dateColumnList: readonly string[];
+  sheetName?: string;
 }
 
 export interface EnsureSheetHeaderArgs {
   sheets: sheets_v4.Sheets;
   spreadsheetId: string;
   columnList: readonly string[];
+  sheetName?: string;
 }
 
-interface FirstSheet {
+export interface ReplaceSheetValuesArgs {
+  sheets: sheets_v4.Sheets;
+  spreadsheetId: string;
+  /** Created when missing. */
+  sheetName: string;
+  /** Rows top to bottom, header included when the sheet needs one. Numbers stay numbers. */
+  valueMatrix: (string | number)[][];
+}
+
+interface ResolvedSheet {
   sheetId: number;
   title: string;
 }
@@ -76,17 +89,37 @@ function columnLetter(index: number): string {
   return result;
 }
 
-// The bot always writes to the FIRST sheet (tab) of the spreadsheet, whatever its name.
-async function resolveFirstSheet(sheets: sheets_v4.Sheets, spreadsheetId: string): Promise<FirstSheet | null> {
-  const response = await sheets.spreadsheets.get({ spreadsheetId, fields: 'sheets.properties(sheetId,title,index)' });
-  const sheetList = response.data.sheets ?? [];
-  const properties = (sheetList.find((entry) => entry.properties?.index === 0) ?? sheetList[0])?.properties;
-
+function toResolvedSheet(properties: sheets_v4.Schema$SheetProperties | undefined): ResolvedSheet | null {
   if (!properties || properties.sheetId === null || properties.sheetId === undefined || !properties.title) {
     return null;
   }
 
   return { sheetId: properties.sheetId, title: properties.title };
+}
+
+// Without a name the bot writes to the FIRST sheet (tab) of the spreadsheet, whatever its name. With a
+// name it writes to the sheet of that title and creates it when missing — a per-trader sheet appears
+// the first time that trader has a row, nobody has to prepare it by hand.
+async function resolveTargetSheet(sheets: sheets_v4.Sheets, spreadsheetId: string, sheetName?: string): Promise<ResolvedSheet | null> {
+  const response = await sheets.spreadsheets.get({ spreadsheetId, fields: 'sheets.properties(sheetId,title,index)' });
+  const sheetList = response.data.sheets ?? [];
+
+  if (sheetName === undefined) {
+    return toResolvedSheet((sheetList.find((entry) => entry.properties?.index === 0) ?? sheetList[0])?.properties);
+  }
+
+  const existing = sheetList.find((entry) => entry.properties?.title === sheetName);
+
+  if (existing !== undefined) {
+    return toResolvedSheet(existing.properties);
+  }
+
+  const createResponse = await sheets.spreadsheets.batchUpdate({
+    spreadsheetId,
+    requestBody: { requests: [{ addSheet: { properties: { title: sheetName } } }] },
+  });
+
+  return toResolvedSheet(createResponse.data.replies?.[0]?.addSheet?.properties);
 }
 
 // A1 range scoped to a sheet title, with the title quoted/escaped (spaces, quotes).
@@ -231,7 +264,7 @@ async function applyDateColumnFormat(sheets: sheets_v4.Sheets, spreadsheetId: st
   await sheets.spreadsheets.batchUpdate({ spreadsheetId, requestBody: { requests: requestList } });
 }
 
-// Mirror `recordList` into the spreadsheet's first sheet: append rows whose key is new, update rows
+// Mirror `recordList` into the target sheet (the first one unless `sheetName` is given): append rows whose key is new, update rows
 // whose values changed. Idempotent — Supabase stays the source of truth, the sheet is overwritten to
 // match. Shared by the live flush, the periodic reconcile, and the manual full sync.
 export async function syncRecordListToSheet(args: SheetSyncArgs): Promise<void> {
@@ -241,7 +274,7 @@ export async function syncRecordListToSheet(args: SheetSyncArgs): Promise<void> 
     return;
   }
 
-  const first = await resolveFirstSheet(sheets, spreadsheetId);
+  const first = await resolveTargetSheet(sheets, spreadsheetId, args.sheetName);
 
   if (first === null) {
     return;
@@ -297,7 +330,7 @@ export async function syncRecordListToSheet(args: SheetSyncArgs): Promise<void> 
 // in ONE update. A bulk reconcile is never rate-limit-rejected by Sheets, unlike per-row churn.
 export async function fullReplaceSheet(args: SheetSyncArgs): Promise<void> {
   const { sheets, spreadsheetId, columnList, dateColumnList, percentColumnList, recordList } = args;
-  const first = await resolveFirstSheet(sheets, spreadsheetId);
+  const first = await resolveTargetSheet(sheets, spreadsheetId, args.sheetName);
 
   if (first === null) {
     return;
@@ -323,11 +356,11 @@ export async function fullReplaceSheet(args: SheetSyncArgs): Promise<void> {
   await applyDateColumnFormat(sheets, spreadsheetId, first.sheetId, columnList, dateColumnList);
 }
 
-// Connect at startup and make sure the first sheet's header row matches `columnList` — write it when the
+// Connect at startup and make sure the target sheet's header row matches `columnList` — write it when the
 // sheet is empty or the header drifted. Returns true when a sheet was reachable (connection confirmed).
 export async function ensureSheetHeader(args: EnsureSheetHeaderArgs): Promise<boolean> {
   const { sheets, spreadsheetId, columnList } = args;
-  const first = await resolveFirstSheet(sheets, spreadsheetId);
+  const first = await resolveTargetSheet(sheets, spreadsheetId, args.sheetName);
 
   if (first === null) {
     return false;
@@ -343,15 +376,42 @@ export async function ensureSheetHeader(args: EnsureSheetHeaderArgs): Promise<bo
   return true;
 }
 
-// Startup pass: dress the date columns of the first sheet so their serial values render as native
+// Startup pass: dress the date columns of the target sheet so their serial values render as native
 // dates. Idempotent — safe to call repeatedly. The write paths re-apply it after adding rows.
 export async function ensureDateColumnFormat(args: EnsureDateColumnFormatArgs): Promise<void> {
   const { sheets, spreadsheetId, columnList, dateColumnList } = args;
-  const first = await resolveFirstSheet(sheets, spreadsheetId);
+  const first = await resolveTargetSheet(sheets, spreadsheetId, args.sheetName);
 
   if (first === null) {
     return;
   }
 
   await applyDateColumnFormat(sheets, spreadsheetId, first.sheetId, columnList, dateColumnList);
+}
+
+// Rewrite a whole named sheet with a ready matrix — a summary sheet whose layout is not one row per
+// record ("Сводка"). Clears everything first so a shorter table leaves no stale rows below it.
+export async function replaceSheetValues(args: ReplaceSheetValuesArgs): Promise<boolean> {
+  const { sheets, spreadsheetId, sheetName, valueMatrix } = args;
+  const target = await resolveTargetSheet(sheets, spreadsheetId, sheetName);
+
+  if (target === null) {
+    return false;
+  }
+
+  // A bare quoted title is the whole sheet in A1 notation — every column, however wide the summary got.
+  await sheets.spreadsheets.values.clear({ spreadsheetId, range: `'${target.title.replace(/'/g, "''")}'` });
+
+  if (valueMatrix.length === 0) {
+    return true;
+  }
+
+  await sheets.spreadsheets.values.update({
+    spreadsheetId,
+    range: sheetRange(target.title, 'A1'),
+    valueInputOption: 'USER_ENTERED',
+    requestBody: { values: valueMatrix.map((row) => row.map((cell) => (typeof cell === 'number' && Number.isFinite(cell) ? toCleanNumber(cell) : cell))) },
+  });
+
+  return true;
 }

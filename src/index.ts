@@ -7,12 +7,52 @@ export {
 
 export { ExchangeConnector } from './services/exchangeConnector';
 export type {
+  FuturesOrderRules,
   RateLimitConfig,
+  ResolvedSymbol,
   StreamWatchdogConfigMap,
   StreamWatchdogStreamConfig,
   TradeSymbolsRefreshConfig,
 } from './services/exchangeConnector';
-export { FirebaseServiceBase } from './services/firebaseServiceBase';
+export { SubAccountGateway } from './services/subAccountGateway';
+export type {
+  SubAccountBalanceListResult,
+  SubAccountFailure,
+  SubAccountGatewayArgs,
+  SubAccountListResult,
+  SubAccountTransferOutcome,
+  SubAccountTransferRequest,
+  SubAccountTransferStatusResult,
+} from './services/subAccountGateway.types';
+export { UserDataStreamRouter } from './services/userDataStreamRouter';
+export type {
+  UserDataStreamClient,
+  UserDataStreamRouterArgs,
+  UserDataStreamSubscriber,
+  UserDataStreamUnsubscribe,
+} from './services/userDataStreamRouter.types';
+export { FIREBASE_SERVICE_EVENT, FirebaseServiceBase } from './services/firebaseServiceBase';
+export type {
+  FirebaseConnectionLostEvent,
+  FirebaseConnectionLostReason,
+  FirebaseDataChangedEvent,
+  FirebaseMapLocation,
+  FirebaseServiceBaseArgs,
+  FirebaseSnapshotDivergedEvent,
+  FirebaseStartedFromDiskCopyEvent,
+} from './services/firebaseServiceBase.types';
+export { PersistedListDocument } from './services/persistedListDocument';
+export type {
+  ListDocumentIo,
+  ListDocumentLogger,
+  PersistedListDocumentArgs,
+} from './services/persistedListDocument.types';
+export { createSupabaseServiceClient, uploadFileToStorage } from './services/supabase/supabaseStorage';
+export type {
+  CreateSupabaseServiceClientArgs,
+  UploadFileToStorageArgs,
+  UploadFileToStorageResult,
+} from './services/supabase/supabaseStorage.types';
 export { KlineSubscriptionWatchdog } from './services/klineSubscriptionWatchdog';
 export { OrderBookTracker, resolveOrderBookStreamDepth } from './services/orderBookTracker';
 export type { LiveOrderBook, OrderBookTrackerArgs } from './services/orderBookTracker.types';
@@ -49,6 +89,10 @@ export {
 } from './services/streamWatchdogStrategies';
 export { TelegramCommandHandler } from './services/telegramCommandHandler';
 export { TelegramMessageListener } from './services/telegramMessageListener';
+export type {
+  TelegramIncomingMessage,
+  TelegramMessageHandler,
+} from './services/telegramMessageListener';
 export { TelegramNotifier } from './services/telegramNotifier';
 export { TradifiSymbolGate } from './services/tradifiSymbolGate';
 export type {
@@ -64,9 +108,19 @@ export type {
   JournalUpdateRowsArgs,
   JournalSelectRowsArgs,
   JournalSelectRangeArgs,
+  JournalSheetTarget,
 } from './services/tradeJournal/persistentTradeJournal.types';
+export { replaceSheetValues } from './services/tradeJournal/sheetsSync';
+export type { ReplaceSheetValuesArgs } from './services/tradeJournal/sheetsSync';
 
 export { ConfigManager } from './core/config';
+export {
+  parseChatIdList,
+  readBoolean,
+  readEnum,
+  readOptionalString,
+  readPositiveNumber,
+} from './core/envReaders';
 export { FeederConnectionGuard } from './core/FeederConnectionGuard';
 export { createLogger, logger } from './core/logger';
 export { LogThrottle } from './core/logThrottle';
@@ -83,6 +137,7 @@ export type {
   ClosePositionLimitArgs,
   ClosePositionMarketArgs,
   Direction,
+  FeeRatePercent,
   OpenPositionBatchLimitArgs,
   OpenPositionBatchLimitItem,
   OpenPositionBatchLimitResult,
@@ -98,6 +153,10 @@ export type {
   PositionManagerModifyOrderArgs,
   PositionStateResult,
   ReadAllPositionsArgs,
+  ReadFeeRateArgs,
+  ReadOpenOrderListArgs,
+  ReadOrderArgs,
+  ReadOrderByClientOrderIdArgs,
   ReadPositionStateArgs,
   SetLeverageArgs,
   SetMarginModeArgs,
@@ -139,9 +198,10 @@ export {
   createHumanTimestamp,
   formatTimestamp,
 } from './utils/date.utils';
+export { describeError } from './utils/errorFormatter.utils';
 export { isOrderSuccessful, isSpot } from './utils/order.utils';
 export { ReadlineHelper } from './utils/readline.utils';
-export { normalizeSymbol } from './utils/symbol.utils';
+export { normalizeSymbol, parseRawSymbolInput } from './utils/symbol.utils';
 export { getCommandFromKey } from './utils/telegramCommand.utils';
 
 export * from './core/OrderManager';
@@ -215,6 +275,12 @@ export * from './utils/chunk';
 export * from './utils/orderBookSlice';
 export * from './utils/orderBookSlice.types';
 export * from './utils/intervalScheduler';
+export * from './utils/alignedScheduler';
+export * from './utils/alignedScheduler.types';
+export * from './utils/gracefulShutdown';
+export * from './utils/gracefulShutdown.types';
+export * from './utils/sequentialQueue';
+export * from './utils/sequentialQueue.types';
 export * from './utils/feederConnectionMonitor';
 export * from './utils/klineList';
 export * from './utils/loggedExchangeCall';
@@ -233,3 +299,12 @@ export * from './utils/entryKlineGuard';
 export * from './utils/entryKlineGuard.types';
 export * from './utils/breakevenLadder';
 export * from './utils/breakevenLadder.types';
+export * from './utils/leverageFit';
+export * from './utils/leverageFit.types';
+export * from './utils/liquidationLeverage';
+export * from './utils/liquidationLeverage.types';
+export * from './utils/accountBalance';
+export * from './utils/accountBalance.types';
+export * from './utils/capitalBase';
+export * from './utils/capitalBase.types';
+export * from './utils/orderRejection.utils';

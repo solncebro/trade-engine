@@ -95,6 +95,33 @@ describe('ExchangeConnector.createOrder errorCode', () => {
 
     expect(result.errorCode).toBeUndefined();
   });
+
+  // AVAUSDT on Bybit 17.09.2026: errorText carried the log prefix and a doubled code, and the real
+  // reason — a risk tier limit — was cut off on the operator's screen and read as a margin shortage.
+  it('gives the exchange words as errorText — no log prefix, no doubled code, multi-line intact', async () => {
+    const connector = new ExchangeConnector(ExchangeNameEnum.Bybit, {
+      apiKey: 'k',
+      secret: 's',
+    } as ExchangeConfig);
+    const exchangeWords =
+      'Bybit API error 110090: The combined value of positions and orders has reached the limit of the current risk tier.\nOnly reduce-only or close-on-trigger orders are allowed.';
+
+    (connector.futures.createOrderWebSocket as jest.Mock).mockRejectedValue(
+      new ExchangeError(exchangeWords, 110090, 'bybit'),
+    );
+
+    const result = await connector.createOrder({
+      symbol: 'AVAUSDT',
+      amount: 1,
+      price: 0.19,
+      type: OrderTypeEnum.Limit,
+      side: OrderSideEnum.Sell,
+      marketType: MarketTypeEnum.Futures,
+    });
+
+    expect(result.errorText).toBe(exchangeWords);
+    expect(result.errorCode).toBe(110090);
+  });
 });
 
 describe('ExchangeConnector Binance futures positionSide', () => {

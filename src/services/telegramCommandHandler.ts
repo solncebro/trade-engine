@@ -1,4 +1,9 @@
-import { Context } from 'telegraf';
+import {
+  buildCommandNameFromKey,
+  parseYesNoArgument,
+  validatePositiveNumber,
+} from '@solncebro/telegram-engine';
+import type { Context } from '@solncebro/telegram-engine';
 
 import { TelegramNotifier } from './telegramNotifier';
 
@@ -9,7 +14,6 @@ import {
   NumericSettingConfig,
   TelegramCommandHandlerConfig,
 } from '../types/telegramCommandHandler';
-import { getCommandFromKey } from '../utils/telegramCommand.utils';
 
 interface TelegramCommandHandlerArgs<T = GenericObject> {
   telegramNotifier: TelegramNotifier;
@@ -51,7 +55,7 @@ export class TelegramCommandHandler<T = GenericObject> {
   private registerBooleanSettingCommand(
     config: BooleanSettingConfig<keyof T>
   ): void {
-    const command = getCommandFromKey(String(config.key));
+    const command = buildCommandNameFromKey(String(config.key));
 
     this.telegramNotifier.registerCommand({
       command,
@@ -65,7 +69,7 @@ export class TelegramCommandHandler<T = GenericObject> {
   private registerNumericSettingCommand(
     config: NumericSettingConfig<keyof T>
   ): void {
-    const command = getCommandFromKey(String(config.key));
+    const command = buildCommandNameFromKey(String(config.key));
 
     this.telegramNotifier.registerCommand({
       command,
@@ -135,37 +139,33 @@ export class TelegramCommandHandler<T = GenericObject> {
   }
 
   private parseBooleanArgument(context: Context): boolean | null {
-    const text = this.getCommandText(context);
-    const argumentList = text.split(' ');
+    const argument = this.readFirstArgument(context);
 
-    if (argumentList.length < 2) {
-      return null;
-    }
-
-    const lowerValue = argumentList[1].toLowerCase();
-    const isEnabled = lowerValue === 'yes' || lowerValue === 'true';
-    const isDisabled = lowerValue === 'no' || lowerValue === 'false';
-
-    return isEnabled || isDisabled ? isEnabled : null;
+    return argument === null ? null : parseYesNoArgument(argument);
   }
 
   private parseNumericArgument(context: Context): number | null {
-    const text = this.getCommandText(context);
-    const argumentList = text.split(' ');
+    const argument = this.readFirstArgument(context);
 
-    if (argumentList.length < 2) {
+    if (argument === null) {
       return null;
     }
 
-    const numericValue = parseFloat(argumentList[1]);
+    const numericValue = parseFloat(argument);
 
-    return !isNaN(numericValue) && numericValue > 0 ? numericValue : null;
+    return !isNaN(numericValue) && validatePositiveNumber(numericValue)
+      ? numericValue
+      : null;
   }
 
-  private getCommandText(context: Context): string {
-    return context.message && 'text' in context.message
-      ? context.message.text
-      : '';
+  // The token right after the command, split on single spaces as before: "/cmd  yes" (double
+  // space) yields an empty argument and therefore the usage reply.
+  private readFirstArgument(context: Context): string | null {
+    const text =
+      context.message && 'text' in context.message ? context.message.text : '';
+    const argumentList = text.split(' ');
+
+    return argumentList.length < 2 ? null : argumentList[1];
   }
 
   private async handleError(

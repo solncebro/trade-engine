@@ -8,6 +8,7 @@ import type {
 } from './streamSubscriptionWatchdog.types';
 
 import { logger } from '../core/logger';
+import { describeError } from '../utils/errorFormatter.utils';
 
 const LOG_PREFIX = '[StreamWatchdogStrategy]';
 
@@ -50,7 +51,7 @@ class HeartbeatResubscribeStrategy implements StreamWatchdogStrategy {
 
       return { key, status: 'recovered', errorText: null };
     } catch (error: unknown) {
-      const errorText = error instanceof Error ? error.message : String(error);
+      const errorText = describeError(error);
       logger.error({ error, key }, `${LOG_PREFIX} ${this.clientLabel} ${this.streamType} resubscribe failed for ${key}`);
 
       return { key, status: 'failed', errorText };

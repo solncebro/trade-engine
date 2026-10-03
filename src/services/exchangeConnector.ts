@@ -1,7 +1,7 @@
 import * as crypto from 'crypto';
 
 import { ExchangeError, Exchange as ExchangeInstance, ExchangeNameEnum, OrderSideEnum, PositionModeEnum, PositionSideEnum, TimeInForceEnum, TradeSymbolTypeEnum } from '@solncebro/exchange-engine';
-import type { CreateOrderWebSocketArgs, ExchangeClient, KlineHandler, MarkPriceHandler, MarkPriceUpdate, OrderBook, OrderBookHandler, OrderRateLimit, PublicTradeHandler, SubscribeKlinesArgs, SubscribeOrderbookArgs, SubscribePublicTradesArgs, Ticker, TickerBySymbol } from '@solncebro/exchange-engine';
+import type { CreateOrderWebSocketArgs, ExchangeClient, KlineHandler, LeverageTier, LeverageTierListBySymbol, MarkPriceHandler, MarkPriceUpdate, OrderBook, OrderBookHandler, OrderRateLimit, PublicTradeHandler, SubscribeKlinesArgs, SubscribeOrderbookArgs, SubscribePublicTradesArgs, Ticker, TickerBySymbol } from '@solncebro/exchange-engine';
 
 import { KlineSubscriptionWatchdog } from './klineSubscriptionWatchdog';
 import type { KlineSubscriptionWatchdogConfig } from './klineSubscriptionWatchdog.types';
@@ -17,6 +17,8 @@ import {
   OrderbookWatchdogStrategy,
   PublicTradeWatchdogStrategy,
 } from './streamWatchdogStrategies';
+import { SubAccountGateway } from './subAccountGateway';
+import { UserDataStreamRouter } from './userDataStreamRouter';
 
 import { logger } from '../core/logger';
 import { PositionManager } from '../core/positionManager';
@@ -29,11 +31,12 @@ import {
   OrderResult,
   OrderTypeEnum,
 } from '../types';
-import { formatErrorMessage } from '../utils/errorFormatter.utils';
+import { describeExchangeRefusal, formatErrorMessage } from '../utils/errorFormatter.utils';
 import { configureAmountStepSnapper } from '../utils/numberFormat';
 import { isSpot } from '../utils/order.utils';
 import { configurePriceTickSnapper } from '../utils/priceFormat';
-import { normalizeSymbol } from '../utils/symbol.utils';
+import { sleep } from '../utils/sleep';
+import { normalizeSymbol, parseRawSymbolInput } from '../utils/symbol.utils';
 
 export interface RateLimitConfig {
   writeRequestsPerSecond: number;
@@ -62,6 +65,31 @@ export interface StreamWatchdogConfigMap {
 // negative value) switches the schedule off entirely and leaves the caller to refresh by hand.
 export interface TradeSymbolsRefreshConfig {
   tradeSymbolsRefreshIntervalMs?: number;
+}
+
+/** A symbol typed by a human / a signal, resolved against this exchange. */
+export interface ResolvedSymbol {
+  /** The exchange's name for it (with the 1000-style prefix when the exchange lists it so). */
+  symbol: string;
+  /** The exchange lists it and its trading spec is loaded — orders can be sized and placed. */
+  isFound: boolean;
+}
+
+/**
+ * The futures grid an app needs to compute a fee-adjusted breakeven that rounds AWAY from the
+ * loss side and to split an amount into exchange-accepted lots — without reaching into the
+ * exchange-engine client directly.
+ */
+export interface FuturesOrderRules {
+  symbol: string;
+  /** Price tick; 0 when the exchange gave none. */
+  tickSize: number;
+  /** Lot step of the amount (base coins/contracts); 0 when none. */
+  stepSize: number;
+  /** Smallest order amount (the client's getMinOrderQty). */
+  minAmount: number;
+  /** Smallest order value in quote currency (getMinNotional); 0 when the exchange has none. */
+  minNotionalUsd: number;
 }
 
 // Per-market reload bookkeeping: one shared in-flight promise (concurrent callers join a
@@ -100,6 +128,26 @@ const TRADE_SYMBOLS_REFRESH_JITTER_MAX_MS = 120_000;
 const DAILY_TRADE_SYMBOLS_REFRESH_REASON = 'daily trade-symbol refresh';
 const MANUAL_TRADE_SYMBOLS_REFRESH_REASON = 'trade-symbol refresh';
 
+// Leverage tiers (Bybit risk limits, Binance leverage brackets, OKX position tiers) sit next to the
+// instrument specs: loaded once at initialize(), re-read by the same daily round, and fetched for one
+// symbol on demand when an app meets a symbol the bulk read did not know (a fresh listing). Per-symbol
+// misses are cooled down so a symbol the exchange has no tiers for does not get asked on every order.
+const LEVERAGE_TIER_SYMBOL_RELOAD_COOLDOWN_MS = 60_000;
+const INITIAL_LEVERAGE_TIER_LOAD_REASON = 'initial leverage-tier load';
+// Exchanges whose tier read is a SIGNED request: Binance /fapi/v1/leverageBracket (exchange-engine
+// BinanceFuturesHttpClient signedGet). Bybit /v5/market/risk-limit and OKX /api/v5/public/position-tiers
+// are market data and answer without a key. A keyless connector (public market data only) skips the
+// signed read instead of sending an empty key and logging the exchange's 401.
+const SIGNED_LEVERAGE_TIER_EXCHANGE_NAME_SET: ReadonlySet<ExchangeNameEnum> = new Set([ExchangeNameEnum.Binance]);
+
+// initialize() starts the ticker cache without waiting for it (a slow first read must not hold the
+// start), so a symbol resolved right after start could miss its 1000-style prefix. Resolution waits
+// for the first snapshot this long; readiness is re-checked at the poll step while waiting.
+const TICKERS_READY_DEFAULT_TIMEOUT_MS = 30_000;
+const TICKERS_READY_POLL_MS = 500;
+const RESOLVE_SYMBOL_TICKERS_WAIT_MS = 15_000;
+const MULTIPLIER_SUFFIX_QUOTE_LIST = ['USDT', 'USDC'];
+
 function readReduceOnly(orderParams: OrderParams): boolean {
   if (orderParams.reduceOnly === true) {
     return true;
@@ -127,7 +175,8 @@ export class ExchangeConnector {
   private markPriceByFuturesSymbol: Map<string, MarkPriceUpdate> = new Map();
   private isWatchingMarkPrices: boolean = false;
   private _positionManager: PositionManager | null = null;
-  public readonly futuresPositionMode: PositionModeEnum;
+  private _subAccountGateway: SubAccountGateway | null = null;
+  private currentFuturesPositionMode: PositionModeEnum;
 
   private readonly futuresStreamBundle: StreamWatchdogBundle;
   private readonly spotStreamBundle: StreamWatchdogBundle;
@@ -149,6 +198,24 @@ export class ExchangeConnector {
   private isTradeSymbolsRefreshScheduled: boolean = false;
   private isRefreshingAllTradeSymbols: boolean = false;
 
+  // Futures leverage tiers by symbol; the bulk read replaces the whole map, a per-symbol read one entry.
+  private readonly futuresLeverageTierListBySymbol: LeverageTierListBySymbol = new Map();
+  private leverageTierBulkLoadInFlight: Promise<void> | null = null;
+  private readonly leverageTierSymbolLoadInFlightBySymbol: Map<string, Promise<void>> = new Map();
+  private readonly leverageTierMissAtMsBySymbol: Map<string, number> = new Map();
+  private readonly isKeyless: boolean;
+  private isKeylessTierSkipLogged: boolean = false;
+  private firstTickerRoundPromise: Promise<void> | null = null;
+  private readonly tickerSnapshotMarketTypeSet: Set<MarketTypeEnum> = new Set();
+  // Opt-in market-data sharing between connectors of one exchange (master + sub-accounts): the follower
+  // reads the primary's tickers and leverage tiers and copies its trade-symbol specs instead of loading
+  // all of it again per account. See shareMarketDataFrom.
+  private readonly isDemoMode: boolean;
+  private marketDataPrimary: ExchangeConnector | null = null;
+  private readonly marketDataFollowerList: ExchangeConnector[] = [];
+  private hasInitializeStarted: boolean = false;
+  private readonly userDataStreamRouterByMarketType: Map<MarketTypeEnum, UserDataStreamRouter> = new Map();
+
   private readonly markPriceHandler = (list: MarkPriceUpdate[]): void => {
     for (const update of list) {
       if (!Number.isFinite(update.markPrice) || update.markPrice <= 0) {
@@ -169,7 +236,9 @@ export class ExchangeConnector {
     tradeSymbolsRefreshConfig?: TradeSymbolsRefreshConfig
   ) {
     this.exchangeName = exchangeName;
-    this.futuresPositionMode = futuresPositionMode;
+    this.isDemoMode = config.isDemoMode === true;
+    this.isKeyless = (config.apiKey ?? '').trim() === '' || (config.secret ?? '').trim() === '';
+    this.currentFuturesPositionMode = futuresPositionMode;
     this.rateLimitConfigOverride = rateLimitConfig;
     this.tradeSymbolsRefreshIntervalMs =
       tradeSymbolsRefreshConfig?.tradeSymbolsRefreshIntervalMs ?? TRADE_SYMBOLS_REFRESH_DEFAULT_INTERVAL_MS;
@@ -290,6 +359,19 @@ export class ExchangeConnector {
     }
 
     return this._spotProxy;
+  }
+
+  /** The futures position mode orders are built for (one-way — no position side; hedge — LONG / SHORT). */
+  public get futuresPositionMode(): PositionModeEnum {
+    return this.currentFuturesPositionMode;
+  }
+
+  /**
+   * Local only: orders built from now on follow this mode. Call it after the exchange confirmed the mode
+   * (PositionManager.setPositionMode does both) or after reading the account's actual mode at start.
+   */
+  public adoptFuturesPositionMode(mode: PositionModeEnum): void {
+    this.currentFuturesPositionMode = mode;
   }
 
   public get futures(): ExchangeClient {
@@ -446,6 +528,22 @@ export class ExchangeConnector {
     return this._positionManager;
   }
 
+  /**
+   * Sub-account operations of this (master) account: list, transfers both ways with the caller's
+   * idempotency id, transfer status, sub-account balances. Results, never throws; demo mode and OKX
+   * answer `isNotSupported`. Lazy, one per connector.
+   */
+  public get subAccounts(): SubAccountGateway {
+    if (this._subAccountGateway === null) {
+      this._subAccountGateway = new SubAccountGateway({
+        client: this.exchange.subAccount,
+        label: `${this.exchangeLabel}${this.isDemoMode ? ' demo' : ''}`,
+      });
+    }
+
+    return this._subAccountGateway;
+  }
+
   public getWriteQueue(): RateLimitedRequestQueue | null {
     if (this.rateLimitConfigOverride === null) {
       return null;
@@ -455,6 +553,14 @@ export class ExchangeConnector {
   }
 
   public async initialize(): Promise<void> {
+    this.hasInitializeStarted = true;
+
+    if (this.marketDataPrimary !== null) {
+      await this.initializeAsMarketDataFollower(this.marketDataPrimary);
+
+      return;
+    }
+
     try {
       await withRetryOn429({
         fn: () => this.exchange.futures.loadTradeSymbols(),
@@ -469,6 +575,7 @@ export class ExchangeConnector {
       this.installAmountStepSnapper();
       this.startWatchingTickers();
       this.startDailyTradeSymbolsRefresh();
+      await this.loadFuturesLeverageTiers(INITIAL_LEVERAGE_TIER_LOAD_REASON);
     } catch (error) {
       logger.error(
         { error, exchange: this.exchangeName },
@@ -480,6 +587,83 @@ export class ExchangeConnector {
   }
 
   /**
+   * Opt-in: take market data (trade-symbol specs, tickers, leverage tiers) from `primary` — a connector
+   * of the SAME exchange and the same demo/live mode, usually the master account — instead of loading
+   * it again. That data is public and identical for every account of an exchange; five connectors
+   * (master + four sub-accounts) otherwise read the instruments list, the tickers every 30 s and the
+   * tier table five times over. Account-bound things stay per connector: orders, positions, balances,
+   * leverage/margin settings, the write rate-limit queue, user-data and order-book streams.
+   *
+   * Call before initialize(); initialize the primary first. The follower then does no market-data
+   * reads of its own: tickers and tiers are read from the primary live, the trade-symbol specs are
+   * copied into the follower's own client (its price/amount rounding reads them there) and re-copied
+   * after every reload the primary makes (daily round, on-demand reload of a fresh listing).
+   */
+  public shareMarketDataFrom(primary: ExchangeConnector): void {
+    if (primary === this) {
+      throw new Error('[ExchangeConnector] a connector cannot share market data with itself');
+    }
+
+    if (primary.exchangeName !== this.exchangeName || primary.isDemoMode !== this.isDemoMode) {
+      throw new Error(
+        `[ExchangeConnector] market data can only be shared within one exchange and one mode (primary ${primary.exchangeName}${primary.isDemoMode ? ' demo' : ''}, follower ${this.exchangeName}${this.isDemoMode ? ' demo' : ''})`
+      );
+    }
+
+    if (primary.marketDataPrimary !== null) {
+      throw new Error('[ExchangeConnector] the primary itself follows another connector — share from the root primary');
+    }
+
+    if (this.hasInitializeStarted || this.marketDataFollowerList.length > 0 || this.marketDataPrimary !== null) {
+      throw new Error('[ExchangeConnector] shareMarketDataFrom must be called once, before initialize(), on a connector nobody follows');
+    }
+
+    this.marketDataPrimary = primary;
+    this.tickersByMarketTypeAndSymbol = primary.tickersByMarketTypeAndSymbol;
+    primary.marketDataFollowerList.push(this);
+  }
+
+  /** True when this connector reads its market data from another one (shareMarketDataFrom). */
+  public isMarketDataFollower(): boolean {
+    return this.marketDataPrimary !== null;
+  }
+
+  private async initializeAsMarketDataFollower(primary: ExchangeConnector): Promise<void> {
+    if (primary.exchange.futures.tradeSymbols.size === 0) {
+      throw new Error('[ExchangeConnector] the market-data primary has no trade symbols loaded — initialize the primary first');
+    }
+
+    this.copyTradeSymbolsFromPrimary(MarketTypeEnum.Futures);
+    this.copyTradeSymbolsFromPrimary(MarketTypeEnum.Spot);
+    await this.resolveWriteQueueOnInitialize();
+    logger.info(
+      { exchange: this.exchangeName, futuresSymbolCount: this.exchange.futures.tradeSymbols.size },
+      `[ExchangeConnector] ${this.exchangeName} initialized with market data shared from the primary connector`
+    );
+  }
+
+  private copyTradeSymbolsFromPrimary(marketType: MarketTypeEnum): void {
+    if (this.marketDataPrimary === null) {
+      return;
+    }
+
+    const sourceBySymbol = this.marketDataPrimary.getClient(marketType).tradeSymbols;
+    const targetBySymbol = this.getClient(marketType).tradeSymbols;
+
+    targetBySymbol.clear();
+
+    for (const [symbol, tradeSymbol] of sourceBySymbol) {
+      targetBySymbol.set(symbol, tradeSymbol);
+    }
+  }
+
+  private syncFollowerTradeSymbols(marketType: MarketTypeEnum): void {
+    for (const follower of this.marketDataFollowerList) {
+      follower.copyTradeSymbolsFromPrimary(marketType);
+    }
+  }
+
+  /**
    * Teach the shared price formatter this exchange's tick grid, so EVERY price the app states
    * (Telegram, alerts, logs, journal) matches what actually rests on the exchange instead of printing
    * a 16-digit floating-point tail. Wired here because the symbol filters have just been loaded — an
@@ -487,11 +671,11 @@ export class ExchangeConnector {
    * exact value: priceToPrecision would fall back to a blind 8 decimals and mangle sub-cent coins.
    */
   private installPriceTickSnapper(): void {
-    configurePriceTickSnapper((symbol, price) =>
+    configurePriceTickSnapper((symbol, price, rounding) =>
       this.exchange.futures.tradeSymbols.has(symbol)
-        ? this.exchange.futures.priceToPrecision(symbol, price)
+        ? this.exchange.futures.priceToPrecision(symbol, price, rounding)
         : this.exchange.spot.tradeSymbols.has(symbol)
-          ? this.exchange.spot.priceToPrecision(symbol, price)
+          ? this.exchange.spot.priceToPrecision(symbol, price, rounding)
           : price
     );
   }
@@ -501,11 +685,11 @@ export class ExchangeConnector {
    * `formatAmount` / `snapAmountToStep` use, so a computed quantity prints as the exchange holds it.
    */
   private installAmountStepSnapper(): void {
-    configureAmountStepSnapper((symbol, amount) =>
+    configureAmountStepSnapper((symbol, amount, rounding) =>
       this.exchange.futures.tradeSymbols.has(symbol)
-        ? this.exchange.futures.amountToPrecision(symbol, amount)
+        ? this.exchange.futures.amountToPrecision(symbol, amount, rounding)
         : this.exchange.spot.tradeSymbols.has(symbol)
-          ? this.exchange.spot.amountToPrecision(symbol, amount)
+          ? this.exchange.spot.amountToPrecision(symbol, amount, rounding)
           : amount
     );
   }
@@ -608,7 +792,11 @@ export class ExchangeConnector {
     }
 
     this.isWatchingTickers = true;
-    await this.updateTickers();
+
+    const firstRound = this.updateTickers();
+
+    this.firstTickerRoundPromise = firstRound;
+    await firstRound;
 
     this.tickerUpdateIntervalId = setInterval(async () => {
       if (!this.isWatchingTickers) {
@@ -662,6 +850,51 @@ export class ExchangeConnector {
       const tickerKey = this.getTickerKey(normalizedSymbol, marketType);
       this.tickersByMarketTypeAndSymbol.set(tickerKey, ticker);
     }
+
+    if (tickerBySymbol.size > 0) {
+      this.tickerSnapshotMarketTypeSet.add(marketType);
+    }
+  }
+
+  /**
+   * Resolves once the ticker cache holds a snapshot of `marketType` (default futures), or after
+   * `timeoutMs`. initialize() starts the cache without awaiting it, so the prefix search
+   * (resolveSymbolWithPrefix) right after start could look into an empty cache and miss 1000PEPEUSDT.
+   * Never throws: false means the snapshot did not arrive in time (the read failed and the next round
+   * is 30 s away, or initialize() was not called) — the caller decides whether to go on without it.
+   */
+  public async waitForTickersReady(
+    timeoutMs: number = TICKERS_READY_DEFAULT_TIMEOUT_MS,
+    marketType: MarketTypeEnum = MarketTypeEnum.Futures
+  ): Promise<boolean> {
+    if (this.marketDataPrimary !== null) {
+      return this.marketDataPrimary.waitForTickersReady(timeoutMs, marketType);
+    }
+
+    const deadlineMs = Date.now() + timeoutMs;
+
+    while (!this.tickerSnapshotMarketTypeSet.has(marketType)) {
+      const remainingMs = deadlineMs - Date.now();
+
+      if (remainingMs <= 0) {
+        return false;
+      }
+
+      const waitMs = Math.min(TICKERS_READY_POLL_MS, remainingMs);
+
+      if (this.firstTickerRoundPromise !== null) {
+        await Promise.race([this.firstTickerRoundPromise, sleep(waitMs)]);
+      } else {
+        await sleep(waitMs);
+      }
+
+      if (this.firstTickerRoundPromise !== null && !this.tickerSnapshotMarketTypeSet.has(marketType)) {
+        // The first round settled without this market: stop racing a finished promise, poll plainly.
+        this.firstTickerRoundPromise = null;
+      }
+    }
+
+    return true;
   }
 
   private getTickerKey(symbol: string, marketType: MarketTypeEnum): string {
@@ -674,6 +907,31 @@ export class ExchangeConnector {
     symbol: string,
     marketType: MarketTypeEnum
   ): string {
+    const foundSymbol = this.findSymbolWithPrefix(symbol, marketType);
+
+    if (foundSymbol !== null) {
+      return foundSymbol;
+    }
+
+    logger.warn(
+      {
+        symbol,
+        exchange: this.exchangeName,
+        marketType,
+        testedPrefixes: this.symbolPrefixList,
+      },
+      'Symbol not found with any prefix'
+    );
+
+    return symbol;
+  }
+
+  /**
+   * Same search as resolveSymbolWithPrefix — the name as is, then the 10…1000000 prefixes, against the
+   * ticker cache — but a miss is reported as null instead of the input handed back, so the caller can
+   * tell "found as is" from "not listed at all".
+   */
+  public findSymbolWithPrefix(symbol: string, marketType: MarketTypeEnum): string | null {
     const tickerKey = this.getTickerKey(symbol, marketType);
 
     if (this.tickersByMarketTypeAndSymbol.has(tickerKey)) {
@@ -702,17 +960,67 @@ export class ExchangeConnector {
       }
     }
 
-    logger.warn(
-      {
-        symbol,
-        exchange: this.exchangeName,
-        marketType,
-        testedPrefixes: this.symbolPrefixList,
-      },
-      'Symbol not found with any prefix'
-    );
+    return null;
+  }
 
-    return symbol;
+  /**
+   * Bybit writes some multipliers AFTER the base: SHIB1000USDT, not 1000SHIBUSDT (its public linear
+   * tickers, read 25.09.2026). resolveSymbolWithPrefix never looked there and keeps not looking — this
+   * is used by resolveFuturesSymbol / resolveSpotSymbol only.
+   */
+  private findSymbolWithMultiplierSuffix(symbol: string, marketType: MarketTypeEnum): string | null {
+    const quote = MULTIPLIER_SUFFIX_QUOTE_LIST.find(item => symbol.length > item.length && symbol.endsWith(item));
+
+    if (quote === undefined) {
+      return null;
+    }
+
+    const base = symbol.slice(0, -quote.length);
+
+    for (const prefix of this.symbolPrefixList) {
+      const suffixedSymbol = `${base}${prefix}${quote}`;
+
+      if (this.tickersByMarketTypeAndSymbol.has(this.getTickerKey(suffixedSymbol, marketType))) {
+        return suffixedSymbol;
+      }
+    }
+
+    return null;
+  }
+
+  /**
+   * Human / signal input → this exchange's futures symbol: "$pepe", "#BTC", "BTC/USDT", "BTCUSDT.P"
+   * (parseRawSymbolInput), then the 1000-style prefix by the ticker cache (waits for its first
+   * snapshot), then the trading spec (a coin listed after start is fetched on demand). `isFound`
+   * false: not listed on this exchange (or the input had no symbol in it); `symbol` is then the best
+   * guess, for the message to the human.
+   */
+  public async resolveFuturesSymbol(raw: string): Promise<ResolvedSymbol> {
+    return this.resolveMarketSymbol(raw, MarketTypeEnum.Futures);
+  }
+
+  /** Spot twin of resolveFuturesSymbol. */
+  public async resolveSpotSymbol(raw: string): Promise<ResolvedSymbol> {
+    return this.resolveMarketSymbol(raw, MarketTypeEnum.Spot);
+  }
+
+  private async resolveMarketSymbol(raw: string, marketType: MarketTypeEnum): Promise<ResolvedSymbol> {
+    const parsedSymbol = parseRawSymbolInput(raw);
+
+    if (parsedSymbol === null) {
+      return { symbol: raw.trim().toUpperCase(), isFound: false };
+    }
+
+    await this.waitForTickersReady(RESOLVE_SYMBOL_TICKERS_WAIT_MS, marketType);
+
+    const symbol = this.findSymbolWithPrefix(parsedSymbol, marketType)
+      ?? this.findSymbolWithMultiplierSuffix(parsedSymbol, marketType)
+      ?? parsedSymbol;
+    const isFound = isSpot(marketType)
+      ? await this.ensureSpotTradeSymbolLoaded(symbol)
+      : await this.ensureFuturesTradeSymbolLoaded(symbol);
+
+    return { symbol, isFound };
   }
 
   public getTicker(
@@ -765,6 +1073,28 @@ export class ExchangeConnector {
 
   public getMarkPrice(symbol: string): MarkPriceUpdate | undefined {
     return this.markPriceByFuturesSymbol.get(symbol);
+  }
+
+  /**
+   * The one private (user-data) stream of this account's market, shared by every consumer — subscribe
+   * OrderManager, PositionMonitor and the app's handlers to it, then connect() once. Never per market
+   * data follower: orders and fills are per account.
+   */
+  public getUserDataStreamRouter(marketType: MarketTypeEnum = MarketTypeEnum.Futures): UserDataStreamRouter {
+    const existing = this.userDataStreamRouterByMarketType.get(marketType);
+
+    if (existing !== undefined) {
+      return existing;
+    }
+
+    const router = new UserDataStreamRouter({
+      client: this.getClient(marketType),
+      label: `${this.exchangeLabel} ${isSpot(marketType) ? 'Spot' : 'Futures'}`,
+    });
+
+    this.userDataStreamRouterByMarketType.set(marketType, router);
+
+    return router;
   }
 
   // ---- Order book: the single door to depth for consumers (never the raw client) ----
@@ -882,7 +1212,7 @@ export class ExchangeConnector {
 
       return {
         ...resultBase,
-        errorText: errorMessage,
+        errorText: describeExchangeRefusal(error),
         errorCode,
         actualExchangeParams: undefined,
       };
@@ -962,7 +1292,7 @@ export class ExchangeConnector {
 
       return baseResultList.map(base => ({
         ...base,
-        errorText: errorMessage,
+        errorText: describeExchangeRefusal(error),
         errorCode,
         actualExchangeParams: undefined,
       }));
@@ -1060,7 +1390,7 @@ export class ExchangeConnector {
       );
     }
 
-    args.timeInForce = isMarketLike ? TimeInForceEnum.Ioc : TimeInForceEnum.Gtc;
+    args.timeInForce = isMarketLike ? TimeInForceEnum.Ioc : (orderParams.timeInForce ?? TimeInForceEnum.Gtc);
 
     if (orderParams.triggerPrice !== undefined) {
       args.stopPrice = client.priceToPrecision(
@@ -1137,6 +1467,42 @@ export class ExchangeConnector {
     return this.exchange.futures.tradeSymbols.has(symbol);
   }
 
+  /**
+   * The futures price/amount grid and order-size floors for `symbol`, read from the same
+   * `tradeSymbols` cache `installPriceTickSnapper`/`installAmountStepSnapper` already key off.
+   * `null` when the spec is not loaded — the caller loads it first with
+   * `ensureFuturesTradeSymbolLoaded`, same as every other symbol-spec reader here.
+   */
+  public getFuturesOrderRules(symbol: string): FuturesOrderRules | null {
+    const tradeSymbol = this.exchange.futures.tradeSymbols.get(symbol);
+
+    if (tradeSymbol === undefined) {
+      return null;
+    }
+
+    const tickSize = parseFloat(tradeSymbol.filter.tickSize);
+    const stepSize = parseFloat(tradeSymbol.filter.stepSize);
+
+    return {
+      symbol,
+      tickSize: Number.isFinite(tickSize) ? tickSize : 0,
+      stepSize: Number.isFinite(stepSize) ? stepSize : 0,
+      minAmount: this.exchange.futures.getMinOrderQty(symbol),
+      minNotionalUsd: this.exchange.futures.getMinNotional(symbol),
+    };
+  }
+
+  /** Spot twin of ensureFuturesTradeSymbolLoaded: same single-flight reload and cooldown. */
+  public async ensureSpotTradeSymbolLoaded(symbol: string): Promise<boolean> {
+    if (this.exchange.spot.tradeSymbols.has(symbol)) {
+      return true;
+    }
+
+    await this.reloadSpotTradeSymbols(`${symbol} spot trade-symbol missing`);
+
+    return this.exchange.spot.tradeSymbols.has(symbol);
+  }
+
   private async reloadFuturesTradeSymbolsOnDemand(symbol: string): Promise<void> {
     await this.reloadFuturesTradeSymbols(`${symbol} futures trade-symbol missing`);
   }
@@ -1181,6 +1547,13 @@ export class ExchangeConnector {
   }
 
   private async reloadTradeSymbolsForMarket(marketType: MarketTypeEnum, reasonLabel: string): Promise<void> {
+    if (this.marketDataPrimary !== null) {
+      await this.marketDataPrimary.reloadTradeSymbolsForMarket(marketType, reasonLabel);
+      this.copyTradeSymbolsFromPrimary(marketType);
+
+      return;
+    }
+
     const state = this.getTradeSymbolsReloadState(marketType);
     const marketLabel = isSpot(marketType) ? 'spot' : 'futures';
 
@@ -1219,6 +1592,7 @@ export class ExchangeConnector {
 
     try {
       await reloadPromise;
+      this.syncFollowerTradeSymbols(marketType);
     } catch (error) {
       logger.error(
         { error, exchange: this.exchangeName, marketType, reasonLabel },
@@ -1252,9 +1626,160 @@ export class ExchangeConnector {
     try {
       await this.refreshMarketTradeSymbolsSafely(MarketTypeEnum.Futures, reasonLabel);
       await this.refreshMarketTradeSymbolsSafely(MarketTypeEnum.Spot, reasonLabel);
+      await this.loadFuturesLeverageTiers(reasonLabel);
     } finally {
       this.isRefreshingAllTradeSymbols = false;
     }
+  }
+
+  /**
+   * Bulk read of the futures leverage tiers for every symbol. Single-flight; a failure is logged and
+   * swallowed, and the previous map stays (an app without tiers falls back to its plain setting — the
+   * behaviour it had before tiers existed — which beats a start that never happens).
+   */
+  public async loadFuturesLeverageTiers(reasonLabel: string): Promise<void> {
+    if (this.marketDataPrimary !== null) {
+      await this.marketDataPrimary.loadFuturesLeverageTiers(reasonLabel);
+
+      return;
+    }
+
+    if (this.shouldSkipSignedLeverageTierRead()) {
+      return;
+    }
+
+    // A joiner shares the read AND its outcome: the original caller logs a failure, the joiner just
+    // sees the promise settle — a rejection reaching it would break the "never throws" contract.
+    if (this.leverageTierBulkLoadInFlight !== null) {
+      await this.leverageTierBulkLoadInFlight.catch(() => undefined);
+
+      return;
+    }
+
+    const loadPromise = (async (): Promise<void> => {
+      const tierListBySymbol = await withRetryOn429({
+        fn: () => this.exchange.futures.fetchAllLeverageTierList(),
+        contextLabel: `load leverage tiers (${reasonLabel}) ${this.exchangeName}`,
+      });
+
+      this.futuresLeverageTierListBySymbol.clear();
+
+      for (const [symbol, tierList] of tierListBySymbol) {
+        this.futuresLeverageTierListBySymbol.set(symbol, tierList);
+      }
+
+      this.leverageTierMissAtMsBySymbol.clear();
+      logger.info(
+        { exchange: this.exchangeName, reasonLabel, symbolCount: tierListBySymbol.size },
+        `[ExchangeConnector] ${reasonLabel} — leverage tiers loaded for ${tierListBySymbol.size} futures symbols`
+      );
+    })();
+
+    this.leverageTierBulkLoadInFlight = loadPromise;
+
+    try {
+      await loadPromise;
+    } catch (error) {
+      logger.error(
+        { error, exchange: this.exchangeName, reasonLabel },
+        `[ExchangeConnector] leverage-tier load failed (${reasonLabel}) — keeping the previous tiers`
+      );
+    } finally {
+      this.leverageTierBulkLoadInFlight = null;
+    }
+  }
+
+  /**
+   * Make sure the tiers of ONE futures symbol are cached: a present entry costs nothing, a missing
+   * one is fetched for that symbol alone (concurrent callers share the read). `isForced` re-reads a
+   * present entry too — for an app that just got a refusal proving the cached table is stale. Returns
+   * whether the symbol has tiers afterwards; a symbol the exchange answered empty for is not asked
+   * again for LEVERAGE_TIER_SYMBOL_RELOAD_COOLDOWN_MS.
+   */
+  public async ensureFuturesLeverageTierListLoaded(symbol: string, isForced: boolean = false): Promise<boolean> {
+    if (this.marketDataPrimary !== null) {
+      return this.marketDataPrimary.ensureFuturesLeverageTierListLoaded(symbol, isForced);
+    }
+
+    if (!isForced && this.futuresLeverageTierListBySymbol.has(symbol)) {
+      return true;
+    }
+
+    if (this.shouldSkipSignedLeverageTierRead()) {
+      return false;
+    }
+
+    const inFlight = this.leverageTierSymbolLoadInFlightBySymbol.get(symbol);
+
+    if (inFlight !== undefined) {
+      await inFlight.catch(() => undefined);
+
+      return this.futuresLeverageTierListBySymbol.has(symbol);
+    }
+
+    const missAtMs = this.leverageTierMissAtMsBySymbol.get(symbol);
+
+    if (!isForced && missAtMs !== undefined && Date.now() - missAtMs < LEVERAGE_TIER_SYMBOL_RELOAD_COOLDOWN_MS) {
+      return false;
+    }
+
+    const loadPromise = (async (): Promise<void> => {
+      const tierList = await withRetryOn429({
+        fn: () => this.exchange.futures.fetchLeverageTierList(symbol),
+        contextLabel: `load leverage tiers ${symbol} ${this.exchangeName}`,
+      });
+
+      if (tierList.length === 0) {
+        this.leverageTierMissAtMsBySymbol.set(symbol, Date.now());
+
+        return;
+      }
+
+      this.futuresLeverageTierListBySymbol.set(symbol, tierList);
+      this.leverageTierMissAtMsBySymbol.delete(symbol);
+    })();
+
+    this.leverageTierSymbolLoadInFlightBySymbol.set(symbol, loadPromise);
+
+    try {
+      await loadPromise;
+    } catch (error) {
+      this.leverageTierMissAtMsBySymbol.set(symbol, Date.now());
+      logger.error(
+        { error, exchange: this.exchangeName, symbol },
+        `[ExchangeConnector] leverage-tier load for ${symbol} failed — the app keeps its plain leverage setting`
+      );
+    } finally {
+      this.leverageTierSymbolLoadInFlightBySymbol.delete(symbol);
+    }
+
+    return this.futuresLeverageTierListBySymbol.has(symbol);
+  }
+
+  /** A keyless connector on an exchange with a signed tier read has no tiers; said once, at debug level. */
+  private shouldSkipSignedLeverageTierRead(): boolean {
+    if (!this.isKeyless || !SIGNED_LEVERAGE_TIER_EXCHANGE_NAME_SET.has(this.exchangeName)) {
+      return false;
+    }
+
+    if (!this.isKeylessTierSkipLogged) {
+      this.isKeylessTierSkipLogged = true;
+      logger.debug(
+        { exchange: this.exchangeName },
+        `[ExchangeConnector] ${this.exchangeName} connector has no API key — the signed leverage-tier read is skipped (no tiers)`
+      );
+    }
+
+    return true;
+  }
+
+  /** Cached futures leverage tiers of a symbol (ascending cap); null when the symbol has none cached. */
+  public getFuturesLeverageTierList(symbol: string): LeverageTier[] | null {
+    if (this.marketDataPrimary !== null) {
+      return this.marketDataPrimary.getFuturesLeverageTierList(symbol);
+    }
+
+    return this.futuresLeverageTierListBySymbol.get(symbol) ?? null;
   }
 
   private async refreshMarketTradeSymbolsSafely(marketType: MarketTypeEnum, reasonLabel: string): Promise<void> {
@@ -1422,6 +1947,14 @@ export class ExchangeConnector {
   }
 
   public async disconnect(): Promise<void> {
+    if (this.marketDataPrimary !== null) {
+      const followerIndex = this.marketDataPrimary.marketDataFollowerList.indexOf(this);
+
+      if (followerIndex !== -1) {
+        this.marketDataPrimary.marketDataFollowerList.splice(followerIndex, 1);
+      }
+    }
+
     this.isWatchingTickers = false;
     this.stopWatchingMarkPrices();
     this.stopDailyTradeSymbolsRefresh();
@@ -1431,6 +1964,12 @@ export class ExchangeConnector {
     }
 
     this.orderBookTrackerByMarketType.clear();
+
+    for (const router of this.userDataStreamRouterByMarketType.values()) {
+      router.disconnect();
+    }
+
+    this.userDataStreamRouterByMarketType.clear();
 
     this.stopStreamBundle(this.futuresStreamBundle);
     this.stopStreamBundle(this.spotStreamBundle);

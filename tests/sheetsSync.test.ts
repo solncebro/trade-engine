@@ -1,6 +1,6 @@
 import { sheets_v4 } from '@googleapis/sheets';
 
-import { ensureSheetHeader, fullReplaceSheet, syncRecordListToSheet, toSheetsSerialDate } from '../src/services/tradeJournal/sheetsSync';
+import { ensureSheetHeader, fullReplaceSheet, replaceSheetValues, syncRecordListToSheet, toSheetsSerialDate } from '../src/services/tradeJournal/sheetsSync';
 
 interface SheetsMock {
   sheets: sheets_v4.Sheets;
@@ -261,5 +261,119 @@ describe('fullReplaceSheet', () => {
     expect(mock.clear).toHaveBeenCalledTimes(1);
     expect(mock.update).toHaveBeenCalledTimes(1);
     expect(firstNumberFormat(mock.formatBatchUpdate).repeatCell?.cell?.userEnteredFormat?.numberFormat?.type).toBe('DATE_TIME');
+  });
+});
+
+// Named targets: the answer shapes of spreadsheets.get / batchUpdate(addSheet) follow the installed
+// @googleapis/sheets typings (Schema$Spreadsheet.sheets[].properties, Schema$Response.addSheet.properties).
+function makeNamedSheets(existingTitleList: string[], existingRowList: string[][] = []): SheetsMock & { spreadsheetGet: jest.Mock } {
+  const mock = makeSheets(existingRowList);
+  const spreadsheetGet = jest.fn().mockResolvedValue({
+    data: { sheets: existingTitleList.map((title, index) => ({ properties: { sheetId: 100 + index, title, index } })) },
+  });
+
+  mock.formatBatchUpdate.mockImplementation(async (request: { requestBody: sheets_v4.Schema$BatchUpdateSpreadsheetRequest }) => {
+    const addSheet = request.requestBody.requests?.[0]?.addSheet;
+
+    return addSheet === undefined
+      ? {}
+      : { data: { replies: [{ addSheet: { properties: { sheetId: 777, title: addSheet.properties?.title, index: existingTitleList.length } } }] } };
+  });
+  (mock.sheets.spreadsheets as unknown as { get: jest.Mock }).get = spreadsheetGet;
+
+  return { ...mock, spreadsheetGet };
+}
+
+describe('named sheet targets', () => {
+  const columnList = ['symbol', 'trader', 'id'];
+
+  it('writes into the sheet of that title, not the first one', async () => {
+    const mock = makeNamedSheets(['Сделки', 'Иван'], [columnList]);
+
+    await syncRecordListToSheet({
+      sheets: mock.sheets,
+      spreadsheetId: 'id',
+      columnList,
+      keyColumn: 'id',
+      dateColumnList: [],
+      percentColumnList: [],
+      recordList: [{ symbol: 'BTCUSDT', trader: 'Иван', id: 'A' }],
+      sheetName: 'Иван',
+    });
+
+    expect(mock.get.mock.calls[0][0].range).toBe("'Иван'!A:C");
+    expect(mock.append.mock.calls[0][0].range).toBe("'Иван'!A:C");
+    expect(mock.formatBatchUpdate.mock.calls.some((call) => call[0].requestBody.requests?.[0]?.addSheet !== undefined)).toBe(false);
+  });
+
+  it('creates a missing sheet and writes its header before the rows', async () => {
+    const mock = makeNamedSheets(['Сделки'], []);
+
+    await syncRecordListToSheet({
+      sheets: mock.sheets,
+      spreadsheetId: 'id',
+      columnList,
+      keyColumn: 'id',
+      dateColumnList: [],
+      percentColumnList: [],
+      recordList: [{ symbol: 'BTCUSDT', trader: 'Пётр', id: 'A' }],
+      sheetName: 'Пётр',
+    });
+
+    expect(mock.formatBatchUpdate.mock.calls[0][0].requestBody.requests[0].addSheet.properties.title).toBe('Пётр');
+    expect(mock.update.mock.calls[0][0]).toEqual(expect.objectContaining({ range: "'Пётр'!A1", requestBody: { values: [columnList] } }));
+    expect(mock.append).toHaveBeenCalledTimes(1);
+  });
+
+  it('ensureSheetHeader creates the named sheet with its header', async () => {
+    const mock = makeNamedSheets(['Сделки'], []);
+
+    await expect(ensureSheetHeader({ sheets: mock.sheets, spreadsheetId: 'id', columnList, sheetName: 'Сводка' })).resolves.toBe(true);
+    expect(mock.update.mock.calls[0][0].range).toBe("'Сводка'!A1");
+  });
+
+  it('keeps writing to the first sheet when no name is given', async () => {
+    const mock = makeNamedSheets(['Сделки', 'Иван'], [columnList]);
+
+    await syncRecordListToSheet({
+      sheets: mock.sheets,
+      spreadsheetId: 'id',
+      columnList,
+      keyColumn: 'id',
+      dateColumnList: [],
+      percentColumnList: [],
+      recordList: [{ symbol: 'BTCUSDT', trader: 'Иван', id: 'A' }],
+    });
+
+    expect(mock.append.mock.calls[0][0].range).toBe("'Сделки'!A:C");
+  });
+});
+
+describe('replaceSheetValues', () => {
+  it('clears the whole named sheet and writes the matrix from A1 with clean numbers', async () => {
+    const mock = makeNamedSheets(['Сделки', 'Сводка']);
+
+    await expect(replaceSheetValues({
+      sheets: mock.sheets,
+      spreadsheetId: 'id',
+      sheetName: 'Сводка',
+      valueMatrix: [['Трейдер', 'Сделок', 'Доход, %'], ['Иван', 3, 0.028300000000000002]],
+    })).resolves.toBe(true);
+
+    expect(mock.clear.mock.calls[0][0].range).toBe("'Сводка'");
+    expect(mock.update.mock.calls[0][0]).toEqual(expect.objectContaining({
+      range: "'Сводка'!A1",
+      valueInputOption: 'USER_ENTERED',
+      requestBody: { values: [['Трейдер', 'Сделок', 'Доход, %'], ['Иван', 3, 0.0283]] },
+    }));
+  });
+
+  it('creates the summary sheet when it does not exist yet', async () => {
+    const mock = makeNamedSheets(['Сделки']);
+
+    await replaceSheetValues({ sheets: mock.sheets, spreadsheetId: 'id', sheetName: 'Сводка', valueMatrix: [['x']] });
+
+    expect(mock.formatBatchUpdate.mock.calls[0][0].requestBody.requests[0].addSheet.properties.title).toBe('Сводка');
+    expect(mock.update).toHaveBeenCalledTimes(1);
   });
 });

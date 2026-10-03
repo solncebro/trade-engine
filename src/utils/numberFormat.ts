@@ -1,3 +1,5 @@
+import type { StepRounding } from '@solncebro/exchange-engine';
+
 import type { AmountStepSnapper } from './numberFormat.types';
 import { ABSENT_PRICE_TEXT, trimNumberTail } from './priceFormat';
 
@@ -24,13 +26,13 @@ function configureAmountStepSnapper(snapper: AmountStepSnapper | null): void {
 }
 
 /** The amount as the exchange would hold it. Unknown symbol / unconfigured or throwing snapper keeps the input. */
-function snapAmountToStep(symbol: string, amount: number): number {
+function snapAmountToStep(symbol: string, amount: number, rounding: StepRounding = 'nearest'): number {
   if (amountSnapper === null || !Number.isFinite(amount)) {
     return amount;
   }
 
   try {
-    const snapped = amountSnapper(symbol, amount);
+    const snapped = amountSnapper(symbol, amount, rounding);
 
     return Number.isFinite(snapped) ? snapped : amount;
   } catch {

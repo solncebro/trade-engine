@@ -1,3 +1,5 @@
+import { MarketTypeEnum } from '@solncebro/exchange-engine';
+
 import { OrderManager } from '../src/core/OrderManager';
 import type { ConfirmedCancelInfo, ExhaustedCancelInfo } from '../src/core/OrderManager.types';
 
@@ -15,6 +17,7 @@ function createMockExchange() {
   const placeStopLoss = jest.fn(async (_args: Record<string, unknown>): Promise<{ orderId?: string; errorText?: string }> => ({ orderId: 'sl-default' }));
   const openPositionLimit = jest.fn(async (_args: Record<string, unknown>): Promise<{ orderId?: string; errorText?: string }> => ({ orderId: 'order-default' }));
   const closePositionMarket = jest.fn(async (_args: Record<string, unknown>): Promise<{ orderId?: string; errorText?: string }> => ({ orderId: 'close-default' }));
+  const openPositionMarket = jest.fn(async (_args: Record<string, unknown>): Promise<{ orderId?: string; errorText?: string }> => ({ orderId: 'open-default' }));
   const closePositionLimit = jest.fn(async (_args: Record<string, unknown>): Promise<{ orderId?: string; errorText?: string }> => ({ orderId: 'tp-default' }));
   const openPositionBatchLimit = jest.fn(
     async (args: { itemList: Array<{ direction: string; amount: number; price: number }>; leverage?: number; marginMode?: unknown }): Promise<Array<{ isSuccess: boolean; orderId: string | null; errorText: string | null }>> =>
@@ -27,10 +30,10 @@ function createMockExchange() {
 
   const exchangeConnector = {
     futures: { getOrder },
-    positionManager: { cancelOrder, cancelBatchOrders, placeStopLoss, openPositionLimit, closePositionMarket, closePositionLimit, openPositionBatchLimit, closePositionBatchLimit },
+    positionManager: { cancelOrder, cancelBatchOrders, placeStopLoss, openPositionLimit, openPositionMarket, closePositionMarket, closePositionLimit, openPositionBatchLimit, closePositionBatchLimit },
   };
 
-  return { exchangeConnector, getOrder, cancelOrder, cancelBatchOrders, placeStopLoss, openPositionLimit, closePositionMarket, closePositionLimit, openPositionBatchLimit, closePositionBatchLimit };
+  return { exchangeConnector, getOrder, cancelOrder, cancelBatchOrders, placeStopLoss, openPositionLimit, openPositionMarket, closePositionMarket, closePositionLimit, openPositionBatchLimit, closePositionBatchLimit };
 }
 
 function createMockTelegramNotifier() {
@@ -80,6 +83,34 @@ describe('OrderManager', () => {
     expect(outcome.immediateResult).toBe('cancelled');
     expect(onConfirmed).toHaveBeenCalledTimes(1);
     expect(onConfirmed.mock.calls[0][0]).toMatchObject({ kind: 'cancelled', source: 'ws', orderId: 'order-1' });
+
+    await tracker.shutdown();
+  });
+
+  it('enqueueCancel — WS confirm (closed = filled) inside immediate-verify-window resolves to filled, not cancelled', async () => {
+    const { exchangeConnector, getOrder } = createMockExchange();
+    const telegramNotifier = createMockTelegramNotifier();
+    const tracker = new OrderManager({ exchangeConnector: exchangeConnector as never, telegramNotifier: telegramNotifier as never });
+
+    const promise = tracker.enqueueCancel({
+      symbol: 'BTCUSDT',
+      orderId: 'order-1',
+      modulePrefix: '[Test]',
+      contextLabel: 'unit-test',
+    });
+
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    // The order fills in the same second the cancel goes out: the stream confirms 'closed' inside the wait.
+    tracker.handleOrderUpdate({ symbol: 'BTCUSDT', orderId: 'order-1', clientOrderId: '', side: 'buy' as never, status: 'closed', price: 100, avgPrice: 100.5, amount: 1, filledAmount: 1, timestamp: 0 });
+
+    await jest.advanceTimersByTimeAsync(1500);
+    const outcome = await promise;
+
+    expect(getOrder).not.toHaveBeenCalled();
+    expect(outcome).toMatchObject({ immediateResult: 'filled', filledAmount: 1, avgPrice: 100.5, isStillTracked: false });
 
     await tracker.shutdown();
   });
@@ -1263,5 +1294,175 @@ describe('OrderManager', () => {
     expect(cancelOrder).toHaveBeenCalledWith(expect.objectContaining({ orderId: 'old-sl-1' }));
 
     await manager.shutdown();
+  });
+
+  describe('explicit clientOrderId', () => {
+    it('enqueueCreateLimitOrder (open) forwards the given clientOrderId to openPositionLimit', async () => {
+      const { exchangeConnector, openPositionLimit } = createMockExchange();
+      const telegramNotifier = createMockTelegramNotifier();
+      const manager = new OrderManager({ exchangeConnector: exchangeConnector as never, telegramNotifier: telegramNotifier as never });
+
+      await manager.enqueueCreateLimitOrder({
+        symbol: 'BTCUSDT',
+        direction: 'long',
+        amount: 1,
+        price: 100,
+        contextLabel: 'unit-test',
+        clientOrderId: 'my-cid-1',
+      });
+
+      expect(openPositionLimit).toHaveBeenCalledWith(expect.objectContaining({ clientOrderId: 'my-cid-1' }));
+
+      await manager.shutdown();
+    });
+
+    it('enqueueCreateLimitOrder (reduce-only close) forwards the given clientOrderId to closePositionLimit', async () => {
+      const { exchangeConnector, closePositionLimit } = createMockExchange();
+      const telegramNotifier = createMockTelegramNotifier();
+      const manager = new OrderManager({ exchangeConnector: exchangeConnector as never, telegramNotifier: telegramNotifier as never });
+
+      await manager.enqueueCreateLimitOrder({
+        symbol: 'BTCUSDT',
+        direction: 'long',
+        amount: 1,
+        price: 100,
+        contextLabel: 'unit-test',
+        isReduceOnly: true,
+        clientOrderId: 'my-cid-2',
+      });
+
+      expect(closePositionLimit).toHaveBeenCalledWith(expect.objectContaining({ clientOrderId: 'my-cid-2' }));
+
+      await manager.shutdown();
+    });
+
+    it('enqueueCreateLimitOrder without clientOrderId sends none', async () => {
+      const { exchangeConnector, openPositionLimit } = createMockExchange();
+      const telegramNotifier = createMockTelegramNotifier();
+      const manager = new OrderManager({ exchangeConnector: exchangeConnector as never, telegramNotifier: telegramNotifier as never });
+
+      await manager.enqueueCreateLimitOrder({
+        symbol: 'BTCUSDT',
+        direction: 'long',
+        amount: 1,
+        price: 100,
+        contextLabel: 'unit-test',
+      });
+
+      expect(openPositionLimit.mock.calls[0][0]).not.toHaveProperty('clientOrderId');
+
+      await manager.shutdown();
+    });
+
+    it('enqueueReplaceStopLoss forwards the given clientOrderId to placeStopLoss', async () => {
+      const { exchangeConnector, placeStopLoss } = createMockExchange();
+      const telegramNotifier = createMockTelegramNotifier();
+      const manager = new OrderManager({ exchangeConnector: exchangeConnector as never, telegramNotifier: telegramNotifier as never });
+
+      await manager.enqueueReplaceStopLoss({
+        positionId: 'pos-1',
+        symbol: 'BTCUSDT',
+        direction: 'long',
+        oldOrderId: null,
+        triggerPrice: 100,
+        amount: 1,
+        clientOrderId: 'my-cid-sl',
+      });
+
+      expect(placeStopLoss).toHaveBeenCalledWith(expect.objectContaining({ clientOrderId: 'my-cid-sl' }));
+
+      await manager.shutdown();
+    });
+
+    it('enqueueReplaceStopLoss without clientOrderId keeps the prefix-generated id (existing behaviour)', async () => {
+      const { exchangeConnector, placeStopLoss } = createMockExchange();
+      const telegramNotifier = createMockTelegramNotifier();
+      const manager = new OrderManager({ exchangeConnector: exchangeConnector as never, telegramNotifier: telegramNotifier as never, orderLinkIdPrefix: 'app1-' });
+
+      await manager.enqueueReplaceStopLoss({
+        positionId: 'pos-1',
+        symbol: 'BTCUSDT',
+        direction: 'long',
+        oldOrderId: null,
+        triggerPrice: 100,
+        amount: 1,
+      });
+
+      const sentClientOrderId = placeStopLoss.mock.calls[0][0].clientOrderId as string;
+      expect(sentClientOrderId).toMatch(/^app1-/);
+
+      await manager.shutdown();
+    });
+
+    it('enqueueClosePositionMarket forwards the given clientOrderId to closePositionMarket', async () => {
+      const { exchangeConnector, closePositionMarket } = createMockExchange();
+      const telegramNotifier = createMockTelegramNotifier();
+      const manager = new OrderManager({ exchangeConnector: exchangeConnector as never, telegramNotifier: telegramNotifier as never });
+
+      await manager.enqueueClosePositionMarket({
+        positionId: 'pos-1',
+        symbol: 'BTCUSDT',
+        direction: 'long',
+        amount: 1,
+        contextLabel: 'unit-test',
+        clientOrderId: 'my-cid-close',
+      });
+
+      expect(closePositionMarket).toHaveBeenCalledWith(expect.objectContaining({ clientOrderId: 'my-cid-close' }));
+
+      await manager.shutdown();
+    });
+
+    it('enqueueOpenPositionMarket opens a futures position at market with the given clientOrderId', async () => {
+      const { exchangeConnector, openPositionMarket } = createMockExchange();
+      const telegramNotifier = createMockTelegramNotifier();
+      const manager = new OrderManager({ exchangeConnector: exchangeConnector as never, telegramNotifier: telegramNotifier as never });
+
+      const result = await manager.enqueueOpenPositionMarket({
+        positionId: 'pos-1',
+        symbol: 'BTCUSDT',
+        direction: 'short',
+        amount: 2,
+        contextLabel: 'unit-test',
+        clientOrderId: 'my-cid-open',
+      });
+
+      expect(openPositionMarket).toHaveBeenCalledWith({ symbol: 'BTCUSDT', marketType: MarketTypeEnum.Futures, direction: 'short', amount: 2, clientOrderId: 'my-cid-open' });
+      expect(result).toEqual({ isSuccess: true, orderId: 'open-default', errorText: null });
+
+      await manager.shutdown();
+    });
+
+    it('enqueueOpenPositionMarket reports a refusal without throwing', async () => {
+      const { exchangeConnector, openPositionMarket } = createMockExchange();
+      const telegramNotifier = createMockTelegramNotifier();
+      const manager = new OrderManager({ exchangeConnector: exchangeConnector as never, telegramNotifier: telegramNotifier as never });
+
+      openPositionMarket.mockResolvedValueOnce({ errorText: 'insufficient margin' });
+
+      const result = await manager.enqueueOpenPositionMarket({ positionId: 'pos-1', symbol: 'BTCUSDT', direction: 'long', amount: 1, contextLabel: 'unit-test' });
+
+      expect(result).toEqual({ isSuccess: false, orderId: null, errorText: 'insufficient margin' });
+
+      await manager.shutdown();
+    });
+
+    it('enqueueClosePositionMarket without clientOrderId sends none', async () => {
+      const { exchangeConnector, closePositionMarket } = createMockExchange();
+      const telegramNotifier = createMockTelegramNotifier();
+      const manager = new OrderManager({ exchangeConnector: exchangeConnector as never, telegramNotifier: telegramNotifier as never });
+
+      await manager.enqueueClosePositionMarket({
+        positionId: 'pos-1',
+        symbol: 'BTCUSDT',
+        direction: 'long',
+        amount: 1,
+        contextLabel: 'unit-test',
+      });
+
+      expect(closePositionMarket.mock.calls[0][0]).not.toHaveProperty('clientOrderId');
+
+      await manager.shutdown();
+    });
   });
 });

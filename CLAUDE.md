@@ -83,7 +83,8 @@ npx jest --config jest.integration.config.js --runInBand --testPathPatterns=<pat
 2. `ExchangeConnector.resolveSymbolWithPrefix(symbol, marketType)` — имя символа на этой бирже
    с учётом приставок: сперва имя как есть, затем `10` / `100` / `1000` / `10000` / `100000` /
    `1000000` по кэшу тикеров (`1000FLOKIUSDT` и подобные). Ничего не нашлось — предупреждение
-   в журнал и имя возвращается как есть
+   в журнал и имя возвращается как есть. Ввод человека или сигнала («$pepe», «BTC/USDT») —
+   `resolveFuturesSymbol(raw)` → `{ symbol, isFound }` (3.24.0)
 3. `connector.positionManager.*` — деловой вход (`openPositionLimit/Market`, `closePosition*`,
    `placeStopLoss/TakeProfit`): по направлению сделки сам выводит сторону заявки, в двустороннем
    режиме счёта — сторону позиции, признак «только уменьшать» (на Binance в этом режиме он не
@@ -110,7 +111,7 @@ npx jest --config jest.integration.config.js --runInBand --testPathPatterns=<pat
 | [`.claude/rules/exchange-connector-orders.md`](.claude/rules/exchange-connector-orders.md) | Создание ордеров (`buildCreateOrderArgs`), отличия OKX, методы `PositionManager` |
 | [`.claude/rules/exchange-connector-streams.md`](.claude/rules/exchange-connector-streams.md) | `KlineSubscriptionWatchdog`, `StreamSubscriptionWatchdog`, стакан (`OrderBookTracker`) |
 | [`.claude/rules/types.md`](.claude/rules/types.md) | Система типов: OrderParams, OrderResult, маппинги, конфиги |
-| [`.claude/rules/services.md`](.claude/rules/services.md) | Telegram, Firebase, Logger, утилиты |
+| [`.claude/rules/services.md`](.claude/rules/services.md) | Telegram (через telegram-engine), Firebase, журнал сделок, субсчета, личный поток, чтение окружения, Supabase Storage, Logger, утилиты |
 | [`.claude/rules/testing.md`](.claude/rules/testing.md) | Тестирование: команды, паттерны, хелперы, символы |
 | [`.claude/rules/code-conventions.md`](.claude/rules/code-conventions.md) | Конвенции: форматирование, импорты, именование, паттерны |
 | [`.claude/rules/strategy-trading.md`](.claude/rules/strategy-trading.md) | Слой стратегической торговли: `OrderManager`, базовый `PositionMonitor` (+ хуки, порты `PositionStore`/`MarketDataSource`), подключаемый `GenericPnlMonitor` (opt-in PnL-бот позиций), `ChartGenerator`, модель `MonitoredPosition`, утилиты слоя |
@@ -121,7 +122,7 @@ npx jest --config jest.integration.config.js --runInBand --testPathPatterns=<pat
 ### Ключевые модули
 
 - **`src/services/exchangeConnector.ts`** — обёртка над `@solncebro/exchange-engine`. Подключения, тикеры, mark price WebSocket, резолвинг символов, исполнение ордеров; для futures — `futuresPositionMode` (OneWay / Hedge) влияет на авто-`positionSide` в `createOrder` (legacy safety-net). Прямой доступ к клиентам через `connector.spot` / `connector.futures` (с Proxy для kline watchdog при включении). Lazy-init `connector.positionManager` — высокоуровневый API. 5/6-й аргументы конструктора (3.5.0): `klineWatchdogConfig?`, `rateLimitConfig?`. → [подробнее](.claude/rules/exchange-connector.md)
-- **`src/core/positionManager.ts`** — `PositionManager`, высокоуровневый семантический API для spot/futures (`openPositionLimit/Market`, `openPositionBatchLimit`, `closePositionLimit/Market`, `closePositionBatchLimit`, `placeStopLoss/TakeProfit`, `cancelOrder/cancelBatchOrders/cancelAllOrders`, `modifyOrder/modifyBatchOrders`, `spotMarketBuyByQuote`, `setLeverage/setMarginMode`, `readPositionState/readAllPositions` — последние два только futures). Все write-операции — через `RateLimitedRequestQueue` + `withRetryOn429` (3.5.0). Скрывает `positionSide`/`positionIdx`/`reduceOnly`/`closePosition`/`workingType`/`triggerDirection`/`triggerBy`/`orderFilter`/`marketUnit` от приложений; принимает бизнес-аргументы (`symbol`, `marketType`, `direction`, `amount`, `price`/`triggerPrice`). На spot `direction='short'` бросает synchronous Error.
+- **`src/core/positionManager.ts`** — `PositionManager`, высокоуровневый семантический API для spot/futures (`openPositionLimit/Market`, `openPositionBatchLimit`, `closePositionLimit/Market`, `closePositionBatchLimit`, `placeStopLoss/TakeProfit`, `cancelOrder/cancelBatchOrders/cancelAllOrders`, `modifyOrder/modifyBatchOrders`, `spotMarketBuyByQuote`, `setLeverage/setMarginMode/setPositionMode`, `readPositionMode`, `readPositionState/readAllPositions` — последние два только futures). Все write-операции — через `RateLimitedRequestQueue` + `withRetryOn429` (3.5.0). Скрывает `positionSide`/`positionIdx`/`reduceOnly`/`closePosition`/`workingType`/`triggerDirection`/`triggerBy`/`orderFilter`/`marketUnit` от приложений; принимает бизнес-аргументы (`symbol`, `marketType`, `direction`, `amount`, `price`/`triggerPrice`). На spot `direction='short'` бросает synchronous Error.
 - **`src/core/RateLimitedRequestQueue.ts`** (3.5.0) — sliding-window очередь для контроля RPS write-операций.
 - **`src/core/withRetryOn429.ts`** (3.5.0) — `withRetryOn429` (+ `withResultRetry`) — retry-обёртки с exponential backoff на 429/5xx. `withReadRetry` удалён в 3.22.0 (был той же функцией под вторым именем).
 - **`src/services/streamSubscriptionWatchdog.ts`** — ЕДИНЫЙ сторож здоровья WS-подписок; поведение потока задаёт `StreamWatchdogStrategy` (`streamWatchdogStrategies.ts` — стакан/сделки/mark-цена; `klineWatchdogStrategy.ts` — клайны, 3.22.0). `klineSubscriptionWatchdog.ts` — тонкая обёртка с прежним интерфейсом.
@@ -130,8 +131,11 @@ npx jest --config jest.integration.config.js --runInBand --testPathPatterns=<pat
 - **`src/services/tradifiSymbolGate.ts`** (3.12.0) — `TradifiSymbolGate`, переиспользуемый хранитель «универса без TradFi» (`isAllowed`/`classify`/`filterSymbolList`); опциональный `shouldAllowTradifi` (3.13.0, default `false`) снимает фильтр по явному согласию потребителя. → [подробнее](.claude/rules/services.md)
 - **`src/core/trendCalculator.ts` + `src/core/TrendMonitor.ts`** (3.14.0) — определение тренда актива по структуре рынка (вершины/впадины). `TrendCalculator` — статический расчёт направления (рост/падение/боковик), слома тренда по закрытию и силы 0–100. `TrendMonitor` — живой наблюдатель поверх `MarketDataSource`: вердикт по каждому интервалу + сводка, событие `trendChanged` при смене направления, чистое снятие подписок. `formatTrendSummaryMessage` — текст сводки для Telegram. Не торгует и не шлёт сам. → [подробнее](.claude/rules/trend.md)
 - **`src/core/orderExecutor.ts`** — базовый класс исполнения ордеров с TP/SL и аварийным выходом (legacy путь; новые проекты — через `PositionManager`). Сборка закрывающей заявки живёт здесь же (`buildCloseOrderParams`, приватный) — она перешла сюда из `OrderCalculator.calculateCloseOrder` в 3.13.0: расчёт общий, а место применения единственное. `positionSide` копируется из исходного `orderParams` — нужно для двустороннего режима.
-- **`src/services/telegram*.ts`** — Telegram-бот (Telegraf) + MTProto-слушатель. → [подробнее](.claude/rules/services.md)
-- **`src/services/firebaseServiceBase.ts`** — базовый класс Firestore CRUD с real-time подпиской; `updateData` использует `flattenForFirestoreUpdate` (3.5.0). → [подробнее](.claude/rules/services.md)
+- **`src/services/telegram*.ts`** — Telegram целиком на `@solncebro/telegram-engine` (3.24.0): `TelegramNotifier` из его деталей (бот, сторож доступа, рассылка), `TelegramCommandHandler` с его разбором аргументов, `TelegramMessageListener` — устаревшая обёртка над `createUserClient`. Прямые импорты `telegraf`/`telegram` запрещены (типы `Context`/`Telegraf` — из telegram-engine). → [подробнее](.claude/rules/services.md)
+- **`src/services/userDataStreamRouter.ts`** (3.24.0) — один личный поток счёта на всех потребителей (заявки/позиции/баланс, обрыв/возврат/пересверка); `connector.getUserDataStreamRouter()`.
+- **`src/services/subAccountGateway.ts`** (3.24.0) — `connector.subAccounts`: список субсчетов, переводы в обе стороны с номером вызывающего, состояние перевода, остатки; результаты вместо исключений, демо → `isNotSupported`. `src/utils/capitalBase.ts` — `readCapitalBase`: база капитала «главный + все субсчета». → [подробнее](.claude/rules/services.md)
+- **`src/utils/liquidationLeverage.ts` + `leverageFit.ts`** (3.24.0) — плечо входа: ликвидация за стопом с запасом, затем потолки ступеней.
+- **`src/services/firebaseServiceBase.ts`** — базовый класс Firestore CRUD с real-time подпиской; `updateData` использует `flattenForFirestoreUpdate` (3.5.0); самовосстановление подписки, сторож снимка, копия на диске, события связи, соседние документы и карты элементов (3.24.0). → [подробнее](.claude/rules/services.md)
 
 #### Слой стратегической торговли (влит из бывшего `@solncebro/ma-trading-core`)
 
@@ -146,7 +150,8 @@ npx jest --config jest.integration.config.js --runInBand --testPathPatterns=<pat
 - **Ошибки — не исключения**: `createOrder()` возвращает `errorText` в результате, не бросает. Проверка через `isOrderSuccessful(result)`. Прямые вызовы `connector.spot`/`connector.futures` могут бросать исключения — потребитель обрабатывает их сам.
 - **Единая точка входа**: внешние приложения импортируют ТОЛЬКО из `@solncebro/trade-engine`. Прямые импорты из `@solncebro/exchange-engine` запрещены. Значения нижней библиотеки реэкспортируются поимённо (`formatWebSocketConnectionsReport` и т.д.) — кроме фабрики `Exchange`, которая остаётся доступна ТОЛЬКО как тип (3.19.0). Типы нижней библиотеки отдаются сквозняком — `export type * from '@solncebro/exchange-engine'` — без поимённого перечня, поэтому новый тип виден потребителю сам.
 - **Demo trading**: `ExchangeConfig.isDemoMode = true`, никаких ручных URL-переопределений.
-- **Биржи**: `@solncebro/exchange-engine` `>=0.22.0 <1.0.0` (из реестра npm, диапазон, а не точная версия — с 3.21.0). Bybit: WebSocket для ордеров.
+- **Биржи**: `@solncebro/exchange-engine` `>=0.26.0 <1.0.0` (из реестра npm, диапазон, а не точная версия — с 3.21.0; нижняя граница 0.26.0 — с 3.24.0). Bybit: WebSocket для ордеров.
+- **Telegram**: `@solncebro/telegram-engine` `>=0.6.0 <1.0.0` — единственный путь к Telegram; `telegraf` и `telegram` в зависимостях пакета не объявлены (3.24.0).
 - **Map-коллекции**: `SymbolMappingByExchange` и `ExchangeConnectorByName` — это `Map`, не объекты.
 
 ### Живые проверки на демо-счетах (`tests/integration/`)

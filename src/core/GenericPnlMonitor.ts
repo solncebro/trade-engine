@@ -1,6 +1,5 @@
-import { createBot, createLoadingController, createMenuReplacer, createMessageTracker, createSender, escapeMarkdownV2WithFormatting, isBenignTelegramEditError } from '@solncebro/telegram-engine';
-import type { BotInstance, LoadingController, LoadingHandle, LoadingMode, MenuLogLevel, MenuReplacer, MenuSurface, MessageTracker, ReplaceMenuArgs, TelegramSender } from '@solncebro/telegram-engine';
-import type { Context, Telegraf } from 'telegraf';
+import { createAccessControl, createAccessGuard, createBot, createLoadingController, createMenuReplacer, createMessageTracker, createSender, escapeMarkdownV2WithFormatting, isBenignTelegramEditError } from '@solncebro/telegram-engine';
+import type { AccessGuard, BotInstance, Context, LoadingController, LoadingHandle, LoadingMode, MenuLogLevel, MenuReplacer, MenuSurface, MessageTracker, ReplaceMenuArgs, Telegraf, TelegramSender } from '@solncebro/telegram-engine';
 
 import type { AutoTpToggleOptions, GenericPnlMonitorArgs, InsuranceViewState, MonitoringFlagFieldName, PnlAlertButton, PositionsReplyContext, PositionViewState, TpSplitContext, TpSplitParsedMode, TpSplitPlanPart, TpSplitState } from './GenericPnlMonitor.types';
 import { logger } from './logger';
@@ -34,6 +33,7 @@ import type { MaLevel, MonitoredPosition, Position } from '../types/index';
 import { MA_LEVEL_LIST, MarketTypeEnum } from '../types/index';
 import { EMOJI_CHECK, EMOJI_CROSS, EMOJI_DOOR, EMOJI_LONG_DOT, EMOJI_PROFIT, EMOJI_ROBOT, EMOJI_SETTINGS, EMOJI_SHORT_DOT, EMOJI_SOS, EMOJI_TARGET } from '../utils/emoji';
 import { resolveGuardedExtremePrice } from '../utils/entryKlineGuard';
+import { describeError } from '../utils/errorFormatter.utils';
 import { calculateBreakevenPrice, calculatePercentChange, getMaValue } from '../utils/indicators';
 import { startIntervalScheduler } from '../utils/intervalScheduler';
 import { formatPercent, roundPercent, roundUsdAmount, snapAmountToStep } from '../utils/numberFormat';
@@ -67,6 +67,8 @@ type ContextWithMatch = Context & { match: RegExpExecArray };
 
 class GenericPnlMonitor extends PositionMonitor {
   protected readonly chatId: string;
+  // Only the configured chat may drive the PnL bot; the decision is telegram-engine's.
+  protected readonly accessGuard: AccessGuard;
   protected readonly messageTracker: MessageTracker;
   protected readonly menuReplacer: MenuReplacer;
   protected readonly loadingController: LoadingController;
@@ -90,6 +92,8 @@ class GenericPnlMonitor extends PositionMonitor {
       positionStore: args.positionStore,
     });
     this.chatId = args.chatId;
+    const accessControl = createAccessControl({ allowedPeerList: [args.chatId], shouldAllowAllWhenEmpty: false });
+    this.accessGuard = createAccessGuard({ isAllowedChatId: (chatId) => accessControl.isAllowedPeer(chatId) });
     this.pnlBotToken = args.pnlBotToken;
     this.getPnlConfig = args.getPnlConfig;
     this.messageTracker = createMessageTracker();
@@ -175,7 +179,7 @@ class GenericPnlMonitor extends PositionMonitor {
       onError: (error, botName) => {
         logger.error({ error, botName }, '[PnlMonitor] Unhandled handler error — suppressed to keep polling alive');
         // Also ping the chat so the error is visible immediately, not only in the logs.
-        const errorText = error instanceof Error ? error.message : String(error);
+        const errorText = describeError(error);
         const shortText = errorText.length > 200 ? `${errorText.slice(0, 200)}…` : errorText;
 
         this.sendMessage(`⚠️ Oops — a PnL bot handler errored (still alive, not frozen):\n${shortText}`).catch((sendError: unknown) => {
@@ -1431,10 +1435,10 @@ class GenericPnlMonitor extends PositionMonitor {
   }
 
   private registerCallbackHandlers(bot: Telegraf): void {
+    // Not accessGuard.middleware: it would catch downstream handler errors itself, and they must
+    // keep reaching createBot's crash guard, which pings the chat.
     bot.use(async (ctx, next) => {
-      const incomingChatId = ctx.chat?.id?.toString();
-
-      if (incomingChatId !== this.chatId) {
+      if (!this.accessGuard.isAllowedContext(ctx)) {
         return;
       }
 
@@ -2514,7 +2518,7 @@ class GenericPnlMonitor extends PositionMonitor {
         this.messageTracker.delete(this.chatId);
       }
     } catch (error: unknown) {
-      const errorText = error instanceof Error ? error.message : String(error);
+      const errorText = describeError(error);
       logger.error({ error, positionId: context.position?.id ?? null, symbol: context.symbol, isEphemeral: context.isEphemeral }, `[PnlMonitor] ${context.symbol} Split TP confirm threw: ${errorText}`);
       await this.replaceMenu(ctx, {
         text: escapeMarkdownV2WithFormatting(`${EMOJI_CROSS} Failed to create Split TP: ${errorText}`),

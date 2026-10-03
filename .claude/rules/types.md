@@ -4,9 +4,9 @@
 
 ## Реэкспорты из exchange-engine (3.19.0 — сквозной проброс типов)
 
-Из `@solncebro/exchange-engine` (`>=0.22.0 <1.0.0`, из реестра npm — диапазон с 3.21.0) реэкспортируются:
+Из `@solncebro/exchange-engine` (`>=0.26.0 <1.0.0` с 3.24.0, из реестра npm — диапазон с 3.21.0) реэкспортируются:
 
-- **Значения** (enum'ы, константы, функции, классы) — поимённым списком в `src/types/index.ts` и `src/index.ts`/`src/exchange.ts`: `MARKET_TYPE_LIST`, `ExchangeNameEnum`, `MarginModeEnum`, `MarketTypeEnum`, `MarketUnitEnum`, `OrderFilterEnum`, `OrderSideEnum`, `OrderTypeEnum`, `PositionModeEnum`, `PositionSideEnum`, `TimeInForceEnum`, `TradeSymbolTypeEnum`, `TriggerByEnum`, `WebSocketConnectionTypeEnum`, `WorkingTypeEnum`, `ExchangeError`, `formatWebSocketConnectionsReport`, `parseBybitOrderbookRawFrame`.
+- **Значения** (enum'ы, константы, функции, классы) — поимённым списком в `src/types/index.ts` и `src/index.ts`/`src/exchange.ts`: `MARKET_TYPE_LIST`, `ExchangeNameEnum`, `MarginModeEnum`, `MarketTypeEnum`, `MarketUnitEnum`, `OrderFilterEnum`, `OrderSideEnum`, `OrderTypeEnum`, `PositionModeEnum`, `PositionSideEnum`, `SubAccountStatusEnum`, `SubAccountTransferDirectionEnum`, `SubAccountTransferStatusEnum` (3.24.0), `TimeInForceEnum`, `TradeSymbolTypeEnum`, `TriggerByEnum`, `WalletTypeEnum` (3.24.0), `WebSocketConnectionTypeEnum`, `WorkingTypeEnum`, `ExchangeError`, `formatWebSocketConnectionsReport`, `parseBybitOrderbookRawFrame`.
 - **Типы — сквозняком, без поимённого перечня**: `src/types/index.ts` (и, через `export * from './types'`, оба входа пакета — `.` и `./exchange`) делают `export type * from '@solncebro/exchange-engine'`. Любой тип нижней библиотеки виден потребителю автоматически, включая появившиеся уже после этой правки — заводить отдельный реэкспорт под новый тип не нужно.
 - **`Exchange` (фабрика) реэкспортируется ТОЛЬКО как тип** — `export type *` значения не пробрасывает, поэтому создать инстанс биржи в обход `ExchangeConnector` нельзя; принцип единой двери сохраняется. `formatWebSocketConnectionsReport`, в отличие от `Exchange`, реэкспортируется как обычное значение — потребителю можно его вызывать.
 
@@ -55,6 +55,7 @@ interface OrderParams {
   activationPrice?: number;             // 3.16.0
   quoteOrderQty?: number;              // 3.4.0 — Binance/Bybit Spot Market Buy: USDT-сумма вместо qty
   clientOrderId?: string;              // 3.4.0 — клиентский id (orderLinkId на Bybit, newClientOrderId на Binance)
+  timeInForce?: TimeInForceEnum;       // 3.24.0 — срок действия не рыночной заявки; не задан — GTC
   params?: Record<string, unknown>; // доп. параметры биржи
 }
 
@@ -164,12 +165,31 @@ interface ExchangeResponseData {
 }
 ```
 
+### Символы, субсчета, база капитала (3.24.0)
+
+- `ResolvedSymbol { symbol, isFound }` (`exchangeConnector.ts`) — ответ `resolveFuturesSymbol` / `resolveSpotSymbol`.
+- `subAccountGateway.types.ts`: `SubAccountFailure { isSuccess: false; errorText; errorCode: number | string | null; isNotSupported }`,
+  `SubAccountListResult`, `SubAccountTransferRequest { subAccountId, asset, amount, fromWalletType, toWalletType, transferId }`,
+  `SubAccountTransferOutcome`, `SubAccountTransferStatusResult`, `SubAccountBalanceListResult`, `SubAccountGatewayArgs`.
+  Типы нижней библиотеки (`SubAccount`, `SubAccountBalance`, `SubAccountTransfer`, `FetchSubAccountTransferArgs`,
+  `FetchSubAccountBalancesArgs`, `SubAccountClient`, …) приходят сквозняком `export type *`.
+- `capitalBase.types.ts`: `ReadCapitalBaseArgs`, `CapitalBaseReading { totalWalletBalance: number | null; masterWalletBalance;
+  masterErrorText; subAccountEntryList }`, `SubAccountCapitalEntry`.
+- `userDataStreamRouter.types.ts`: `UserDataStreamClient`, `UserDataStreamSubscriber`, `UserDataStreamRouterArgs`,
+  `UserDataStreamUnsubscribe`.
+
 ### Telegram типы
+
+`Context` / `Telegraf` — только из `@solncebro/telegram-engine` (3.24.0; прямых импортов `telegraf` нет).
 
 ```typescript
 // telegram.ts
 interface TelegramNotifierArgs { botToken: string; chatId: string | string[] }  // string[] — рассылка во все чаты
 interface TelegramMessageListenerArgs { apiId: number; apiHash: string; appSession: string }
+
+// services/telegramMessageListener.ts (реэкспорт из entry с 3.24.0)
+interface TelegramIncomingMessage { chatId: string; senderId: string; message: TelegramUserMessage['raw'] }
+type TelegramMessageHandler = (message: TelegramIncomingMessage) => void | Promise<void>;
 
 // telegramCommandHandler.ts
 interface SpecialCommandConfig { command: string; description: string; handler: CommandHandler }
