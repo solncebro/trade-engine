@@ -2,35 +2,61 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'no
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
+import { logger } from '../src/core/logger';
 import { PersistentTradeJournal } from '../src/services/tradeJournal/persistentTradeJournal';
 import type { TradeJournalSchema } from '../src/services/tradeJournal/persistentTradeJournal.types';
 
+jest.mock('../src/core/logger', () => ({ logger: { debug: jest.fn(), info: jest.fn(), warn: jest.fn(), error: jest.fn() } }));
+
 const mockTableByName = new Map<string, Record<string, unknown>[]>();
-const mockControl = { failUpserts: 0, failInserts: 0, failSelects: 0 };
+const mockControl = { failUpserts: 0, failInserts: 0, failSelects: 0, failSheetInitializations: 0 };
+let mockBeforeWrite: ((operation: string) => Promise<void>) | null = null;
 
 jest.mock('@googleapis/sheets', () => ({
   auth: { GoogleAuth: class {} },
   sheets: () => ({}),
 }));
 
-const sheetWriteList: { call: string; recordList: Record<string, unknown>[]; sheetName?: string }[] = [];
+const sheetWriteList: {
+  call: string;
+  recordList: Record<string, unknown>[];
+  numberFormatByColumn?: Readonly<Record<string, string>>;
+  sheetName?: string;
+}[] = [];
 const ensuredSheetNameList: (string | undefined)[] = [];
+const ensuredNumberFormatList: (Readonly<Record<string, string>> | undefined)[] = [];
 const replacedSheetList: { sheetName: string; valueMatrix: (string | number)[][] }[] = [];
 
 jest.mock('../src/services/tradeJournal/sheetsSync', () => ({
   createSheetsClient: () => ({}),
   toSheetsSerialDate: (timestampMs: number) => timestampMs,
   ensureSheetHeader: async (args: { sheetName?: string }) => {
+    if (mockControl.failSheetInitializations > 0) {
+      mockControl.failSheetInitializations -= 1;
+
+      throw new Error('Internal error encountered');
+    }
+
     ensuredSheetNameList.push(args.sheetName);
 
     return true;
   },
-  ensureDateColumnFormat: async () => {},
-  syncRecordListToSheet: async (args: { recordList: Record<string, unknown>[]; sheetName?: string }) => {
-    sheetWriteList.push({ call: 'sync', recordList: args.recordList, sheetName: args.sheetName });
+  ensureDateColumnFormat: async (args: { numberFormatByColumn?: Readonly<Record<string, string>> }) => {
+    ensuredNumberFormatList.push(args.numberFormatByColumn);
   },
-  fullReplaceSheet: async (args: { recordList: Record<string, unknown>[]; sheetName?: string }) => {
-    sheetWriteList.push({ call: 'full', recordList: args.recordList, sheetName: args.sheetName });
+  syncRecordListToSheet: async (args: {
+    recordList: Record<string, unknown>[];
+    numberFormatByColumn?: Readonly<Record<string, string>>;
+    sheetName?: string;
+  }) => {
+    sheetWriteList.push({ call: 'sync', recordList: args.recordList, numberFormatByColumn: args.numberFormatByColumn, sheetName: args.sheetName });
+  },
+  fullReplaceSheet: async (args: {
+    recordList: Record<string, unknown>[];
+    numberFormatByColumn?: Readonly<Record<string, string>>;
+    sheetName?: string;
+  }) => {
+    sheetWriteList.push({ call: 'full', recordList: args.recordList, numberFormatByColumn: args.numberFormatByColumn, sheetName: args.sheetName });
   },
   replaceSheetValues: async (args: { sheetName: string; valueMatrix: (string | number)[][] }) => {
     replacedSheetList.push({ sheetName: args.sheetName, valueMatrix: args.valueMatrix });
@@ -54,12 +80,14 @@ jest.mock('@supabase/supabase-js', () => {
     private payloadRowList: Record<string, unknown>[] = [];
     private patch: Record<string, unknown> = {};
     private conflictKey: string | null = null;
+    private ignoreDuplicates = false;
+    private terminalOrFilter: [string, string[]] | null = null;
     private hasReturningSelect = false;
     private readonly equalFilterList: [string, unknown][] = [];
     private inFilter: [string, unknown[]] | null = null;
     private gteFilter: [string, number] | null = null;
     private ltFilter: [string, number] | null = null;
-    private orderBy: [string, boolean] | null = null;
+    private readonly orderByList: [string, boolean][] = [];
     private neqFilter: [string, unknown] | null = null;
     private notInFilter: [string, string] | null = null;
     private rangeFilter: [number, number] | null = null;
@@ -69,10 +97,11 @@ jest.mock('@supabase/supabase-js', () => {
       this.table = table;
     }
 
-    upsert(rows: Record<string, unknown> | Record<string, unknown>[], options?: { onConflict?: string }): this {
+    upsert(rows: Record<string, unknown> | Record<string, unknown>[], options?: { onConflict?: string; ignoreDuplicates?: boolean }): this {
       this.op = 'upsert';
       this.payloadRowList = (Array.isArray(rows) ? rows : [rows]).map((row) => ({ ...row }));
       this.conflictKey = options?.onConflict ?? null;
+      this.ignoreDuplicates = options?.ignoreDuplicates ?? false;
 
       return this;
     }
@@ -153,7 +182,7 @@ jest.mock('@supabase/supabase-js', () => {
 
     order(column?: string, options?: { ascending: boolean }): this {
       if (column !== undefined) {
-        this.orderBy = [column, options?.ascending ?? true];
+        this.orderByList.push([column, options?.ascending ?? true]);
       }
 
       return this;
@@ -172,7 +201,24 @@ jest.mock('@supabase/supabase-js', () => {
     }
 
     then(resolve: (result: { data: Record<string, unknown>[] | null; error: { message: string } | null }) => void): void {
+      const beforeWrite = this.op === 'upsert' || this.op === 'update' ? mockBeforeWrite : null;
+
+      if (beforeWrite !== null) {
+        void beforeWrite(this.op).then(() => resolve(this.run()));
+
+        return;
+      }
+
       resolve(this.run());
+    }
+
+    or(expression: string): this {
+      const match = expression.match(/^(.+)\.is\.null,.*\.not\.in\.\((.*)\)$/);
+
+      if (match === null) throw new Error(`Unexpected OR: ${expression}`);
+      this.terminalOrFilter = [match[1], JSON.parse(`[${match[2]}]`) as string[]];
+
+      return this;
     }
 
     private matches(row: Record<string, unknown>): boolean {
@@ -206,6 +252,12 @@ jest.mock('@supabase/supabase-js', () => {
         }
       }
 
+      if (this.terminalOrFilter !== null) {
+        const [column, terminalList] = this.terminalOrFilter;
+
+        if (row[column] !== null && row[column] !== undefined && terminalList.includes(String(row[column]))) return false;
+      }
+
       return true;
     }
 
@@ -223,7 +275,7 @@ jest.mock('@supabase/supabase-js', () => {
           const existingIndex = this.conflictKey === null ? -1 : rowList.findIndex((row) => row[this.conflictKey as string] === payloadRow[this.conflictKey as string]);
 
           if (existingIndex >= 0) {
-            rowList[existingIndex] = payloadRow;
+            if (!this.ignoreDuplicates) rowList[existingIndex] = payloadRow;
           } else {
             rowList.push(payloadRow);
           }
@@ -269,9 +321,18 @@ jest.mock('@supabase/supabase-js', () => {
 
       let selectedList = rowList.filter((row) => this.matches(row));
 
-      if (this.orderBy !== null) {
-        const [column, ascending] = this.orderBy;
-        selectedList = [...selectedList].sort((left, right) => (Number(left[column]) - Number(right[column])) * (ascending ? 1 : -1));
+      if (this.orderByList.length > 0) {
+        selectedList = [...selectedList].sort((left, right) => {
+          for (const [column, ascending] of this.orderByList) {
+            const comparison = String(left[column]).localeCompare(String(right[column]), undefined, { numeric: true });
+
+            if (comparison !== 0) {
+              return comparison * (ascending ? 1 : -1);
+            }
+          }
+
+          return 0;
+        });
       }
 
       if (this.rangeFilter !== null) {
@@ -280,6 +341,10 @@ jest.mock('@supabase/supabase-js', () => {
 
       if (this.limitValue !== null) {
         selectedList = selectedList.slice(0, this.limitValue);
+      }
+
+      if (this.rangeFilter === null && this.limitValue === null) {
+        selectedList = selectedList.slice(0, 1_000);
       }
 
       return { data: selectedList.map((row) => ({ ...row })), error: null };
@@ -310,6 +375,12 @@ const TEST_SCHEMA: TradeJournalSchema = {
   event: { tradeKeyColumn: 'trade_id', seqColumn: 'seq' },
 };
 
+const TEST_NUMBER_FORMAT_BY_COLUMN = {
+  entry_price: '0.########',
+  size_usd: '0.00',
+  pnl_percent: '0.00%',
+};
+
 function createJournal(isSupabaseEnabled = true): PersistentTradeJournal {
   return new PersistentTradeJournal({
     schema: TEST_SCHEMA,
@@ -328,6 +399,60 @@ function tradesTable(): Record<string, unknown>[] {
 function eventsTable(): Record<string, unknown>[] {
   return mockTableByName.get('test_events') ?? [];
 }
+
+describe('PersistentTradeJournal delivery diagnostics and recovery', () => {
+  beforeEach(() => {
+    mockTableByName.clear();
+    mockControl.failUpserts = 0;
+    mockControl.failInserts = 0;
+    mockControl.failSelects = 0;
+    mockControl.failSheetInitializations = 0;
+    sheetWriteList.length = 0;
+  });
+
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
+  it.each(['binance', 'bybit'])('reconnects %s Sheets after a startup failure and delivers the entire history', async (exchangeName) => {
+    const table = `rubber_trades_${exchangeName}`;
+    mockTableByName.set(table, [{ id: 'OLD_TRADE', status: 'closed', updated_at: 1 }]);
+    mockControl.failSheetInitializations = 1;
+    const journal = new PersistentTradeJournal({
+      schema: { ...TEST_SCHEMA, tradesTable: table },
+      supabaseUrl: 'https://example.supabase.co',
+      supabaseServiceKey: 'service_key',
+      googleSheetsSpreadsheetId: 'sheet-1',
+      googleSheetsCredentialsPath: '/tmp/credentials.json',
+      retryBaseDelayMs: 1,
+    });
+
+    try {
+      await journal.initialize();
+      await journal.reconcileSheetsFromSupabase({ isFull: true });
+
+      expect(sheetWriteList).toEqual([expect.objectContaining({ call: 'sync', recordList: [expect.objectContaining({ id: 'OLD_TRADE' })] })]);
+    } finally {
+      await journal.shutdown();
+    }
+  });
+
+  it('identifies the rejected trade and database reason without logging its payload', async () => {
+    const errorLog = jest.mocked(logger.error);
+    const infoLog = jest.mocked(logger.info);
+    errorLog.mockClear();
+    infoLog.mockClear();
+    const journal = createJournal();
+    mockControl.failUpserts = 99;
+    journal.putSummary('REJECTED', { id: 'REJECTED', status: 'closed', accessToken: 'must-not-appear' });
+
+    await expect(journal.flushSummaryNow('REJECTED')).resolves.toBe(false);
+    expect(infoLog).toHaveBeenCalledWith(expect.objectContaining({ stage: 'summary_write_started', tradeId: 'REJECTED', table: 'test_trades' }), expect.any(String));
+    expect(errorLog).toHaveBeenCalledWith(expect.objectContaining({ stage: 'summary_write_failed', tradeId: 'REJECTED', errorMessage: 'upsert failed' }), expect.any(String));
+    expect(JSON.stringify(errorLog.mock.calls)).not.toContain('must-not-appear');
+    expect(JSON.stringify(infoLog.mock.calls)).not.toContain('must-not-appear');
+  });
+});
 
 describe('PersistentTradeJournal buffering', () => {
   beforeEach(() => {
@@ -526,6 +651,99 @@ describe('PersistentTradeJournal auxiliary table access', () => {
     expect(fullWrite?.recordList.map((record) => record.id)).toEqual(['EARLY_ENTRY', 'LATE_ENTRY']);
   });
 
+  it('uses the summary key as a stable secondary order for equal sheet-order values', async () => {
+    sheetWriteList.length = 0;
+
+    const journal = new PersistentTradeJournal({
+      schema: { ...TEST_SCHEMA, sheetOrderColumn: 'entry_time' },
+      supabaseUrl: 'https://example.supabase.co',
+      supabaseServiceKey: 'service_key',
+      googleSheetsSpreadsheetId: 'sheet-1',
+      googleSheetsCredentialsPath: '/tmp/credentials.json',
+      retryBaseDelayMs: 1,
+    });
+
+    await journal.initialize();
+    await journal.insertRow('test_trades', { id: 'B', entry_time: 100, updated_at: 100 });
+    await journal.insertRow('test_trades', { id: 'A', entry_time: 100, updated_at: 100 });
+
+    await journal.fullSyncToSheet();
+    await journal.shutdown();
+
+    const fullWrite = sheetWriteList.find((write) => write.call === 'full');
+
+    expect(fullWrite?.recordList.map((record) => record.id)).toEqual(['A', 'B']);
+  });
+
+  it('reconciles the complete history when a full reconciliation is requested', async () => {
+    sheetWriteList.length = 0;
+
+    const journal = new PersistentTradeJournal({
+      schema: TEST_SCHEMA,
+      supabaseUrl: 'https://example.supabase.co',
+      supabaseServiceKey: 'service_key',
+      googleSheetsSpreadsheetId: 'sheet-1',
+      googleSheetsCredentialsPath: '/tmp/credentials.json',
+      retryBaseDelayMs: 1,
+    });
+
+    await journal.initialize();
+    for (let index = 1_000; index >= 0; index--) {
+      await journal.insertRow('test_trades', { id: String(index).padStart(4, '0'), updated_at: index });
+    }
+
+    await journal.reconcileSheetsFromSupabase({ isFull: true });
+    await journal.shutdown();
+
+    const syncWrite = sheetWriteList.find((write) => write.call === 'sync');
+
+    expect(syncWrite?.recordList).toHaveLength(1_001);
+    expect(syncWrite?.recordList[0].id).toBe('0000');
+    expect(syncWrite?.recordList[1_000].id).toBe('1000');
+  });
+
+  describe('reconciliation window', () => {
+    const DAY_MS = 86_400_000;
+    const NOW_MS = 1_800_000_000_000;
+
+    async function reconcileIdList(args?: Parameters<PersistentTradeJournal['reconcileSheetsFromSupabase']>[0]): Promise<unknown[]> {
+      sheetWriteList.length = 0;
+      jest.spyOn(Date, 'now').mockReturnValue(NOW_MS);
+      mockTableByName.set('test_trades', [
+        { id: 'MONTH_OLD', status: 'closed', updated_at: NOW_MS - 30 * DAY_MS },
+        { id: 'EIGHT_DAYS', status: 'closed', updated_at: NOW_MS - 8 * DAY_MS },
+        { id: 'TWO_DAYS', status: 'closed', updated_at: NOW_MS - 2 * DAY_MS },
+        { id: 'ONE_HOUR', status: 'open', updated_at: NOW_MS - 3_600_000 },
+      ]);
+      const journal = new PersistentTradeJournal({
+        schema: { ...TEST_SCHEMA, reconcileTimeIsIsoString: false },
+        supabaseUrl: 'https://example.supabase.co',
+        supabaseServiceKey: 'service_key',
+        googleSheetsSpreadsheetId: 'sheet-1',
+        googleSheetsCredentialsPath: '/tmp/credentials.json',
+        retryBaseDelayMs: 1,
+      });
+
+      await journal.initialize();
+      await journal.reconcileSheetsFromSupabase(args);
+      await journal.shutdown();
+
+      return sheetWriteList.filter((write) => write.call === 'sync').flatMap((write) => write.recordList.map((record) => record.id));
+    }
+
+    it('reads only the last seven days when called without arguments', async () => {
+      expect(await reconcileIdList()).toEqual(['TWO_DAYS', 'ONE_HOUR']);
+    });
+
+    it('reads rows from the given start time on', async () => {
+      expect(await reconcileIdList({ sinceMs: NOW_MS - 10 * DAY_MS })).toEqual(['EIGHT_DAYS', 'TWO_DAYS', 'ONE_HOUR']);
+    });
+
+    it('reads the whole table for a full reconciliation', async () => {
+      expect(await reconcileIdList({ isFull: true })).toEqual(['MONTH_OLD', 'EIGHT_DAYS', 'TWO_DAYS', 'ONE_HOUR']);
+    });
+  });
+
   it('falls back to the reconcile stamp when no sheet-order column is configured', async () => {
     sheetWriteList.length = 0;
 
@@ -577,6 +795,57 @@ describe('PersistentTradeJournal auxiliary table access', () => {
   });
 });
 
+describe('PersistentTradeJournal sheet number formats', () => {
+  beforeEach(() => {
+    mockTableByName.clear();
+    sheetWriteList.length = 0;
+    ensuredNumberFormatList.length = 0;
+  });
+
+  function createFormattedJournal(): PersistentTradeJournal {
+    return new PersistentTradeJournal({
+      schema: { ...TEST_SCHEMA, sheetNumberFormatByColumn: TEST_NUMBER_FORMAT_BY_COLUMN },
+      supabaseUrl: 'https://example.supabase.co',
+      supabaseServiceKey: 'service_key',
+      googleSheetsSpreadsheetId: 'sheet-1',
+      googleSheetsCredentialsPath: '/tmp/credentials.json',
+      liveSheetMirror: true,
+      sheetSyncDebounceMs: 0,
+      retryBaseDelayMs: 1,
+    });
+  }
+
+  it('passes configured number formats during sheet initialization', async () => {
+    const journal = createFormattedJournal();
+
+    await journal.initialize();
+    await journal.shutdown();
+
+    expect(ensuredNumberFormatList).toEqual([TEST_NUMBER_FORMAT_BY_COLUMN]);
+  });
+
+  it('passes configured number formats to the live sheet sync', async () => {
+    const journal = createFormattedJournal();
+
+    await journal.initialize();
+    journal.putSummary('T', { id: 'T', status: 'open' });
+    await journal.shutdown();
+
+    expect(sheetWriteList.find((write) => write.call === 'sync')?.numberFormatByColumn).toBe(TEST_NUMBER_FORMAT_BY_COLUMN);
+  });
+
+  it('passes configured number formats to the full sheet sync', async () => {
+    const journal = createFormattedJournal();
+
+    await journal.initialize();
+    await journal.insertRow('test_trades', { id: 'T', status: 'open', updated_at: 1 });
+    await journal.fullSyncToSheet();
+    await journal.shutdown();
+
+    expect(sheetWriteList.find((write) => write.call === 'full')?.numberFormatByColumn).toBe(TEST_NUMBER_FORMAT_BY_COLUMN);
+  });
+});
+
 describe('PersistentTradeJournal paper state', () => {
   beforeEach(() => {
     mockTableByName.clear();
@@ -598,6 +867,22 @@ describe('PersistentTradeJournal paper state', () => {
     await journal.removePaperState('BTCUSDT');
 
     await expect(journal.loadPaperStateList()).resolves.toHaveLength(0);
+  });
+
+  it('reports whether paper-state writes reached the database', async () => {
+    const journal = createJournal();
+
+    await expect(journal.savePaperStateConfirmed({ symbol: 'BTCUSDT' })).resolves.toBe(true);
+    await expect(journal.removePaperStateConfirmed('BTCUSDT')).resolves.toBe(true);
+  });
+
+  it('reports unconfirmed paper-state writes when the database is disabled', async () => {
+    const journal = createJournal(false);
+
+    await expect(journal.savePaperStateConfirmed({ symbol: 'BTCUSDT' })).resolves.toBe(false);
+    await expect(journal.removePaperStateConfirmed('BTCUSDT')).resolves.toBe(false);
+    await expect(journal.savePaperState({ symbol: 'BTCUSDT' })).resolves.toBeUndefined();
+    await expect(journal.removePaperState('BTCUSDT')).resolves.toBeUndefined();
   });
 });
 
@@ -945,5 +1230,100 @@ describe('PersistentTradeJournal named sheet targets', () => {
 
     expect(ensuredSheetNameList).toEqual([undefined]);
     expect(sheetWriteList.map((write) => write.sheetName)).toEqual([undefined]);
+  });
+});
+
+
+describe('PersistentTradeJournal monotonic summary persistence', () => {
+  beforeEach(() => {
+    mockTableByName.clear();
+    mockControl.failUpserts = 0;
+    mockControl.failInserts = 0;
+    mockControl.failSelects = 0;
+    mockBeforeWrite = null;
+  });
+
+  afterEach(() => { mockBeforeWrite = null; });
+
+  it.each(['upsert', 'update'])('keeps a closed trade when another instance completes a delayed open %s', async (delayedOperation) => {
+    let release = () => {};
+    let announce = () => {};
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const started = new Promise<void>((resolve) => { announce = resolve; });
+    let delayed = false;
+    mockBeforeWrite = async (operation) => {
+      if (operation !== delayedOperation || delayed) return;
+      delayed = true;
+      announce();
+      await gate;
+    };
+    const oldJournal = createJournal();
+    oldJournal.putSummary('stable-id', { id: 'stable-id', status: 'open', size_usd: 9702 });
+    const oldWrite = oldJournal.flushSummaryNow('stable-id');
+    await started;
+    const newJournal = createJournal();
+    newJournal.putSummary('stable-id', { id: 'stable-id', status: 'closed', size_usd: 10000, pnl_usd: -1535 });
+
+    try {
+      await expect(newJournal.flushSummaryNow('stable-id')).resolves.toBe(true);
+      release();
+      await expect(oldWrite).resolves.toBe(true);
+      expect(tradesTable()).toEqual([{ id: 'stable-id', status: 'closed', size_usd: 10000, pnl_usd: -1535 }]);
+    } finally {
+      release();
+      await oldWrite;
+    }
+  });
+
+  it('serializes an immediate terminal write behind an unfinished batch flush', async () => {
+    let release = () => {};
+    let announce = () => {};
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const started = new Promise<void>((resolve) => { announce = resolve; });
+    let writeCount = 0;
+    mockBeforeWrite = async () => {
+      writeCount += 1;
+
+      if (writeCount !== 1) return;
+      announce();
+      await gate;
+    };
+    const journal = createJournal();
+    journal.putSummary('stable-id', { id: 'stable-id', status: 'open' });
+    const batch = journal.shutdown();
+    await started;
+    journal.patchSummary('stable-id', { status: 'closed' });
+    const close = journal.flushSummaryNow('stable-id');
+
+    try {
+      await new Promise<void>((resolve) => { setTimeout(resolve, 0); });
+      expect(writeCount).toBe(1);
+      release();
+      await batch;
+      await expect(close).resolves.toBe(true);
+      expect(tradesTable()[0].status).toBe('closed');
+    } finally {
+      release();
+      await Promise.allSettled([batch, close]);
+    }
+  });
+
+  it('updates nonterminal rows with null status while preserving a confirmed terminal row', async () => {
+    mockTableByName.set('test_trades', [{ id: 'unknown', status: null }, { id: 'terminal', status: 'closed', pnl_usd: 42 }]);
+    const journal = createJournal();
+    journal.putSummary('unknown', { id: 'unknown', status: 'open' });
+    journal.putSummary('terminal', { id: 'terminal', status: 'open', pnl_usd: null });
+    await journal.shutdown();
+
+    expect(tradesTable()).toEqual([{ id: 'unknown', status: 'open' }, { id: 'terminal', status: 'closed', pnl_usd: 42 }]);
+  });
+
+  it('still allows an intentional correction of terminal accounting fields', async () => {
+    mockTableByName.set('test_trades', [{ id: 'terminal', status: 'closed', funding_usd: null }]);
+    const journal = createJournal();
+    await journal.rehydrateSummaries(['terminal']);
+    journal.patchSummary('terminal', { funding_usd: 2 });
+    await expect(journal.flushSummaryNow('terminal')).resolves.toBe(true);
+    expect(tradesTable()[0]).toEqual(expect.objectContaining({ status: 'closed', funding_usd: 2 }));
   });
 });

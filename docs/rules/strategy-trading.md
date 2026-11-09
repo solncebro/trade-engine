@@ -122,7 +122,7 @@ selectClosedKlineList(klineList)   // реэкспорт helper из utils
 | `breakevenLadder.ts` | Расчёт ladder безубыточного выхода |
 | `klineList.ts` | `selectClosedKlineList` и пр. |
 | `chunk.ts` | `chunkList` (sub-batch splitting) |
-| `perKeySerializer.ts` | `PerKeySerializer` — per-key FIFO mutex |
+| `perKeySerializer.ts` | `PerKeySerializer` — per-key FIFO mutex; ключ удаляется, когда его очередь опустела (`activeKeyCount` — ключи с работой) |
 | `intervalScheduler.ts` | `startIntervalScheduler` |
 | `loggedExchangeCall.ts` | Обёртки с request/response логированием |
 | `nestedField.ts` | `setNestedField`/`buildNestedPartial` |

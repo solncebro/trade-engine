@@ -7,10 +7,21 @@ class PerKeySerializer {
   run<T>(key: string, task: () => Promise<T>): Promise<T> {
     const previous = this.chainByKey.get(key) ?? Promise.resolve();
     const next = previous.then(() => task(), () => task());
+    const tail = next.then(() => undefined, () => undefined);
 
-    this.chainByKey.set(key, next.then(() => undefined, () => undefined));
+    this.chainByKey.set(key, tail);
+    // An idle key is dropped, so a long-lived serializer does not keep one entry per key it ever saw.
+    // A task queued meanwhile has replaced the tail and keeps the key.
+    void tail.then(() => {
+      if (this.chainByKey.get(key) === tail) this.chainByKey.delete(key);
+    });
 
     return next;
+  }
+
+  /** Keys with a task running or queued. */
+  get activeKeyCount(): number {
+    return this.chainByKey.size;
   }
 }
 

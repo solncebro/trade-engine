@@ -1,6 +1,8 @@
 import { sheets_v4 } from '@googleapis/sheets';
 
-import { ensureSheetHeader, fullReplaceSheet, replaceSheetValues, syncRecordListToSheet, toSheetsSerialDate } from '../src/services/tradeJournal/sheetsSync';
+import { ensureDateColumnFormat, ensureSheetHeader, fullReplaceSheet, replaceSheetValues, syncRecordListToSheet, toSheetsSerialDate } from '../src/services/tradeJournal/sheetsSync';
+
+jest.mock('../src/core/logger', () => ({ logger: { debug: jest.fn(), info: jest.fn(), warn: jest.fn(), error: jest.fn() } }));
 
 interface SheetsMock {
   sheets: sheets_v4.Sheets;
@@ -33,6 +35,10 @@ function makeSheets(existingRowList: string[][] | null, isResolvable = true): Sh
 
 function firstNumberFormat(formatBatchUpdate: jest.Mock): sheets_v4.Schema$Request {
   return formatBatchUpdate.mock.calls[0][0].requestBody.requests[0] as sheets_v4.Schema$Request;
+}
+
+function numberFormatRequestList(formatBatchUpdate: jest.Mock): sheets_v4.Schema$Request[] {
+  return formatBatchUpdate.mock.calls.flatMap((call) => call[0].requestBody.requests as sheets_v4.Schema$Request[]);
 }
 
 describe('toSheetsSerialDate', () => {
@@ -79,6 +85,32 @@ describe('ensureSheetHeader', () => {
   });
 });
 
+describe('ensureDateColumnFormat', () => {
+  it('applies configured number formats together with the date format at startup', async () => {
+    const columnList = ['entry_time', 'entry_price', 'size_usd', 'pnl_percent'];
+    const mock = makeSheets([columnList]);
+
+    await ensureDateColumnFormat({
+      sheets: mock.sheets,
+      spreadsheetId: 'id',
+      columnList,
+      dateColumnList: ['entry_time'],
+      numberFormatByColumn: {
+        entry_price: '0.########',
+        size_usd: '0.00',
+        pnl_percent: '0.00%',
+      },
+    });
+
+    expect(numberFormatRequestList(mock.formatBatchUpdate).map((request) => request.repeatCell?.cell?.userEnteredFormat?.numberFormat)).toEqual([
+      { type: 'DATE_TIME', pattern: 'yyyy-mm-dd hh:mm:ss' },
+      { type: 'NUMBER', pattern: '0.########' },
+      { type: 'NUMBER', pattern: '0.00' },
+      { type: 'PERCENT', pattern: '0.00%' },
+    ]);
+  });
+});
+
 describe('syncRecordListToSheet', () => {
   const columnList = ['symbol', 'entry_time', 'pnl_percent', 'id'];
   const dateColumnList = ['entry_time'];
@@ -111,6 +143,32 @@ describe('syncRecordListToSheet', () => {
     expect(typeof appendedRow[2]).toBe('number');
   });
 
+  it('sorts the data rows by the configured order column after appending', async () => {
+    const mock = makeSheets([columnList]);
+
+    await syncRecordListToSheet({
+      sheets: mock.sheets,
+      spreadsheetId: 'id',
+      columnList,
+      keyColumn: 'id',
+      orderColumn: 'entry_time',
+      dateColumnList,
+      percentColumnList,
+      recordList: [{ symbol: 'BTCUSDT', entry_time: Date.UTC(2021, 0, 1), pnl_percent: 12.34, id: 'A' }],
+    });
+
+    expect(mock.formatBatchUpdate).toHaveBeenCalledWith(expect.objectContaining({
+      requestBody: {
+        requests: expect.arrayContaining([{
+          sortRange: {
+            range: { sheetId: 0, startRowIndex: 1, startColumnIndex: 0 },
+            sortSpecs: [{ dimensionIndex: 1, sortOrder: 'ASCENDING' }],
+          },
+        }]),
+      },
+    }));
+  });
+
   it('updates an existing row when its values changed', async () => {
     const mock = makeSheets([columnList, ['BTCUSDT', '', '', 'A']]);
 
@@ -126,6 +184,32 @@ describe('syncRecordListToSheet', () => {
 
     expect(mock.batchUpdate).toHaveBeenCalledTimes(1);
     expect(mock.append).not.toHaveBeenCalled();
+  });
+
+  it('sorts the data rows after updating an existing row', async () => {
+    const mock = makeSheets([columnList, ['BTCUSDT', '', '', 'A']]);
+
+    await syncRecordListToSheet({
+      sheets: mock.sheets,
+      spreadsheetId: 'id',
+      columnList,
+      keyColumn: 'id',
+      orderColumn: 'entry_time',
+      dateColumnList,
+      percentColumnList,
+      recordList: [{ symbol: 'BTCUSDT', entry_time: 1, pnl_percent: 5, id: 'A' }],
+    });
+
+    expect(mock.formatBatchUpdate).toHaveBeenCalledWith(expect.objectContaining({
+      requestBody: {
+        requests: [{
+          sortRange: {
+            range: { sheetId: 0, startRowIndex: 1, startColumnIndex: 0 },
+            sortSpecs: [{ dimensionIndex: 1, sortOrder: 'ASCENDING' }],
+          },
+        }],
+      },
+    }));
   });
 
   it('reads a range beyond column Z for a table wider than 26 columns', async () => {
@@ -170,8 +254,50 @@ describe('syncRecordListToSheet', () => {
     expect(request.repeatCell?.cell?.userEnteredFormat?.numberFormat?.type).toBe('DATE_TIME');
   });
 
+  it('applies the configured money format after appending a row', async () => {
+    const moneyColumnList = ['symbol', 'size_usd', 'id'];
+    const mock = makeSheets([moneyColumnList]);
+
+    await syncRecordListToSheet({
+      sheets: mock.sheets,
+      spreadsheetId: 'id',
+      columnList: moneyColumnList,
+      keyColumn: 'id',
+      dateColumnList: [],
+      percentColumnList: [],
+      numberFormatByColumn: { size_usd: '0.00' },
+      recordList: [{ symbol: 'BTCUSDT', size_usd: 12.34567, id: 'A' }],
+    });
+
+    expect(firstNumberFormat(mock.formatBatchUpdate).repeatCell?.cell?.userEnteredFormat?.numberFormat).toEqual({
+      type: 'NUMBER',
+      pattern: '0.00',
+    });
+  });
+
+  it('applies the configured price format after updating a row', async () => {
+    const priceColumnList = ['symbol', 'entry_price', 'id'];
+    const mock = makeSheets([priceColumnList, ['BTCUSDT', '1', 'A']]);
+
+    await syncRecordListToSheet({
+      sheets: mock.sheets,
+      spreadsheetId: 'id',
+      columnList: priceColumnList,
+      keyColumn: 'id',
+      dateColumnList: [],
+      percentColumnList: [],
+      numberFormatByColumn: { entry_price: '0.########' },
+      recordList: [{ symbol: 'BTCUSDT', entry_price: 1.23456789, id: 'A' }],
+    });
+
+    expect(firstNumberFormat(mock.formatBatchUpdate).repeatCell?.cell?.userEnteredFormat?.numberFormat).toEqual({
+      type: 'NUMBER',
+      pattern: '0.########',
+    });
+  });
+
   it('leaves the date format alone when nothing was appended', async () => {
-    const mock = makeSheets([columnList, ['BTCUSDT', '', '', 'A']]);
+    const mock = makeSheets([columnList, ['BTCUSDT', '', '0.05', 'A']]);
 
     await syncRecordListToSheet({
       sheets: mock.sheets,
@@ -240,6 +366,7 @@ describe('syncRecordListToSheet', () => {
 
     expect(mock.append).not.toHaveBeenCalled();
     expect(mock.batchUpdate).not.toHaveBeenCalled();
+    expect(mock.formatBatchUpdate).not.toHaveBeenCalled();
   });
 });
 
@@ -261,6 +388,27 @@ describe('fullReplaceSheet', () => {
     expect(mock.clear).toHaveBeenCalledTimes(1);
     expect(mock.update).toHaveBeenCalledTimes(1);
     expect(firstNumberFormat(mock.formatBatchUpdate).repeatCell?.cell?.userEnteredFormat?.numberFormat?.type).toBe('DATE_TIME');
+  });
+
+  it('applies the configured percent format after rewriting the sheet', async () => {
+    const columnList = ['symbol', 'pnl_percent', 'id'];
+    const mock = makeSheets([columnList]);
+
+    await fullReplaceSheet({
+      sheets: mock.sheets,
+      spreadsheetId: 'id',
+      columnList,
+      keyColumn: 'id',
+      dateColumnList: [],
+      percentColumnList: ['pnl_percent'],
+      numberFormatByColumn: { pnl_percent: '0.00%' },
+      recordList: [{ symbol: 'BTCUSDT', pnl_percent: 12.34, id: 'A' }],
+    });
+
+    expect(firstNumberFormat(mock.formatBatchUpdate).repeatCell?.cell?.userEnteredFormat?.numberFormat).toEqual({
+      type: 'PERCENT',
+      pattern: '0.00%',
+    });
   });
 });
 

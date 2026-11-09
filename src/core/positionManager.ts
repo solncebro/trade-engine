@@ -1,12 +1,18 @@
 import {
+  AccountTrade,
   CancelBatchOrdersResult,
+  ClosedPnl,
   ExchangeNameEnum,
   FeeRate,
+  FundingRateHistory,
+  Income,
   MarketTypeEnum,
   MarketUnitEnum,
+  MarkPrice,
   ModifyBatchOrderArgs,
   ModifyBatchOrdersResult,
   Order,
+  OrderExecutionSummary,
   OrderFilterEnum,
   OrderSideEnum,
   OrderTypeEnum,
@@ -31,22 +37,34 @@ import {
   ClosePositionMarketArgs,
   Direction,
   FeeRatePercent,
+  FundingRateHistoryPercent,
+  FundingRateHistoryWindow,
   OpenPositionBatchLimitArgs,
   OpenPositionBatchLimitResult,
   OpenPositionLimitArgs,
+  OpenPositionLimitWithLeverageArgs,
   OpenPositionMarketArgs,
   PlaceConditionalArgs,
   PlaceStopLossArgs,
   PlaceTakeProfitArgs,
   PositionBatchLimitItemResult,
+  PositionManagerAddIsolatedPositionMarginArgs,
   PositionManagerModifyBatchOrdersArgs,
   PositionManagerModifyOrderArgs,
   PositionStateResult,
+  ReadAccountTradesArgs,
   ReadAllPositionsArgs,
+  ReadClosedPnlArgs,
   ReadFeeRateArgs,
+  ReadFundingRateHistoryArgs,
+  ReadIncomeArgs,
+  ReadOpenConditionalOrderListArgs,
   ReadOpenOrderListArgs,
+  ReadOpenPlainOrderListArgs,
   ReadOrderArgs,
   ReadOrderByClientOrderIdArgs,
+  ReadOrderExecutionSummaryArgs,
+  ReadOrderHistoryArgs,
   ReadPositionStateArgs,
   SetLeverageArgs,
   SetMarginModeArgs,
@@ -59,8 +77,11 @@ import { withRetryOn429 } from './withRetryOn429';
 
 import { ExchangeConnector } from '../services/exchangeConnector';
 import { OrderParams, OrderResult } from '../types/orders';
+import { readAccountBalance } from '../utils/accountBalance';
+import type { AccountBalanceSnapshot } from '../utils/accountBalance.types';
 import { describeError } from '../utils/errorFormatter.utils';
 import { roundPercent } from '../utils/numberFormat';
+import { PerKeySerializer } from '../utils/perKeySerializer';
 import { snapPriceToTick } from '../utils/priceFormat';
 
 const SPOT_SHORT_ERROR_MESSAGE =
@@ -70,8 +91,11 @@ const SPOT_SHORT_ERROR_MESSAGE =
 // snapshot response log is throttled per symbol so a stable position does not
 // emit a line every poll; errors and app-level per-consumer logs are unaffected.
 const READ_POSITION_STATE_LOG_THROTTLE_MS = 300_000;
+const FUNDING_RATE_HISTORY_PAGE_LIMIT = 1000;
+const DEFAULT_CONDITIONAL_SETTLE_COIN = 'USDT';
 
 export class PositionManager {
+  private readonly leverageAndEntrySerializer = new PerKeySerializer();
   private readonly explicitQueue: RateLimitedRequestQueue | null;
   private readonly readStateLogThrottle: LogThrottle = new LogThrottle();
 
@@ -101,8 +125,32 @@ export class PositionManager {
   }
 
   public async openPositionLimit(args: OpenPositionLimitArgs): Promise<OrderResult> {
+    return this.leverageAndEntrySerializer.run(args.symbol, () => this.openPositionLimitUnlocked(args));
+  }
+
+  public async openPositionLimitWithLeverage(args: OpenPositionLimitWithLeverageArgs): Promise<OrderResult> {
+    if (args.marketType !== MarketTypeEnum.Futures) {
+      throw new Error('Leveraged limit entry requires futures market');
+    }
+
+    return this.leverageAndEntrySerializer.run(args.symbol, async () => {
+      const result = await this.setLeverageUnlocked({
+        symbol: args.symbol,
+        leverage: args.leverage,
+        direction: args.direction,
+      });
+
+      if (result.confirmedLeverage !== args.leverage) {
+        throw new Error('Leverage was not confirmed for the first limit order');
+      }
+
+      return this.openPositionLimitUnlocked({ ...args, leverage: undefined });
+    });
+  }
+
+  private async openPositionLimitUnlocked(args: OpenPositionLimitArgs): Promise<OrderResult> {
     this.assertSpotDirection(args.marketType, args.direction);
-    await this.applyFuturesSetup({
+    await this.applyFuturesSetupUnlocked({
       marketType: args.marketType,
       symbol: args.symbol,
       leverage: args.leverage,
@@ -123,7 +171,11 @@ export class PositionManager {
     });
 
     return this.executeWrite(
-      () => this.exchangeConnector.createOrder(orderParams),
+      async () => {
+        await args.beforeOrder?.();
+
+        return this.exchangeConnector.createOrder(orderParams);
+      },
       `openPositionLimit ${args.symbol}`
     );
   }
@@ -165,7 +217,11 @@ export class PositionManager {
     );
 
     const orderResultList = await this.executeWrite(
-      () => this.exchangeConnector.createBatchOrders(orderParamsList),
+      async () => {
+        await args.beforeOrder?.();
+
+        return this.exchangeConnector.createBatchOrders(orderParamsList);
+      },
       `openPositionBatchLimit ${args.symbol} count=${args.itemList.length}`
     );
 
@@ -223,7 +279,11 @@ export class PositionManager {
     );
 
     const orderResultList = await this.executeWrite(
-      () => this.exchangeConnector.createBatchOrders(orderParamsList),
+      async () => {
+        await args.beforeOrder?.();
+
+        return this.exchangeConnector.createBatchOrders(orderParamsList);
+      },
       `closePositionBatchLimit ${args.symbol} count=${args.itemList.length}`
     );
 
@@ -273,7 +333,11 @@ export class PositionManager {
     });
 
     return this.executeWrite(
-      () => this.exchangeConnector.createOrder(orderParams),
+      async () => {
+        await args.beforeOrder?.();
+
+        return this.exchangeConnector.createOrder(orderParams);
+      },
       `openPositionMarket ${args.symbol}`
     );
   }
@@ -295,7 +359,11 @@ export class PositionManager {
     });
 
     return this.executeWrite(
-      () => this.exchangeConnector.createOrder(orderParams),
+      async () => {
+        await args.beforeOrder?.();
+
+        return this.exchangeConnector.createOrder(orderParams);
+      },
       `closePositionLimit ${args.symbol}`
     );
   }
@@ -316,7 +384,11 @@ export class PositionManager {
     });
 
     return this.executeWrite(
-      () => this.exchangeConnector.createOrder(orderParams),
+      async () => {
+        await args.beforeOrder?.();
+
+        return this.exchangeConnector.createOrder(orderParams);
+      },
       `closePositionMarket ${args.symbol}`
     );
   }
@@ -334,6 +406,7 @@ export class PositionManager {
       limitPrice: args.limitPrice,
       clientOrderId: args.clientOrderId,
       isStopLoss: true,
+      beforeOrder: args.beforeOrder,
     });
   }
 
@@ -350,6 +423,7 @@ export class PositionManager {
       limitPrice: args.limitPrice,
       clientOrderId: args.clientOrderId,
       isStopLoss: false,
+      beforeOrder: args.beforeOrder,
     });
   }
 
@@ -537,19 +611,54 @@ export class PositionManager {
     }
 
     return this.executeWrite(
-      () => this.exchangeConnector.createOrder(orderParams),
+      async () => {
+        await args.beforeOrder?.();
+
+        return this.exchangeConnector.createOrder(orderParams);
+      },
       `spotMarketBuyByQuote ${args.symbol}`
     );
   }
 
+  public async addIsolatedPositionMargin(args: PositionManagerAddIsolatedPositionMarginArgs): Promise<void> {
+    if (!Number.isFinite(args.amount) || args.amount <= 0) {
+      throw new Error('Isolated position margin amount must be finite and positive');
+    }
+
+    if (this.exchangeConnector.futuresPositionMode === undefined) {
+      throw new Error('Position mode must be known before adding isolated position margin');
+    }
+
+    const positionSide = this.exchangeConnector.futuresPositionMode === PositionModeEnum.Hedge
+      ? this.directionToPositionSide(args.direction)
+      : PositionSideEnum.Both;
+
+    await this.executeWrite(
+      () => this.exchangeConnector.futures.addIsolatedPositionMargin({
+        symbol: args.symbol,
+        positionSide,
+        amount: args.amount,
+      }),
+      `addIsolatedPositionMargin ${args.symbol}`
+    );
+  }
+
   public async setLeverage(args: SetLeverageArgs): Promise<SetLeverageResult> {
+    return this.leverageAndEntrySerializer.run(args.symbol, () => this.setLeverageUnlocked(args));
+  }
+
+  private async setLeverageUnlocked(args: SetLeverageArgs): Promise<SetLeverageResult> {
     logger.info(
       { symbol: args.symbol, leverage: args.leverage },
       `[PositionManager] ${args.symbol} setLeverage request leverage=${args.leverage}`
     );
     const result = await this.executeWrite(
       () => withRetryOn429({
-        fn: () => this.exchangeConnector.futures.setLeverage(args.leverage, args.symbol),
+        fn: () => args.direction === undefined
+          ? this.exchangeConnector.futures.setLeverage(args.leverage, args.symbol)
+          : this.exchangeConnector.futures.setLeverage(args.leverage, args.symbol, {
+              direction: args.direction,
+            }),
         contextLabel: `setLeverage ${args.symbol} leverage=${args.leverage}`,
       }),
       `setLeverage ${args.symbol}`
@@ -649,7 +758,11 @@ export class PositionManager {
     }
 
     return this.executeWrite(
-      () => this.exchangeConnector.createOrder(orderParams),
+      async () => {
+        await args.beforeOrder?.();
+
+        return this.exchangeConnector.createOrder(orderParams);
+      },
       `placeConditional ${args.symbol} isStopLoss=${args.isStopLoss}`
     );
   }
@@ -693,6 +806,20 @@ export class PositionManager {
     }
 
     return orderParams;
+  }
+
+  private async applyFuturesSetupUnlocked(args: ApplyFuturesSetupArgs): Promise<void> {
+    if (args.marketType !== MarketTypeEnum.Futures) {
+      return;
+    }
+
+    if (args.leverage !== undefined) {
+      await this.setLeverageUnlocked({ symbol: args.symbol, leverage: args.leverage });
+    }
+
+    if (args.marginMode !== undefined) {
+      await this.setMarginMode({ symbol: args.symbol, marginMode: args.marginMode });
+    }
   }
 
   private async applyFuturesSetup(args: ApplyFuturesSetupArgs): Promise<void> {
@@ -772,20 +899,22 @@ export class PositionManager {
       return { kind: 'absent', confidence: 'confirmed', reason: 'no_record' };
     }
 
-    if (snapshot.contracts === 0) {
-      return { kind: 'absent', confidence: 'confirmed', reason: 'zero_contracts' };
-    }
-
     if (isHedge && snapshot.positionIdx !== undefined && snapshot.positionIdx !== expectedPositionIdx) {
       return { kind: 'ambiguous', reason: 'idx_mismatch', position: snapshot };
     }
 
-    if (isHedge && snapshot.side !== expectedSide) {
+    const isEmptySideWithConfirmedIdx = snapshot.contracts === 0 && snapshot.side === PositionSideEnum.Both && snapshot.positionIdx === expectedPositionIdx;
+
+    if (isHedge && snapshot.side !== expectedSide && !isEmptySideWithConfirmedIdx) {
       return { kind: 'ambiguous', reason: 'side_mismatch', position: snapshot };
     }
 
     if (!isHedge && snapshot.side !== PositionSideEnum.Both && snapshot.side !== expectedSide) {
       return { kind: 'ambiguous', reason: 'side_mismatch', position: snapshot };
+    }
+
+    if (snapshot.contracts === 0) {
+      return { kind: 'absent', confidence: 'confirmed', reason: 'zero_contracts', positionUpdatedAtMs: snapshot.updatedAtMs };
     }
 
     return { kind: 'present', position: snapshot };
@@ -798,11 +927,11 @@ export class PositionManager {
       throw new Error(`readAllPositions supports MarketTypeEnum.Futures only (got ${marketType})`);
     }
 
-    logger.info('[PositionManager] readAllPositions request');
+    logger.debug('[PositionManager] readAllPositions request');
 
     try {
       const positionList = await this.exchangeConnector.futures.fetchAllPositions();
-      logger.info(
+      logger.debug(
         { count: positionList.length },
         `[PositionManager] readAllPositions response count=${positionList.length}`,
       );
@@ -882,7 +1011,7 @@ export class PositionManager {
     const { symbol, marketType, orderId } = args;
     const client = this.exchangeConnector.getClient(marketType);
 
-    logger.info(
+    logger.debug(
       { symbol, marketType, orderId },
       `[PositionManager] ${symbol} readOrder request orderId=${orderId} marketType=${marketType}`
     );
@@ -893,23 +1022,120 @@ export class PositionManager {
         contextLabel: `readOrder ${symbol} orderId=${orderId}`,
       });
 
-      logger.info(
+      logger.debug(
         { symbol, marketType, orderId, status: order.status },
         `[PositionManager] ${symbol} readOrder response orderId=${orderId} status=${order.status}`
       );
 
       return order;
     } catch (error: unknown) {
-      logger.warn({ symbol, marketType, orderId, error }, `[PositionManager] ${symbol} readOrder failed orderId=${orderId}`);
+      logger.debug({ symbol, marketType, orderId, error }, `[PositionManager] ${symbol} readOrder failed orderId=${orderId}`);
       throw error;
     }
+  }
+
+  public async readOrderExecutionSummary(args: ReadOrderExecutionSummaryArgs): Promise<OrderExecutionSummary> {
+    const { marketType, ...request } = args;
+    const client = this.exchangeConnector.getClient(marketType);
+
+    return withRetryOn429({
+      fn: () => client.fetchOrderExecutionSummary(request),
+      contextLabel: `readOrderExecutionSummary ${args.symbol}`,
+    });
+  }
+
+  public async readAccountTrades(args: ReadAccountTradesArgs): Promise<AccountTrade[]> {
+    const { marketType, symbol, ...options } = args;
+    const client = this.exchangeConnector.getClient(marketType);
+
+    return withRetryOn429({
+      fn: () => client.fetchAccountTrades(symbol, options),
+      contextLabel: `readAccountTrades ${symbol}`,
+    });
+  }
+
+  public async readIncome(args: ReadIncomeArgs = {}): Promise<Income[]> {
+    return withRetryOn429({
+      fn: () => this.exchangeConnector.futures.fetchIncome(args),
+      contextLabel: `readIncome ${args.symbol ?? 'all'} ${args.incomeType ?? 'all'}`,
+    });
+  }
+
+  public async readOrderHistory(args: ReadOrderHistoryArgs): Promise<Order[]> {
+    const { marketType, symbol, ...options } = args;
+    const client = this.exchangeConnector.getClient(marketType);
+
+    return withRetryOn429({
+      fn: () => client.fetchOrderHistory(symbol, options),
+      contextLabel: `readOrderHistory ${symbol}`,
+    });
+  }
+
+  public async readClosedPnl(args: ReadClosedPnlArgs = {}): Promise<ClosedPnl[]> {
+    const { symbol, ...options } = args;
+
+    return withRetryOn429({
+      fn: () => this.exchangeConnector.futures.fetchClosedPnl(symbol, options),
+      contextLabel: `readClosedPnl ${symbol ?? 'all'}`,
+    });
+  }
+
+  /** A failed read is rethrown: an unknown mark price must not read as "no price". */
+  public async readMarkPrice(symbol: string): Promise<MarkPrice | null> {
+    const markPriceList = await withRetryOn429({
+      fn: () => this.exchangeConnector.futures.fetchMarkPrice(symbol),
+      contextLabel: `readMarkPrice ${symbol}`,
+    });
+
+    return markPriceList.find(item => item.symbol === symbol) ?? markPriceList[0] ?? null;
+  }
+
+  /** Null — the balance could not be read (NOT a zero balance); the retry is inside the reader. */
+  public async readAccountBalance(): Promise<AccountBalanceSnapshot | null> {
+    return readAccountBalance(this.exchangeConnector.futures);
+  }
+
+  // Only the plain list: Binance keeps conditional (algo) orders out of it — they are read by
+  // readOpenConditionalOrderList.
+  public async readOpenPlainOrderList(args: ReadOpenPlainOrderListArgs): Promise<Order[]> {
+    const { marketType, symbol } = args;
+    const client = this.exchangeConnector.getClient(marketType);
+
+    return withRetryOn429({
+      fn: () => client.fetchOpenOrders(symbol),
+      contextLabel: `readOpenPlainOrderList ${symbol ?? 'all'}`,
+    });
+  }
+
+  // The exchange answers the conditional list per settlement coin, never per symbol — the symbol
+  // filter is applied here.
+  public async readOpenConditionalOrderList(args: ReadOpenConditionalOrderListArgs = {}): Promise<Order[]> {
+    const { symbol } = args;
+    const settleCoin = args.settleCoin ?? DEFAULT_CONDITIONAL_SETTLE_COIN;
+    const orderList = await withRetryOn429({
+      fn: () => this.exchangeConnector.futures.fetchOpenConditionalOrders(settleCoin),
+      contextLabel: `readOpenConditionalOrderList ${symbol ?? 'all'} ${settleCoin}`,
+    });
+
+    if (symbol === undefined) {
+      return orderList;
+    }
+
+    return orderList.filter(order => order.symbol === symbol);
+  }
+
+  public async readPositionLeverage(symbol: string): Promise<number | null> {
+    return withRetryOn429({
+      fn: () => this.exchangeConnector.futures.fetchPositionLeverage(symbol),
+      contextLabel: `readPositionLeverage ${symbol}`,
+    });
   }
 
   public async readOrderByClientOrderId(args: ReadOrderByClientOrderIdArgs): Promise<Order> {
     const { symbol, marketType, clientOrderId } = args;
     const client = this.exchangeConnector.getClient(marketType);
 
-    logger.info(
+    logger.debug(
       { symbol, marketType, clientOrderId },
       `[PositionManager] ${symbol} readOrderByClientOrderId request clientOrderId=${clientOrderId} marketType=${marketType}`
     );
@@ -920,14 +1146,14 @@ export class PositionManager {
         contextLabel: `readOrderByClientOrderId ${symbol} clientOrderId=${clientOrderId}`,
       });
 
-      logger.info(
+      logger.debug(
         { symbol, marketType, clientOrderId, status: order.status },
         `[PositionManager] ${symbol} readOrderByClientOrderId response clientOrderId=${clientOrderId} status=${order.status}`
       );
 
       return order;
     } catch (error: unknown) {
-      logger.warn({ symbol, marketType, clientOrderId, error }, `[PositionManager] ${symbol} readOrderByClientOrderId failed clientOrderId=${clientOrderId}`);
+      logger.debug({ symbol, marketType, clientOrderId, error }, `[PositionManager] ${symbol} readOrderByClientOrderId failed clientOrderId=${clientOrderId}`);
       throw error;
     }
   }
@@ -986,5 +1212,79 @@ export class PositionManager {
     );
 
     return { makerPercent, takerPercent };
+  }
+
+  public async readFundingRateHistory(
+    args: ReadFundingRateHistoryArgs
+  ): Promise<FundingRateHistoryPercent[] | null> {
+    if (!Number.isSafeInteger(args.startTime) || !Number.isSafeInteger(args.endTime)) {
+      throw new Error('Funding history time range must use integer milliseconds');
+    }
+
+    if (args.startTime > args.endTime) {
+      throw new Error('Funding history start time must not exceed end time');
+    }
+
+    const fundingRateByTime = new Map<number, FundingRateHistoryPercent>();
+    // A short page is not the end: Bybit caps a page at 200 and fills it from the NEWEST entry,
+    // Binance at 1000 from the OLDEST (live answers, 04.11.2026). Whatever the order, a page covers
+    // one contiguous stretch, so both sides of it are read again until each comes back empty.
+    const windowList: FundingRateHistoryWindow[] = [{ startTime: args.startTime, endTime: args.endTime }];
+
+    try {
+      for (let window = windowList.pop(); window !== undefined; window = windowList.pop()) {
+        const { startTime, endTime } = window;
+        const pageList = await withRetryOn429({
+          fn: () => this.exchangeConnector.futures.fetchFundingRateHistory(args.symbol, {
+            startTime,
+            endTime,
+            limit: FUNDING_RATE_HISTORY_PAGE_LIMIT,
+            shouldIncludeMarkPrices: args.shouldIncludeMarkPrices,
+          }),
+          contextLabel: `readFundingRateHistory ${args.symbol}`,
+        });
+
+        if (pageList.length === 0) {
+          continue;
+        }
+
+        const insideList = pageList
+          .filter(item => item.fundingTime >= startTime && item.fundingTime <= endTime)
+          .sort((left, right) => left.fundingTime - right.fundingTime);
+        const firstFundingTime = insideList.at(0)?.fundingTime;
+        const lastFundingTime = insideList.at(-1)?.fundingTime;
+
+        if (firstFundingTime === undefined || lastFundingTime === undefined) {
+          throw new Error('Funding history page did not advance');
+        }
+
+        for (const item of insideList) {
+          fundingRateByTime.set(item.fundingTime, this.toFundingRateHistoryPercent(item));
+        }
+
+        if (lastFundingTime < endTime) {
+          windowList.push({ startTime: lastFundingTime + 1, endTime });
+        }
+
+        if (firstFundingTime > startTime) {
+          windowList.push({ startTime, endTime: firstFundingTime - 1 });
+        }
+      }
+    } catch (error: unknown) {
+      logger.warn({ symbol: args.symbol, error }, `[PositionManager] ${args.symbol} readFundingRateHistory failed`);
+
+      return null;
+    }
+
+    return [...fundingRateByTime.values()].sort((left, right) => left.fundingTime - right.fundingTime);
+  }
+
+  private toFundingRateHistoryPercent(item: FundingRateHistory): FundingRateHistoryPercent {
+    return {
+      symbol: item.symbol,
+      fundingRatePercent: roundPercent(item.fundingRate * 100, 12),
+      fundingTime: item.fundingTime,
+      markPrice: item.markPrice,
+    };
   }
 }

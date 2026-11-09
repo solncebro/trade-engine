@@ -6,6 +6,8 @@ import admin from 'firebase-admin';
 
 import type {
   FirebaseConnectionLostReason,
+  FirebaseDiskCopyWriteArgs,
+  FirebaseLoadAttempt,
   FirebaseMapLocation,
   FirebaseServiceBaseArgs,
   FirebaseSnapshotDiskCopy,
@@ -103,6 +105,9 @@ const DEFAULT_RESUBSCRIBE_INITIAL_DELAY_MS = 1_000;
 const DEFAULT_RESUBSCRIBE_MAX_DELAY_MS = 60_000;
 const DEFAULT_CONNECTION_RETRY_INTERVAL_MS = 30_000;
 const DEFAULT_INITIAL_READ_TIMEOUT_MS = 30_000;
+// Initialization is a read and possibly a default write, each with its own deadline; the whole
+// attempt (disk copy included) gets their sum, so two steps that each fit never fail together.
+const INITIALIZATION_STEP_COUNT = 2;
 const DEFAULT_PENDING_WRITE_MAX_AGE_MS = 15_000;
 
 interface PendingWrite {
@@ -151,6 +156,8 @@ function readNestedValue(source: unknown, segmentList: string[]): unknown {
 export class FirebaseServiceBase<T> extends EventEmitter implements Notifiable {
   private firestore: admin.firestore.Firestore;
   private documentReference: admin.firestore.DocumentReference;
+  private initializationPromise: Promise<void> | null = null;
+  private loadPromise: Promise<void> | null = null;
   private settingsListener: (() => void) | null = null;
   private currentData: T;
   private defaultData: T;
@@ -162,6 +169,9 @@ export class FirebaseServiceBase<T> extends EventEmitter implements Notifiable {
   private readonly snapshotCacheFilePath: string | null;
   private readonly connectionRetryIntervalMs: number;
   private readonly initialReadTimeoutMs: number;
+  private readonly shouldLimitInitialRead: boolean;
+  private readonly readDocument: FirebaseServiceBaseArgs<T>['readDocument'];
+  private readonly writeDocument: FirebaseServiceBaseArgs<T>['writeDocument'];
   private readonly isWriteVisibleImmediately: boolean;
   private readonly pendingWriteMaxAgeMs: number;
   private readonly pendingWriteByPath: Map<string, PendingWrite> = new Map();
@@ -203,6 +213,9 @@ export class FirebaseServiceBase<T> extends EventEmitter implements Notifiable {
     this.snapshotCacheFilePath = args.snapshotCacheFilePath ?? null;
     this.connectionRetryIntervalMs = args.connectionRetryIntervalMs ?? DEFAULT_CONNECTION_RETRY_INTERVAL_MS;
     this.initialReadTimeoutMs = args.initialReadTimeoutMs ?? DEFAULT_INITIAL_READ_TIMEOUT_MS;
+    this.shouldLimitInitialRead = args.initialReadTimeoutMs !== undefined || this.snapshotCacheFilePath !== null;
+    this.writeDocument = args.writeDocument;
+    this.readDocument = args.readDocument;
     this.isWriteVisibleImmediately = args.isWriteVisibleImmediately ?? true;
     this.pendingWriteMaxAgeMs = args.pendingWriteMaxAgeMs ?? DEFAULT_PENDING_WRITE_MAX_AGE_MS;
 
@@ -223,17 +236,40 @@ export class FirebaseServiceBase<T> extends EventEmitter implements Notifiable {
     }
 
     this.firestore = admin.firestore();
+
     this.documentReference = this.firestore.doc(documentPath);
   }
 
-  public async initialize(): Promise<void> {
+  public initialize(): Promise<void> {
+    if (this.initializationPromise !== null) return this.initializationPromise;
+
+    const initialization = this.initializeOnce();
+    this.initializationPromise = initialization;
+    initialization.finally(() => {
+      if (this.initializationPromise === initialization) this.initializationPromise = null;
+    }).catch(() => undefined);
+
+    return initialization;
+  }
+
+  private async initializeOnce(): Promise<void> {
     try {
       await this.loadAndSubscribe();
     } catch (error) {
-      const diskCopy = await this.readDiskCopy();
+      if (this.isDisconnected) throw error;
+
+      let diskCopy: FirebaseSnapshotDiskCopy | null = null;
+
+      try {
+        diskCopy = await withTimeout(this.readDiskCopy(), this.initialReadTimeoutMs, `Firestore disk copy read of ${this.documentPath} exceeded ${this.initialReadTimeoutMs}ms`);
+      } catch (diskCopyError: unknown) {
+        logger.warn({ error: diskCopyError, documentPath: this.documentPath }, '[Firebase] Disk copy could not be read before the startup deadline');
+      }
+
+      if (this.isDisconnected) throw error;
 
       if (diskCopy === null) {
-        await this.onError('Failed to initialize Firebase service', error);
+        this.safeNotifyError('Failed to initialize Firebase service', error);
 
         throw error;
       }
@@ -259,41 +295,97 @@ export class FirebaseServiceBase<T> extends EventEmitter implements Notifiable {
   }
 
   private async loadAndSubscribe(): Promise<void> {
-    const document = this.snapshotCacheFilePath === null
-      ? await this.documentReference.get()
-      : await withTimeout(this.documentReference.get(), this.initialReadTimeoutMs, `Firestore read of ${this.documentPath} exceeded ${this.initialReadTimeoutMs}ms`);
+    if (this.loadPromise !== null) throw new Error('Previous Firebase initialization is still pending');
+
+    const attempt: FirebaseLoadAttempt = { isActive: true };
+    const pending = this.loadAndSubscribeAttempt(attempt);
+    this.loadPromise = pending;
+    pending.finally(() => {
+      if (this.loadPromise === pending) this.loadPromise = null;
+    }).catch(() => undefined);
+
+    try {
+      if (!this.shouldLimitInitialRead) {
+        await pending;
+      } else {
+        const deadlineMs = this.initialReadTimeoutMs * INITIALIZATION_STEP_COUNT;
+
+        await withTimeout(pending, deadlineMs, `Firestore initialization of ${this.documentPath} exceeded ${deadlineMs}ms`);
+      }
+    } catch (error: unknown) {
+      // The abandoned attempt can no longer touch this object (its flag says so), so it must not hold
+      // the next one back: a promise that never settles would otherwise block every reconnection.
+      attempt.isActive = false;
+
+      if (this.loadPromise === pending) this.loadPromise = null;
+
+      throw error;
+    }
+  }
+
+  private withInitialStepDeadline<V>(promise: Promise<V>, stepLabel: string): Promise<V> {
+    if (!this.shouldLimitInitialRead) return promise;
+
+    return withTimeout(promise, this.initialReadTimeoutMs, `Firestore ${stepLabel} of ${this.documentPath} exceeded ${this.initialReadTimeoutMs}ms`);
+  }
+
+  private requireActiveLoad(attempt: FirebaseLoadAttempt): void {
+    if (!attempt.isActive || this.isDisconnected) throw new Error('Firebase initialization no longer active');
+  }
+
+  private async readSettingsDocument(): Promise<Pick<admin.firestore.DocumentSnapshot, 'exists' | 'data'>> {
+    if (this.readDocument === undefined) return this.documentReference.get();
+    const data = await this.readDocument(this.documentPath);
+
+    return { exists: data !== null, data: () => data ?? undefined };
+  }
+
+  private async loadAndSubscribeAttempt(attempt: FirebaseLoadAttempt): Promise<void> {
+    this.requireActiveLoad(attempt);
+    const document = await this.withInitialStepDeadline(this.readSettingsDocument(), 'read');
+    this.requireActiveLoad(attempt);
+    let data = this.defaultData;
 
     if (document.exists) {
-      const data = document.data() as T;
-
-      // Backfill only the default keys missing from the stored document via a
-      // dot-notation update — existing values are never overwritten.
+      data = { ...this.defaultData, ...document.data() as T };
       const missingDefaults = collectMissingDefaults(
         this.defaultData as Record<string, unknown>,
-        data as Record<string, unknown>,
+        document.data() as Record<string, unknown>,
         this.wholeMapFieldList,
       );
       const flatMissingDefaults = flattenForFirestoreUpdate(missingDefaults);
 
       if (Object.keys(flatMissingDefaults).length > 0) {
-        await this.documentReference.update(flatMissingDefaults);
-        await this.onNotify('Backfilled missing default keys in Firebase');
+        await this.withInitialStepDeadline<unknown>(
+          this.writeDocument
+            ? this.writeDocument({ documentPath: this.documentPath, data: flatMissingDefaults, kind: 'update' })
+            : this.documentReference.update(flatMissingDefaults),
+          'default backfill',
+        );
+        this.requireActiveLoad(attempt);
+        // A notice is never what holds startup: a slow Telegram must not fail an initialization that
+        // Firestore already confirmed.
+        this.safeNotify('Backfilled missing default keys in Firebase');
       }
-
-      this.updateCurrentData(data);
     } else {
-      // Persist the defaults so the document exists from now on — subsequent
-      // runs load real data instead of silently falling back to defaults again.
-      await this.documentReference.set(this.defaultData as admin.firestore.DocumentData);
-      await this.onNotify('No data found in Firebase — created document with defaults');
+      await this.withInitialStepDeadline<unknown>(
+        this.writeDocument
+          ? this.writeDocument({ documentPath: this.documentPath, data: this.defaultData as Record<string, unknown>, kind: 'replace' })
+          : this.documentReference.set(this.defaultData as admin.firestore.DocumentData),
+        'default document creation',
+      );
+      this.requireActiveLoad(attempt);
+      this.safeNotify('No data found in Firebase — created document with defaults');
     }
 
-    await this.writeDiskCopy();
+    await this.writeDiskCopy({ data, attempt });
+    this.requireActiveLoad(attempt);
+    this.updateCurrentData(data);
     this.subscribeToDataChanges();
   }
 
   private scheduleConnectionRetry(): void {
-    if (this.isDisconnected) {
+    if (this.isDisconnected || this.connectionRetryTimer !== null) {
       return;
     }
 
@@ -305,6 +397,14 @@ export class FirebaseServiceBase<T> extends EventEmitter implements Notifiable {
   }
 
   private async retryConnection(): Promise<void> {
+    if (this.isDisconnected) return;
+
+    if (this.loadPromise !== null || this.initializationPromise !== null) {
+      this.scheduleConnectionRetry();
+
+      return;
+    }
+
     const previousData = this.currentData;
 
     try {
@@ -436,10 +536,10 @@ export class FirebaseServiceBase<T> extends EventEmitter implements Notifiable {
    * like a divergence once; the repair is then a harmless early copy of the same data.
    */
   public async checkSnapshotFreshness(): Promise<void> {
-    let document: admin.firestore.DocumentSnapshot;
+    let document: Pick<admin.firestore.DocumentSnapshot, 'exists' | 'data'>;
 
     try {
-      document = await this.documentReference.get();
+      document = await this.readSettingsDocument();
     } catch (error: unknown) {
       this.markConnectionLost('watchdogReadFailed', error);
 
@@ -516,7 +616,8 @@ export class FirebaseServiceBase<T> extends EventEmitter implements Notifiable {
     try {
       const flatData = flattenForFirestoreUpdate(data);
 
-      await this.documentReference.update(flatData);
+      if (this.writeDocument) await this.writeDocument({ documentPath: this.documentPath, data: flatData, kind: 'update' });
+      else await this.documentReference.update(flatData);
 
       logger.info({ data: flatData }, 'Updated data in Firebase');
 
@@ -682,23 +783,32 @@ export class FirebaseServiceBase<T> extends EventEmitter implements Notifiable {
   }
 
   // Temp file + rename: a crash mid-write leaves the previous good copy, never a torn one.
-  private async writeDiskCopy(): Promise<void> {
+  private async writeDiskCopy(args?: FirebaseDiskCopyWriteArgs<T>): Promise<void> {
     if (this.snapshotCacheFilePath === null) {
       return;
     }
 
-    const dataJson = toStableJson(this.currentData);
+    const data = args?.data ?? this.currentData;
+    const dataJson = toStableJson(data);
 
     if (dataJson === this.lastDiskCopyJson) {
       return;
     }
 
-    const diskCopy: FirebaseSnapshotDiskCopy = { documentPath: this.documentPath, savedAtMs: Date.now(), data: this.currentData };
+    const diskCopy: FirebaseSnapshotDiskCopy = { documentPath: this.documentPath, savedAtMs: Date.now(), data };
     const tempFilePath = `${this.snapshotCacheFilePath}.tmp`;
 
     try {
+      if (args !== undefined) this.requireActiveLoad(args.attempt);
+
       await fs.mkdir(path.dirname(this.snapshotCacheFilePath), { recursive: true });
+
+      if (args !== undefined) this.requireActiveLoad(args.attempt);
+
       await fs.writeFile(tempFilePath, JSON.stringify(diskCopy), 'utf8');
+
+      if (args !== undefined) this.requireActiveLoad(args.attempt);
+
       await fs.rename(tempFilePath, this.snapshotCacheFilePath);
       this.lastDiskCopyJson = dataJson;
     } catch (error: unknown) {

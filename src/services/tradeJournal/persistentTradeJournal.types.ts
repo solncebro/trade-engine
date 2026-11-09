@@ -22,6 +22,7 @@ export interface TradeJournalSchema {
   sheetColumnList: readonly string[];
   sheetDateColumnList: readonly string[];
   sheetPercentColumnList: readonly string[];
+  sheetNumberFormatByColumn?: Readonly<Record<string, string>>;
   event: TradeJournalEventSchema;
 }
 
@@ -76,9 +77,17 @@ export interface JournalSelectRangeArgs {
   toValue?: number | string;
 }
 
+export interface ReconcileSheetsFromSupabaseArgs {
+  /** Rows whose `reconcileTimeColumn` is at or after this instant, ms. Default: the last 7 days. */
+  sinceMs?: number;
+  /** true — the whole table, page by page; `sinceMs` is then ignored. */
+  isFull?: boolean;
+}
+
 export interface JournalSelectRowsArgs {
   table: string;
   match: Record<string, unknown>;
+  select?: string;
   limit?: number;
   range?: JournalSelectRangeArgs;
   order?: { column: string; ascending: boolean };

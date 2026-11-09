@@ -1,7 +1,7 @@
 import * as crypto from 'crypto';
 
 import { ExchangeError, Exchange as ExchangeInstance, ExchangeNameEnum, OrderSideEnum, PositionModeEnum, PositionSideEnum, TimeInForceEnum, TradeSymbolTypeEnum } from '@solncebro/exchange-engine';
-import type { CreateOrderWebSocketArgs, ExchangeClient, KlineHandler, LeverageTier, LeverageTierListBySymbol, MarkPriceHandler, MarkPriceUpdate, OrderBook, OrderBookHandler, OrderRateLimit, PublicTradeHandler, SubscribeKlinesArgs, SubscribeOrderbookArgs, SubscribePublicTradesArgs, Ticker, TickerBySymbol } from '@solncebro/exchange-engine';
+import type { CreateOrderWebSocketArgs, ExchangeClient, ExchangeRateLimitState, FetchPageWithLimitArgs, Kline, KlineHandler, KlineInterval, LeverageTier, LeverageTierListBySymbol, MarkPriceHandler, MarkPriceUpdate, OrderBook, OrderBookHandler, OrderRateLimit, PublicTradeHandler, StepRounding, SubscribeKlinesArgs, SubscribeOrderbookArgs, SubscribePublicTradesArgs, Ticker, TickerBySymbol } from '@solncebro/exchange-engine';
 
 import { KlineSubscriptionWatchdog } from './klineSubscriptionWatchdog';
 import type { KlineSubscriptionWatchdogConfig } from './klineSubscriptionWatchdog.types';
@@ -35,6 +35,8 @@ import { describeExchangeRefusal, formatErrorMessage } from '../utils/errorForma
 import { configureAmountStepSnapper } from '../utils/numberFormat';
 import { isSpot } from '../utils/order.utils';
 import { configurePriceTickSnapper } from '../utils/priceFormat';
+import { assertSymbolLoaded, sizeOrder, splitOrderQty } from '../utils/sizeOrder';
+import type { AssertFuturesSymbolLoadedArgs, SizeFuturesOrderArgs, SizeOrderResult, SplitFuturesOrderQtyArgs } from '../utils/sizeOrder.types';
 import { sleep } from '../utils/sleep';
 import { normalizeSymbol, parseRawSymbolInput } from '../utils/symbol.utils';
 
@@ -90,6 +92,14 @@ export interface FuturesOrderRules {
   minAmount: number;
   /** Smallest order value in quote currency (getMinNotional); 0 when the exchange has none. */
   minNotionalUsd: number;
+  /** Largest amount of one limit order (the client's getMaxOrderQty). */
+  maxAmount: number;
+}
+
+export interface ReadKlinesArgs extends FetchPageWithLimitArgs {
+  symbol: string;
+  interval: KlineInterval;
+  marketType: MarketTypeEnum;
 }
 
 // Per-market reload bookkeeping: one shared in-flight promise (concurrent callers join a
@@ -1097,6 +1107,15 @@ export class ExchangeConnector {
     return router;
   }
 
+  public isUserDataStreamConnected(marketType: MarketTypeEnum = MarketTypeEnum.Futures): boolean {
+    return this.getClient(marketType).isUserDataStreamConnected();
+  }
+
+  /** The exchange's weight usage and ban by the last answer — no network call; null fields — unknown. */
+  public getRateLimitState(marketType: MarketTypeEnum = MarketTypeEnum.Futures): ExchangeRateLimitState {
+    return this.getClient(marketType).getRateLimitState();
+  }
+
   // ---- Order book: the single door to depth for consumers (never the raw client) ----
 
   private getOrCreateOrderBookTracker(marketType: MarketTypeEnum): OrderBookTracker {
@@ -1141,6 +1160,15 @@ export class ExchangeConnector {
     return withRetryOn429({
       fn: () => this.getClient(marketType).fetchOrderBook(symbol, limit),
       contextLabel: `fetchOrderBook ${symbol}`,
+    });
+  }
+
+  public async readKlines(args: ReadKlinesArgs): Promise<Kline[]> {
+    const { symbol, interval, marketType, ...options } = args;
+
+    return withRetryOn429({
+      fn: () => this.getClient(marketType).fetchKlines(symbol, interval, options),
+      contextLabel: `readKlines ${symbol} ${interval}`,
     });
   }
 
@@ -1489,7 +1517,26 @@ export class ExchangeConnector {
       stepSize: Number.isFinite(stepSize) ? stepSize : 0,
       minAmount: this.exchange.futures.getMinOrderQty(symbol),
       minNotionalUsd: this.exchange.futures.getMinNotional(symbol),
+      maxAmount: this.exchange.futures.getMaxOrderQty(symbol),
     };
+  }
+
+  public amountToFuturesPrecision(symbol: string, amount: number, rounding?: StepRounding): number {
+    return this.exchange.futures.amountToPrecision(symbol, amount, rounding);
+  }
+
+  // The sizing utilities take the exchange client; these delegates hand them this connector's own
+  // futures client so an app sizes orders without holding the raw client.
+  public sizeFuturesOrder(args: SizeFuturesOrderArgs): SizeOrderResult {
+    return sizeOrder({ ...args, exchangeClient: this.exchange.futures });
+  }
+
+  public splitFuturesOrderQty(args: SplitFuturesOrderQtyArgs): number[] {
+    return splitOrderQty({ ...args, exchangeClient: this.exchange.futures });
+  }
+
+  public assertFuturesSymbolLoaded(args: AssertFuturesSymbolLoadedArgs): string | undefined {
+    return assertSymbolLoaded({ ...args, exchangeClient: this.exchange.futures });
   }
 
   /** Spot twin of ensureFuturesTradeSymbolLoaded: same single-flight reload and cooldown. */

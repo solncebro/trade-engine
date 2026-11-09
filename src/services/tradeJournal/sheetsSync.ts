@@ -1,6 +1,18 @@
 import { auth as googleAuth, sheets as googleSheets, sheets_v4 } from '@googleapis/sheets';
 
+import type {
+  ApplyColumnFormatsArgs,
+  EnsureDateColumnFormatArgs,
+  EnsureSheetHeaderArgs,
+  ReplaceSheetValuesArgs,
+  SheetSyncArgs,
+  SortSheetDataArgs,
+} from './sheetsSync.types';
+
+import { logger } from '../../core/logger';
 import { createDate } from '../../utils/date.utils';
+
+export type { ReplaceSheetValuesArgs } from './sheetsSync.types';
 
 const MS_PER_DAY = 86_400_000;
 const SHEETS_EPOCH_OFFSET_DAYS = 25_569;
@@ -10,42 +22,6 @@ const SHEETS_SCOPE = 'https://www.googleapis.com/auth/spreadsheets';
 // (2.83 / 100 → 0.028300000000000002). Re-reading a value at 15 digits drops the litter and keeps every
 // genuinely long number intact (a weighted average entry price uses 15 digits and survives untouched).
 const SIGNIFICANT_DIGIT_LIMIT = 15;
-
-export interface SheetSyncArgs {
-  sheets: sheets_v4.Sheets;
-  spreadsheetId: string;
-  columnList: readonly string[];
-  keyColumn: string;
-  dateColumnList: readonly string[];
-  percentColumnList: readonly string[];
-  recordList: Record<string, unknown>[];
-  /** Target sheet (tab) by title, created with the header when missing. Omitted: the FIRST sheet. */
-  sheetName?: string;
-}
-
-export interface EnsureDateColumnFormatArgs {
-  sheets: sheets_v4.Sheets;
-  spreadsheetId: string;
-  columnList: readonly string[];
-  dateColumnList: readonly string[];
-  sheetName?: string;
-}
-
-export interface EnsureSheetHeaderArgs {
-  sheets: sheets_v4.Sheets;
-  spreadsheetId: string;
-  columnList: readonly string[];
-  sheetName?: string;
-}
-
-export interface ReplaceSheetValuesArgs {
-  sheets: sheets_v4.Sheets;
-  spreadsheetId: string;
-  /** Created when missing. */
-  sheetName: string;
-  /** Rows top to bottom, header included when the sheet needs one. Numbers stay numbers. */
-  valueMatrix: (string | number)[][];
-}
 
 interface ResolvedSheet {
   sheetId: number;
@@ -240,19 +216,27 @@ async function readSheetRows(
   return result;
 }
 
-// Give the date columns a UTC date-time number format, from the row below the header down. A date cell
-// holds a serial number (whole part = days since 1899-12-30, fraction = time of day), so WITHOUT this
-// format Sheets shows the bare number instead of a date. Must be re-applied after every write that
-// added rows: rows arriving through append/INSERT_ROWS do not carry the format of the column they land
-// in, so a one-shot pass at startup only ever dresses the rows that existed back then.
-async function applyDateColumnFormat(sheets: sheets_v4.Sheets, spreadsheetId: string, sheetId: number, columnList: readonly string[], dateColumnList: readonly string[]): Promise<void> {
-  const requestList: sheets_v4.Schema$Request[] = dateColumnList
-    .map((column) => columnList.indexOf(column))
-    .filter((index) => index >= 0)
-    .map((index) => ({
+// Apply every schema-owned display format from the row below the header down. Date cells hold serial
+// numbers and otherwise render as bare numbers; appended rows do not reliably inherit column formats.
+// Re-applying the formats after each changed batch also repairs accidental formatting drift in Sheets.
+async function applyColumnFormats(args: ApplyColumnFormatsArgs): Promise<void> {
+  const numberFormatByColumn = new Map<string, sheets_v4.Schema$NumberFormat>();
+
+  for (const column of args.dateColumnList) {
+    numberFormatByColumn.set(column, { type: 'DATE_TIME', pattern: DATE_TIME_PATTERN });
+  }
+
+  for (const [column, pattern] of Object.entries(args.numberFormatByColumn ?? {})) {
+    numberFormatByColumn.set(column, { type: pattern.includes('%') ? 'PERCENT' : 'NUMBER', pattern });
+  }
+
+  const requestList: sheets_v4.Schema$Request[] = [...numberFormatByColumn.entries()]
+    .map(([column, numberFormat]) => ({ index: args.columnList.indexOf(column), numberFormat }))
+    .filter(({ index }) => index >= 0)
+    .map(({ index, numberFormat }) => ({
       repeatCell: {
-        range: { sheetId, startRowIndex: 1, startColumnIndex: index, endColumnIndex: index + 1 },
-        cell: { userEnteredFormat: { numberFormat: { type: 'DATE_TIME', pattern: DATE_TIME_PATTERN } } },
+        range: { sheetId: args.sheetId, startRowIndex: 1, startColumnIndex: index, endColumnIndex: index + 1 },
+        cell: { userEnteredFormat: { numberFormat } },
         fields: 'userEnteredFormat.numberFormat',
       },
     }));
@@ -261,7 +245,29 @@ async function applyDateColumnFormat(sheets: sheets_v4.Sheets, spreadsheetId: st
     return;
   }
 
-  await sheets.spreadsheets.batchUpdate({ spreadsheetId, requestBody: { requests: requestList } });
+  await args.sheets.spreadsheets.batchUpdate({ spreadsheetId: args.spreadsheetId, requestBody: { requests: requestList } });
+}
+
+async function sortSheetData(args: SortSheetDataArgs): Promise<void> {
+  const orderColumnIndex = args.orderColumn === undefined ? -1 : args.columnList.indexOf(args.orderColumn);
+
+  if (orderColumnIndex < 0) {
+    return;
+  }
+
+  await args.sheets.spreadsheets.batchUpdate({
+    spreadsheetId: args.spreadsheetId,
+    requestBody: {
+      requests: [{
+        sortRange: {
+          // No end column: the whole row moves, so a column kept by hand right of the journal's own
+          // columns stays with its trade instead of being left behind by the sort.
+          range: { sheetId: args.sheetId, startRowIndex: 1, startColumnIndex: 0 },
+          sortSpecs: [{ dimensionIndex: orderColumnIndex, sortOrder: 'ASCENDING' }],
+        },
+      }],
+    },
+  });
 }
 
 // Mirror `recordList` into the target sheet (the first one unless `sheetName` is given): append rows whose key is new, update rows
@@ -287,6 +293,8 @@ export async function syncRecordListToSheet(args: SheetSyncArgs): Promise<void> 
   const lastColumn = columnLetter(columnList.length);
   const appendList: (string | number)[][] = [];
   const updateList: sheets_v4.Schema$ValueRange[] = [];
+  const appendKeyList: string[] = [];
+  const updateKeyList: string[] = [];
 
   for (const record of recordList) {
     const key = String(formatCell(record[keyColumn]));
@@ -295,16 +303,21 @@ export async function syncRecordListToSheet(args: SheetSyncArgs): Promise<void> 
 
     if (!current) {
       appendList.push(values);
+      appendKeyList.push(key);
 
       continue;
     }
 
     if (JSON.stringify(current.values) !== JSON.stringify(toComparableRow(values))) {
       updateList.push({ range: sheetRange(first.title, `A${current.rowNumber}:${lastColumn}${current.rowNumber}`), values: [values] });
+      updateKeyList.push(key);
     }
   }
 
+  logger.info({ sheetName: first.title, sheetId: first.sheetId, stage: 'sheets_rows_compared', recordCount: recordList.length, appendCount: appendList.length, updateCount: updateList.length, unchangedCount: recordList.length - appendList.length - updateList.length }, '[SheetsSync] Existing sheet rows compared with the journal');
+
   if (appendList.length > 0) {
+    logger.info({ sheetName: first.title, stage: 'sheets_append_started', tradeIdList: appendKeyList }, '[SheetsSync] Appending missing rows');
     // Unbounded range + INSERT_ROWS: Google grows the grid for every appended row, so the sheet NEVER
     // runs out at the default 1000-row allocation. Do NOT change to a bounded range or OVERWRITE.
     await sheets.spreadsheets.values.append({
@@ -314,15 +327,40 @@ export async function syncRecordListToSheet(args: SheetSyncArgs): Promise<void> 
       insertDataOption: 'INSERT_ROWS',
       requestBody: { values: appendList },
     });
+    logger.info({ sheetName: first.title, stage: 'sheets_append_confirmed', tradeIdList: appendKeyList }, '[SheetsSync] Missing rows appended');
 
-    await applyDateColumnFormat(sheets, spreadsheetId, first.sheetId, columnList, dateColumnList);
   }
 
   if (updateList.length > 0) {
+    logger.info({ sheetName: first.title, stage: 'sheets_update_started', tradeIdList: updateKeyList }, '[SheetsSync] Updating changed rows');
     await sheets.spreadsheets.values.batchUpdate({
       spreadsheetId,
       requestBody: { valueInputOption: 'USER_ENTERED', data: updateList },
     });
+    logger.info({ sheetName: first.title, stage: 'sheets_update_confirmed', tradeIdList: updateKeyList }, '[SheetsSync] Changed rows updated');
+  }
+
+  if (appendList.length > 0 || updateList.length > 0) {
+    logger.info({ sheetName: first.title, stage: 'sheets_formats_started' }, '[SheetsSync] Applying configured column formats');
+    await applyColumnFormats({
+      sheets,
+      spreadsheetId,
+      sheetId: first.sheetId,
+      columnList,
+      dateColumnList,
+      numberFormatByColumn: args.numberFormatByColumn,
+    });
+    logger.info({ sheetName: first.title, stage: 'sheets_formats_confirmed' }, '[SheetsSync] Column formats applied');
+
+    logger.info({ sheetName: first.title, stage: 'sheets_sort_started', orderColumn: args.orderColumn }, '[SheetsSync] Sorting the sheet by configured order');
+    await sortSheetData({
+      sheets,
+      spreadsheetId,
+      sheetId: first.sheetId,
+      columnList,
+      orderColumn: args.orderColumn,
+    });
+    logger.info({ sheetName: first.title, stage: 'sheets_sort_confirmed', orderColumn: args.orderColumn }, '[SheetsSync] Sheet order confirmed');
   }
 }
 
@@ -353,7 +391,14 @@ export async function fullReplaceSheet(args: SheetSyncArgs): Promise<void> {
     requestBody: { values: valueMatrix },
   });
 
-  await applyDateColumnFormat(sheets, spreadsheetId, first.sheetId, columnList, dateColumnList);
+  await applyColumnFormats({
+    sheets,
+    spreadsheetId,
+    sheetId: first.sheetId,
+    columnList,
+    dateColumnList,
+    numberFormatByColumn: args.numberFormatByColumn,
+  });
 }
 
 // Connect at startup and make sure the target sheet's header row matches `columnList` — write it when the
@@ -376,8 +421,7 @@ export async function ensureSheetHeader(args: EnsureSheetHeaderArgs): Promise<bo
   return true;
 }
 
-// Startup pass: dress the date columns of the target sheet so their serial values render as native
-// dates. Idempotent — safe to call repeatedly. The write paths re-apply it after adding rows.
+// Startup pass for every schema-owned display format. Idempotent; write paths re-apply the same map.
 export async function ensureDateColumnFormat(args: EnsureDateColumnFormatArgs): Promise<void> {
   const { sheets, spreadsheetId, columnList, dateColumnList } = args;
   const first = await resolveTargetSheet(sheets, spreadsheetId, args.sheetName);
@@ -386,7 +430,14 @@ export async function ensureDateColumnFormat(args: EnsureDateColumnFormatArgs): 
     return;
   }
 
-  await applyDateColumnFormat(sheets, spreadsheetId, first.sheetId, columnList, dateColumnList);
+  await applyColumnFormats({
+    sheets,
+    spreadsheetId,
+    sheetId: first.sheetId,
+    columnList,
+    dateColumnList,
+    numberFormatByColumn: args.numberFormatByColumn,
+  });
 }
 
 // Rewrite a whole named sheet with a ready matrix — a summary sheet whose layout is not one row per

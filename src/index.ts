@@ -9,6 +9,7 @@ export { ExchangeConnector } from './services/exchangeConnector';
 export type {
   FuturesOrderRules,
   RateLimitConfig,
+  ReadKlinesArgs,
   ResolvedSymbol,
   StreamWatchdogConfigMap,
   StreamWatchdogStreamConfig,
@@ -43,6 +44,7 @@ export type {
 } from './services/firebaseServiceBase.types';
 export { PersistedListDocument } from './services/persistedListDocument';
 export type {
+  ListDocumentFlushResult,
   ListDocumentIo,
   ListDocumentLogger,
   PersistedListDocumentArgs,
@@ -109,6 +111,7 @@ export type {
   JournalSelectRowsArgs,
   JournalSelectRangeArgs,
   JournalSheetTarget,
+  ReconcileSheetsFromSupabaseArgs,
 } from './services/tradeJournal/persistentTradeJournal.types';
 export { replaceSheetValues } from './services/tradeJournal/sheetsSync';
 export type { ReplaceSheetValuesArgs } from './services/tradeJournal/sheetsSync';
@@ -138,10 +141,12 @@ export type {
   ClosePositionMarketArgs,
   Direction,
   FeeRatePercent,
+  FundingRateHistoryPercent,
   OpenPositionBatchLimitArgs,
   OpenPositionBatchLimitItem,
   OpenPositionBatchLimitResult,
   OpenPositionLimitArgs,
+  OpenPositionLimitWithLeverageArgs,
   OpenPositionMarketArgs,
   PlaceStopLossArgs,
   PlaceTakeProfitArgs,
@@ -152,12 +157,21 @@ export type {
   PositionManagerModifyBatchOrdersArgs,
   PositionManagerModifyOrderArgs,
   PositionStateResult,
+  ReadAccountTradesArgs,
   ReadAllPositionsArgs,
+  ReadClosedPnlArgs,
   ReadFeeRateArgs,
+  ReadFundingRateHistoryArgs,
+  ReadIncomeArgs,
+  ReadOpenConditionalOrderListArgs,
   ReadOpenOrderListArgs,
+  ReadOpenPlainOrderListArgs,
   ReadOrderArgs,
   ReadOrderByClientOrderIdArgs,
+  ReadOrderExecutionSummaryArgs,
+  ReadOrderHistoryArgs,
   ReadPositionStateArgs,
+  PositionManagerAddIsolatedPositionMarginArgs,
   SetLeverageArgs,
   SetMarginModeArgs,
   SpotMarketBuyByQuoteArgs,

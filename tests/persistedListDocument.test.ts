@@ -120,7 +120,8 @@ describe('PersistedListDocument — reading', () => {
     await document.load();
 
     expect(document.list()).toEqual([]);
-    expect(logger.error).toHaveBeenCalled();
+    expect(logger.warn).toHaveBeenCalled();
+    expect(logger.error).not.toHaveBeenCalled();
   });
 
   it('works entirely in memory when io is null', async () => {
@@ -169,9 +170,7 @@ describe('PersistedListDocument — writing', () => {
     const first = buildDeferred<void>();
     const io = buildIo();
 
-    io.write
-      .mockReturnValueOnce(first.promise)
-      .mockResolvedValue(undefined);
+    io.write.mockReturnValueOnce(first.promise).mockResolvedValue(undefined);
 
     const { document } = buildDocument(io);
 
@@ -222,8 +221,62 @@ describe('PersistedListDocument — writing', () => {
     document.set({ key: 'a', value: 1 });
     await document.flush();
 
-    expect(logger.error).toHaveBeenCalled();
+    expect(logger.warn).toHaveBeenCalled();
+    expect(logger.error).not.toHaveBeenCalled();
     expect(io.write).toHaveBeenCalledTimes(2);
+  });
+
+  it('escalates to an error only after ten consecutive failed writes', async () => {
+    jest.useFakeTimers();
+    const io = buildIo();
+
+    io.write.mockRejectedValue(new Error('down'));
+
+    const { document, logger } = buildDocument(io);
+
+    await document.load();
+    document.set({ key: 'a', value: 1 });
+
+    for (let attempt = 0; attempt < 8; attempt += 1) {
+      await jest.advanceTimersByTimeAsync(30_000);
+    }
+
+    expect(io.write).toHaveBeenCalledTimes(9);
+    expect(logger.warn).toHaveBeenCalledTimes(9);
+    expect(logger.error).not.toHaveBeenCalled();
+
+    await jest.advanceTimersByTimeAsync(30_000);
+
+    expect(io.write).toHaveBeenCalledTimes(10);
+    expect(logger.error).toHaveBeenCalledTimes(1);
+    document.stop();
+    jest.useRealTimers();
+  });
+
+  it('exposes the revision the document last confirmed', async () => {
+    const io = buildIo();
+    const { document } = buildDocument(io);
+
+    await document.load();
+    expect(document.confirmedRevision).toBe(-1);
+
+    document.set({ key: 'a', value: 1 });
+    const requested = document.revision;
+    await document.flush();
+
+    expect(document.confirmedRevision).toBe(requested);
+
+    io.write.mockRejectedValue(new Error('down'));
+    document.set({ key: 'a', value: 2 });
+    await document.flush();
+
+    expect(document.confirmedRevision).toBe(requested);
+
+    io.write.mockResolvedValue(undefined);
+    await document.flush();
+
+    expect(document.confirmedRevision).toBe(document.revision);
+    document.stop();
   });
 
   it('selectDropped runs after set: the dropped record never reaches the document', async () => {
@@ -290,15 +343,16 @@ describe('PersistedListDocument — retry and the unread document', () => {
 
     const unrefSpy = jest.fn();
     const realSetTimeout = global.setTimeout;
-    const setTimeoutSpy = jest
-      .spyOn(global, 'setTimeout')
-      .mockImplementation(((handler: () => void, ms: number) => {
-        const timer = realSetTimeout(handler, ms);
+    const setTimeoutSpy = jest.spyOn(global, 'setTimeout').mockImplementation(((
+      handler: () => void,
+      ms: number
+    ) => {
+      const timer = realSetTimeout(handler, ms);
 
-        timer.unref = unrefSpy.mockReturnValue(timer);
+      timer.unref = unrefSpy.mockReturnValue(timer);
 
-        return timer;
-      }) as typeof setTimeout);
+      return timer;
+    }) as typeof setTimeout);
 
     try {
       const { document } = buildDocument(io);
@@ -353,14 +407,12 @@ describe('PersistedListDocument — retry and the unread document', () => {
   it('selectDropped also runs after the late read merged the document in', async () => {
     const io = buildIo();
 
-    io.read
-      .mockRejectedValueOnce(new Error('down'))
-      .mockResolvedValue({
-        recordList: [
-          { key: 'old', value: 1 },
-          { key: 'newer', value: 5 },
-        ],
-      });
+    io.read.mockRejectedValueOnce(new Error('down')).mockResolvedValue({
+      recordList: [
+        { key: 'old', value: 1 },
+        { key: 'newer', value: 5 },
+      ],
+    });
 
     const { document } = buildDocument(io, {
       selectDropped: recordList =>
@@ -594,5 +646,244 @@ describe('PersistedListDocument — load result, absent removals, stop', () => {
     await jest.advanceTimersByTimeAsync(1);
 
     expect(io.write).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('PersistedListDocument.flushConfirmed', () => {
+  beforeEach(() => jest.useFakeTimers());
+  afterEach(() => jest.useRealTimers());
+
+  it('refuses to confirm before load and writes nothing over the unread document', async () => {
+    const io = buildIo({ recordList: [{ key: 'x', value: 9 }], updatedAtMs: 1 });
+    const { document } = buildDocument(io);
+
+    expect(await document.flushConfirmed()).toEqual({
+      ok: false,
+      revision: 0,
+      reason: 'document-unread',
+    });
+    expect(io.read).not.toHaveBeenCalled();
+    expect(io.write).not.toHaveBeenCalled();
+
+    await document.load();
+
+    expect(await document.flushConfirmed()).toEqual({ ok: true, revision: 0 });
+    expect(writtenKeyList(io.write, 0)).toEqual(['x']);
+  });
+
+  it('confirms the exact successful mutation without adding another write', async () => {
+    const io = buildIo();
+    const { document } = buildDocument(io);
+
+    await document.load();
+
+    document.set({ key: 'a', value: 1 });
+
+    const revision = document.revision;
+
+    expect(revision).toBe(1);
+    expect(await document.flushConfirmed(revision)).toEqual({
+      ok: true,
+      revision,
+    });
+    expect(await document.flushConfirmed()).toEqual({ ok: true, revision });
+    expect(io.write).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not confirm memory-only storage', async () => {
+    const { document } = buildDocument(null);
+
+    document.set({ key: 'a', value: 1 });
+
+    expect(await document.flushConfirmed()).toEqual({
+      ok: false,
+      revision: 1,
+      reason: 'io-unavailable',
+    });
+  });
+
+  it('does not confirm an unread document or write over its unknown records', async () => {
+    const io = buildIo();
+
+    io.read.mockRejectedValue(new Error('down'));
+
+    const { document } = buildDocument(io);
+
+    await document.load();
+    document.set({ key: 'a', value: 1 });
+
+    expect(await document.flushConfirmed()).toEqual({
+      ok: false,
+      revision: 1,
+      reason: 'document-unread',
+    });
+    expect(io.write).not.toHaveBeenCalled();
+  });
+
+  it('does not confirm failed writes and confirms the same revision after recovery', async () => {
+    const io = buildIo();
+
+    io.write.mockRejectedValue(new Error('down'));
+
+    const { document } = buildDocument(io);
+
+    await document.load();
+
+    document.set({ key: 'a', value: 1 });
+
+    const revision = document.revision;
+
+    expect(await document.flushConfirmed(revision)).toEqual({
+      ok: false,
+      revision,
+      reason: 'write-failed',
+    });
+
+    io.write.mockResolvedValue(undefined);
+
+    expect(await document.flushConfirmed(revision)).toEqual({
+      ok: true,
+      revision,
+    });
+    expect(document.revision).toBe(revision);
+  });
+
+  it('does not reuse a previous confirmation while a later document read is failing', async () => {
+    const io = buildIo();
+    const { document } = buildDocument(io);
+
+    await document.load();
+
+    document.set({ key: 'a', value: 1 });
+
+    expect(await document.flushConfirmed()).toEqual({ ok: true, revision: 1 });
+
+    io.read.mockRejectedValue(new Error('down'));
+    await document.load();
+
+    expect(await document.flushConfirmed()).toEqual({
+      ok: false,
+      revision: 1,
+      reason: 'document-unread',
+    });
+  });
+
+  it('does not acknowledge a revision omitted by coalescing into a later snapshot', async () => {
+    const first = buildDeferred<void>();
+    const io = buildIo();
+
+    io.write.mockReturnValueOnce(first.promise);
+
+    const { document } = buildDocument(io);
+
+    await document.load();
+
+    document.set({ key: 'a', value: 1 });
+    document.set({ key: 'a', value: 2 });
+
+    const omittedRevision = document.revision;
+    const confirmation = document.flushConfirmed(omittedRevision);
+
+    document.set({ key: 'a', value: 3 });
+    first.resolve();
+
+    expect(await confirmation).toEqual({
+      ok: false,
+      revision: omittedRevision,
+      reason: 'revision-superseded',
+    });
+    expect(await document.flushConfirmed()).toEqual({ ok: true, revision: 3 });
+    expect(io.write).toHaveBeenCalledTimes(2);
+  });
+
+  it('confirms a requested snapshot written while a later mutation also gets written', async () => {
+    const first = buildDeferred<void>();
+    const io = buildIo();
+
+    io.write.mockReturnValueOnce(first.promise);
+
+    const { document } = buildDocument(io);
+
+    await document.load();
+
+    document.set({ key: 'a', value: 1 });
+
+    const confirmation = document.flushConfirmed();
+
+    document.set({ key: 'a', value: 2 });
+    first.resolve();
+
+    expect(await confirmation).toEqual({ ok: true, revision: 1 });
+    expect(await document.flushConfirmed()).toEqual({ ok: true, revision: 2 });
+  });
+
+  it('never acknowledges a later mutation from the earlier in-flight write', async () => {
+    const first = buildDeferred<void>();
+    const io = buildIo();
+
+    io.write
+      .mockReturnValueOnce(first.promise)
+      .mockRejectedValue(new Error('down'));
+
+    const { document } = buildDocument(io);
+
+    await document.load();
+
+    document.set({ key: 'a', value: 1 });
+
+    const firstConfirmation = document.flushConfirmed();
+
+    document.set({ key: 'a', value: 2 });
+
+    const secondConfirmation = document.flushConfirmed();
+
+    first.resolve();
+
+    expect(await firstConfirmation).toEqual({ ok: true, revision: 1 });
+    expect(await secondConfirmation).toEqual({
+      ok: false,
+      revision: 2,
+      reason: 'write-failed',
+    });
+  });
+
+  it('validates the requested revision and writes revision zero before confirming it', async () => {
+    const io = buildIo();
+    const { document } = buildDocument(io);
+
+    await document.load();
+
+    for (const revision of [-1, 0.5, Number.NaN, 1]) {
+      expect(await document.flushConfirmed(revision)).toEqual({
+        ok: false,
+        revision,
+        reason: 'invalid-revision',
+      });
+    }
+
+    expect(io.write).not.toHaveBeenCalled();
+    expect(await document.flushConfirmed()).toEqual({ ok: true, revision: 0 });
+    expect(io.write).toHaveBeenCalledTimes(1);
+  });
+
+  it('tracks remove and clear mutations while preserving absent-remove behavior', async () => {
+    const io = buildIo();
+    const { document } = buildDocument(io);
+
+    await document.load();
+
+    document.remove('absent');
+
+    expect(document.revision).toBe(0);
+
+    document.set({ key: 'a', value: 1 });
+    document.remove('a');
+
+    expect(document.revision).toBe(2);
+
+    document.clear();
+
+    expect(document.revision).toBe(3);
+    expect(await document.flushConfirmed()).toEqual({ ok: true, revision: 3 });
   });
 });

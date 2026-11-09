@@ -307,13 +307,13 @@ merge-written document cannot resurrect a removed key.
 | Class | Description |
 |-------|------------|
 | `ExchangeConnector` | Exchange connection, tickers, symbol resolution, low-level `createOrder`; optional `futuresPositionMode` for futures `positionSide` behavior. Lazy-init `connector.positionManager`. |
-| `PositionManager` | High-level semantic API for spot/futures (`openPositionLimit/Market`, `closePositionLimit/Market`, `placeStopLoss/TakeProfit`, `cancelOrder/cancelBatchOrders`, `spotMarketBuyByQuote`, `setLeverage/setMarginMode`), plus reads (`readOpenOrderList`, `readOrder`, `readOrderByClientOrderId`, `readFeeRate` — percent, never a fraction). Hides `positionSide`/`positionIdx`/`reduceOnly`/`closePosition`/`workingType`/`triggerDirection`/`triggerBy`/`orderFilter`/`marketUnit` from callers; takes business arguments (`symbol`, `marketType`, `direction`, `amount`, `price`/`triggerPrice`). Spot + `direction='short'` throws. |
+| `PositionManager` | High-level semantic API for spot/futures (`openPositionLimit/Market`, `closePositionLimit/Market`, `openPositionLimitWithLeverage`, `placeStopLoss/TakeProfit`, `cancelOrder/cancelBatchOrders`, `spotMarketBuyByQuote`, `setLeverage/setMarginMode`, `addIsolatedPositionMargin`), an optional `beforeOrder` pre-flight hook on every order-sending call, plus reads (`readOpenOrderList`, `readOrder`, `readOrderByClientOrderId`, `readFeeRate`, `readAccountTrades`, `readPositionLeverage`, `readFundingRateHistory`, `readIncome`, `readOrderHistory`, `readClosedPnl`, `readMarkPrice`, `readAccountBalance`, `readOpenPlainOrderList`, `readOpenConditionalOrderList`, `readOrderExecutionSummary`). Hides `positionSide`/`positionIdx`/`reduceOnly`/`closePosition`/`workingType`/`triggerDirection`/`triggerBy`/`orderFilter`/`marketUnit` from callers; takes business arguments (`symbol`, `marketType`, `direction`, `amount`, `price`/`triggerPrice`). Spot + `direction='short'` throws. |
 | `OrderExecutor` | Base class for order execution with TP/SL and emergency exit (legacy path; new code uses `PositionManager`). Builds the closing order itself — opposite side, price shifted by a percent, trigger for the stop loss, `reduceOnly` on futures, `positionSide` carried over from the entry |
 | `TelegramNotifier` | Telegram bot for notifications and commands, built entirely from `@solncebro/telegram-engine` pieces (`createBot`, access guard, broadcaster/reporter) |
 | `TelegramCommandHandler<T>` | Command handler with typed settings (boolean/numeric); argument parsing from `@solncebro/telegram-engine` |
 | `TelegramMessageListener` | **Deprecated** — thin wrapper over `createUserClient` of `@solncebro/telegram-engine` with the old names and events; new code uses the user client directly |
 | `FirebaseServiceBase<T>` | Firestore CRUD with real-time subscription; self-healing listener, snapshot watchdog, on-disk last-good copy, connection events, immediate read-your-write, sibling documents and map items |
-| `PersistedListDocument<TRecord>` | In-memory keyed list mirrored write-behind into one document (list-shaped, never written over when unread, late read merged with memory winning, unref'd 30 s retry, `flush()` for shutdown) |
+| `PersistedListDocument<TRecord>` | In-memory keyed list mirrored write-behind into one document (list-shaped, never written over when unread, late read merged with memory winning, unref'd 30 s retry, `flush()` for shutdown, `flushConfirmed(revision?)` for an exactly-persisted confirmation) |
 | `UserDataStreamRouter` | One private (user-data) stream per client fanned out to many subscribers, with error isolation and drop / restore / resync events; `connector.getUserDataStreamRouter()` |
 | `SubAccountGateway` | `connector.subAccounts`: list sub-accounts, transfer master ⇄ sub-account with the caller's idempotency id, transfer status, sub-account balances; results, never throws; demo mode answers `isNotSupported` |
 | `ConfigManager` | Environment variable validation |
@@ -443,7 +443,7 @@ Every removal or rename ships with a "what to do" row in `CHANGELOG.md` → `###
 ## Requirements
 
 - Node.js >= 22
-- `@solncebro/exchange-engine` >= 0.26.0 (installed as a dependency; apps never import it directly)
+- `@solncebro/exchange-engine` >= 0.27.0 (installed as a dependency; apps never import it directly)
 - `@solncebro/telegram-engine` >= 0.6.0
 
 ## License

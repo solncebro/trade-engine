@@ -2,7 +2,15 @@ import type { TelegramNotifier } from './telegramNotifier';
 
 import type { Notifiable } from '../types/common';
 
+interface FirebaseDocumentWriteArgs {
+  documentPath: string;
+  data: Record<string, unknown>;
+  kind: 'replace' | 'update';
+}
+
 export interface FirebaseServiceBaseArgs<T> {
+  readDocument?: (documentPath: string) => Promise<Record<string, unknown> | null>;
+  writeDocument?: (args: FirebaseDocumentWriteArgs) => Promise<void>;
   documentPath: string;
   defaultData: T;
   /** Where notices go. Optional since the `onNotify`/`onError` callbacks can stand in for it; with
@@ -24,8 +32,9 @@ export interface FirebaseServiceBaseArgs<T> {
   snapshotCacheFilePath?: string | null;
   /** How often to retry the connection after starting from the disk copy. Default 30 s. */
   connectionRetryIntervalMs?: number;
-  /** Cap on the first read when a disk copy is configured (a read can hang for minutes offline).
-   *  Default 30 s. Without a disk copy the read is not capped, as before. */
+  /** Deadline of each initialization step (the read, the default write) when a disk copy or this value is configured;
+   *  the whole attempt, disk persistence included, is capped at their sum. Notices are sent without waiting.
+   *  Default 30 s. With neither a disk copy nor this value initialization is not capped, as before. */
   initialReadTimeoutMs?: number;
   /** A value written by `updateData` shows in `getData()` at once instead of after Firestore echoes it
    *  back (a menu rebuilt right after saving showed the OLD number — rubber, 08.09.2026). Default true. */
@@ -70,4 +79,13 @@ export interface FirebaseSnapshotDiskCopy {
   documentPath: string;
   savedAtMs: number;
   data: unknown;
+}
+
+export interface FirebaseLoadAttempt {
+  isActive: boolean;
+}
+
+export interface FirebaseDiskCopyWriteArgs<T> {
+  data: T;
+  attempt: FirebaseLoadAttempt;
 }

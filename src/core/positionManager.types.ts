@@ -1,4 +1,5 @@
 import { MarginModeEnum, MarketTypeEnum, OrderSideEnum, OrderTypeEnum, Position, PositionModeEnum, TimeInForceEnum, TriggerByEnum } from '@solncebro/exchange-engine';
+import type { FetchIncomeArgs, FetchOrderExecutionSummaryArgs, FetchPageWithLimitArgs } from '@solncebro/exchange-engine';
 
 export type Direction = 'long' | 'short';
 
@@ -23,6 +24,39 @@ export interface ReadOrderArgs {
   orderId: string;
 }
 
+export interface ReadOrderExecutionSummaryArgs extends FetchOrderExecutionSummaryArgs {
+  marketType: MarketTypeEnum;
+}
+
+export interface ReadAccountTradesArgs extends FetchPageWithLimitArgs {
+  symbol: string;
+  marketType: MarketTypeEnum;
+}
+
+export type ReadIncomeArgs = FetchIncomeArgs;
+
+export interface ReadOrderHistoryArgs extends FetchPageWithLimitArgs {
+  symbol: string;
+  marketType: MarketTypeEnum;
+}
+
+export interface ReadClosedPnlArgs extends FetchPageWithLimitArgs {
+  symbol?: string;
+}
+
+export interface ReadOpenPlainOrderListArgs {
+  marketType: MarketTypeEnum;
+  /** Omitted — every symbol of the account. */
+  symbol?: string;
+}
+
+export interface ReadOpenConditionalOrderListArgs {
+  /** Omitted — every symbol of the account. */
+  symbol?: string;
+  /** Settlement coin of the conditional order list; default 'USDT'. */
+  settleCoin?: string;
+}
+
 export interface ReadOrderByClientOrderIdArgs {
   symbol: string;
   marketType: MarketTypeEnum;
@@ -32,6 +66,25 @@ export interface ReadOrderByClientOrderIdArgs {
 export interface ReadFeeRateArgs {
   symbol: string;
   marketType: MarketTypeEnum;
+}
+
+export interface ReadFundingRateHistoryArgs {
+  symbol: string;
+  startTime: number;
+  endTime: number;
+  shouldIncludeMarkPrices?: boolean;
+}
+
+export interface FundingRateHistoryWindow {
+  startTime: number;
+  endTime: number;
+}
+
+export interface FundingRateHistoryPercent {
+  symbol: string;
+  fundingRatePercent: number;
+  fundingTime: number;
+  markPrice: number | null;
 }
 
 /** Maker/taker trading fee, in PERCENT (never a fraction, never basis points). */
@@ -46,7 +99,7 @@ export type PositionAmbiguityReason = 'side_mismatch' | 'idx_mismatch';
 
 export type PositionStateResult =
   | { kind: 'present'; position: Position }
-  | { kind: 'absent'; confidence: 'confirmed' | 'unconfirmed'; reason: PositionAbsenceReason; errorText?: string }
+  | { kind: 'absent'; confidence: 'confirmed' | 'unconfirmed'; reason: PositionAbsenceReason; errorText?: string; positionUpdatedAtMs?: number }
   | { kind: 'ambiguous'; reason: PositionAmbiguityReason; position: Position };
 
 export type StopOrderType = 'Market' | 'Limit';
@@ -62,6 +115,7 @@ export interface PlaceConditionalArgs {
   limitPrice?: number;
   clientOrderId?: string;
   isStopLoss: boolean;
+  beforeOrder?: () => Promise<void>;
 }
 
 export interface BuildOrderParamsInput {
@@ -95,6 +149,11 @@ export interface OpenPositionLimitArgs {
   clientOrderId?: string;
   /** Default «до отмены» (GTC); `PostOnly` — only as a maker. */
   timeInForce?: TimeInForceEnum;
+  beforeOrder?: () => Promise<void>;
+}
+
+export interface OpenPositionLimitWithLeverageArgs extends OpenPositionLimitArgs {
+  leverage: number;
 }
 
 export interface OpenPositionMarketArgs {
@@ -105,6 +164,7 @@ export interface OpenPositionMarketArgs {
   leverage?: number;
   marginMode?: MarginModeEnum;
   clientOrderId?: string;
+  beforeOrder?: () => Promise<void>;
 }
 
 export interface ClosePositionLimitArgs {
@@ -116,6 +176,7 @@ export interface ClosePositionLimitArgs {
   clientOrderId?: string;
   /** Default «до отмены» (GTC); `PostOnly` — only as a maker. */
   timeInForce?: TimeInForceEnum;
+  beforeOrder?: () => Promise<void>;
 }
 
 export interface ClosePositionMarketArgs {
@@ -124,6 +185,7 @@ export interface ClosePositionMarketArgs {
   direction: Direction;
   amount: number;
   clientOrderId?: string;
+  beforeOrder?: () => Promise<void>;
 }
 
 export interface PlaceStopLossArgs {
@@ -136,6 +198,7 @@ export interface PlaceStopLossArgs {
   orderType?: StopOrderType;
   limitPrice?: number;
   clientOrderId?: string;
+  beforeOrder?: () => Promise<void>;
 }
 
 export interface PlaceTakeProfitArgs {
@@ -148,6 +211,7 @@ export interface PlaceTakeProfitArgs {
   orderType?: StopOrderType;
   limitPrice?: number;
   clientOrderId?: string;
+  beforeOrder?: () => Promise<void>;
 }
 
 export interface CancelOrderArgs {
@@ -171,11 +235,19 @@ export interface SpotMarketBuyByQuoteArgs {
   symbol: string;
   quoteAmount: number;
   clientOrderId?: string;
+  beforeOrder?: () => Promise<void>;
+}
+
+export interface PositionManagerAddIsolatedPositionMarginArgs {
+  symbol: string;
+  direction: Direction;
+  amount: number;
 }
 
 export interface SetLeverageArgs {
   symbol: string;
   leverage: number;
+  direction?: Direction;
 }
 
 export interface SetPositionModeArgs {
@@ -226,6 +298,8 @@ export interface OpenPositionBatchLimitArgs {
   marginMode?: MarginModeEnum;
   /** Applies to every item; default «до отмены» (GTC). */
   timeInForce?: TimeInForceEnum;
+  /** Runs once, after the queue and right before the whole batch is sent. */
+  beforeOrder?: () => Promise<void>;
 }
 
 export interface ClosePositionBatchLimitItem {
@@ -241,6 +315,8 @@ export interface ClosePositionBatchLimitArgs {
   itemList: ClosePositionBatchLimitItem[];
   /** Applies to every item; default «до отмены» (GTC). */
   timeInForce?: TimeInForceEnum;
+  /** Runs once, after the queue and right before the whole batch is sent. */
+  beforeOrder?: () => Promise<void>;
 }
 
 export interface PositionBatchLimitItemResult {

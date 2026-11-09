@@ -14,6 +14,7 @@ const mockFutures = {
   loadTradeSymbols: jest.fn().mockResolvedValue(mockFuturesTradeSymbols),
   getMinOrderQty: jest.fn().mockReturnValue(0),
   getMinNotional: jest.fn().mockReturnValue(0),
+  getMaxOrderQty: jest.fn().mockReturnValue(0),
 };
 const mockSpot = {
   tradeSymbols: new Map<string, unknown>(),
@@ -51,17 +52,20 @@ describe('ExchangeConnector.getFuturesOrderRules', () => {
     jest.clearAllMocks();
     mockFutures.getMinOrderQty.mockReturnValue(0);
     mockFutures.getMinNotional.mockReturnValue(0);
+    mockFutures.getMaxOrderQty.mockReturnValue(0);
   });
 
   it('returns the grid for a loaded symbol', () => {
     mockFuturesTradeSymbols.set('BTCUSDT', { filter: { tickSize: '0.1', stepSize: '0.001', minQty: '0.001', maxQty: '1000000', minNotional: '5' } });
     mockFutures.getMinOrderQty.mockReturnValue(0.001);
     mockFutures.getMinNotional.mockReturnValue(5);
+    mockFutures.getMaxOrderQty.mockReturnValue(1000000);
     const connector = buildConnector();
 
     const rules = connector.getFuturesOrderRules('BTCUSDT');
 
-    expect(rules).toEqual({ symbol: 'BTCUSDT', tickSize: 0.1, stepSize: 0.001, minAmount: 0.001, minNotionalUsd: 5 });
+    expect(rules).toEqual({ symbol: 'BTCUSDT', tickSize: 0.1, stepSize: 0.001, minAmount: 0.001, minNotionalUsd: 5, maxAmount: 1000000 });
+    expect(mockFutures.getMaxOrderQty).toHaveBeenCalledWith('BTCUSDT');
   });
 
   it('returns tickSize/stepSize=0 when the filter values do not parse', () => {

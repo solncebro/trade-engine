@@ -5,10 +5,11 @@ import {
   PositionSideEnum,
   TradeSymbolTypeEnum,
 } from '@solncebro/exchange-engine';
-import type { MarkPriceHandler, MarkPriceUpdate, TradeSymbol } from '@solncebro/exchange-engine';
+import type { ExchangeClient, Kline, MarkPriceHandler, MarkPriceUpdate, TradeSymbol } from '@solncebro/exchange-engine';
 
 import { ExchangeConnector } from '../src/services/exchangeConnector';
 import { ExchangeConfig, MarketTypeEnum, OrderSideEnum, OrderTypeEnum } from '../src/types';
+import { sizeOrder, splitOrderQty } from '../src/utils/sizeOrder';
 
 jest.mock('../src/core/logger', () => ({
   logger: {
@@ -35,6 +36,14 @@ jest.mock('@solncebro/exchange-engine', () => {
         loadTradeSymbols: jest.fn().mockResolvedValue(new Map()),
         fetchTickers: jest.fn().mockResolvedValue(new Map()),
         getOrderRateLimit: jest.fn().mockResolvedValue({ writeRequestsPerSecond: 30, source: 'binance-exchange-info' }),
+        tradeSymbols: new Map(),
+        getMinOrderQty: jest.fn().mockReturnValue(0),
+        getMinNotional: jest.fn().mockReturnValue(0),
+        getMaxOrderQty: jest.fn().mockReturnValue(0),
+        getMarketMaxOrderQty: jest.fn().mockReturnValue(0),
+        fetchKlines: jest.fn().mockResolvedValue([]),
+        isUserDataStreamConnected: jest.fn().mockReturnValue(true),
+        getRateLimitState: jest.fn().mockReturnValue({ usedWeight: 120, weightLimit: 2400, observedAtMs: 1000, bannedUntilMs: null }),
       },
       spot: {
         amountToPrecision: (_s: string, a: number) => a,
@@ -44,6 +53,9 @@ jest.mock('@solncebro/exchange-engine', () => {
         loadTradeSymbols: jest.fn().mockResolvedValue(new Map()),
         fetchTickers: jest.fn().mockResolvedValue(new Map()),
         getOrderRateLimit: jest.fn().mockResolvedValue({ writeRequestsPerSecond: 30, source: 'binance-exchange-info' }),
+        fetchKlines: jest.fn().mockResolvedValue([]),
+        isUserDataStreamConnected: jest.fn().mockReturnValue(false),
+        getRateLimitState: jest.fn().mockReturnValue({ usedWeight: null, weightLimit: null, observedAtMs: null, bannedUntilMs: null }),
       },
       close: jest.fn(),
     })),
@@ -639,5 +651,122 @@ describe('ExchangeConnector.createBatchOrders outcome mapping', () => {
     expect(resultList).toHaveLength(2);
     expect(resultList[1].orderId).toBeUndefined();
     expect(resultList[1].errorText).toBe('Order creation failed in batch');
+  });
+});
+
+describe('ExchangeConnector read and sizing delegates', () => {
+  function buildConnector(): ExchangeConnector {
+    return new ExchangeConnector(ExchangeNameEnum.Bybit, {
+      apiKey: 'k',
+      secret: 's',
+    } as ExchangeConfig);
+  }
+
+  function loadBtcFuturesSymbol(connector: ExchangeConnector): ExchangeClient {
+    const client = connector.getClient(MarketTypeEnum.Futures);
+    client.tradeSymbols.set('BTCUSDT', {
+      symbol: 'BTCUSDT',
+      filter: { tickSize: '0.1', stepSize: '0.001', minQty: '0.001', maxQty: '1', minNotional: '5' },
+    } as TradeSymbol);
+    jest.mocked(client.getMinOrderQty).mockReturnValue(0.001);
+    jest.mocked(client.getMinNotional).mockReturnValue(5);
+    jest.mocked(client.getMaxOrderQty).mockReturnValue(1);
+    jest.mocked(client.getMarketMaxOrderQty).mockReturnValue(0.5);
+
+    return client;
+  }
+
+  const kline: Kline = {
+    openTimestamp: 1000,
+    openPrice: 100,
+    highPrice: 110,
+    lowPrice: 90,
+    closePrice: 105,
+    volume: 10,
+    closeTimestamp: 1999,
+    quoteAssetVolume: 1000,
+    numberOfTrades: 5,
+    takerBuyBaseAssetVolume: 4,
+    takerBuyQuoteAssetVolume: 400,
+  };
+
+  it('readKlines reads the market client with the page options', async () => {
+    const connector = buildConnector();
+    jest.mocked(connector.getClient(MarketTypeEnum.Futures).fetchKlines).mockResolvedValueOnce([kline]);
+
+    const klineList = await connector.readKlines({
+      symbol: 'BTCUSDT', interval: '30m', marketType: MarketTypeEnum.Futures, startTime: 1000, limit: 3,
+    });
+
+    expect(klineList).toEqual([kline]);
+    expect(connector.getClient(MarketTypeEnum.Futures).fetchKlines).toHaveBeenCalledWith('BTCUSDT', '30m', { startTime: 1000, limit: 3 });
+
+    await connector.readKlines({ symbol: 'BTCUSDT', interval: '4h', marketType: MarketTypeEnum.Spot });
+    expect(connector.getClient(MarketTypeEnum.Spot).fetchKlines).toHaveBeenCalledWith('BTCUSDT', '4h', {});
+  });
+
+  it('readKlines repeats the read after a 429', async () => {
+    const connector = buildConnector();
+    const fetchKlines = jest.mocked(connector.getClient(MarketTypeEnum.Futures).fetchKlines);
+    fetchKlines.mockRejectedValueOnce(
+      Object.assign(new Error('429'), { response: { status: 429, headers: { 'retry-after': '0' } } }),
+    );
+
+    await connector.readKlines({ symbol: 'BTCUSDT', interval: '30m', marketType: MarketTypeEnum.Futures });
+
+    expect(fetchKlines).toHaveBeenCalledTimes(2);
+  });
+
+  it('isUserDataStreamConnected answers for futures by default, or for the given market', () => {
+    const connector = buildConnector();
+
+    expect(connector.isUserDataStreamConnected()).toBe(true);
+    expect(connector.isUserDataStreamConnected(MarketTypeEnum.Spot)).toBe(false);
+  });
+
+  it('getRateLimitState answers for futures by default, or for the given market', () => {
+    const connector = buildConnector();
+
+    expect(connector.getRateLimitState()).toEqual({ usedWeight: 120, weightLimit: 2400, observedAtMs: 1000, bannedUntilMs: null });
+    expect(connector.getRateLimitState(MarketTypeEnum.Spot)).toEqual({ usedWeight: null, weightLimit: null, observedAtMs: null, bannedUntilMs: null });
+  });
+
+  it('amountToFuturesPrecision passes the rounding to the futures client', () => {
+    const connector = buildConnector();
+    const amountToPrecision = jest.spyOn(connector.getClient(MarketTypeEnum.Futures), 'amountToPrecision').mockReturnValue(1.234);
+
+    expect(connector.amountToFuturesPrecision('BTCUSDT', 1.23456, 'down')).toBe(1.234);
+    expect(amountToPrecision).toHaveBeenCalledWith('BTCUSDT', 1.23456, 'down');
+  });
+
+  it('sizeFuturesOrder sizes on the futures client', () => {
+    const connector = buildConnector();
+    const client = loadBtcFuturesSymbol(connector);
+    const args = { symbol: 'BTCUSDT', notionalUsd: 1500, price: 1000, orderKind: 'limit' as const, requireLoadedSymbol: true };
+
+    const result = connector.sizeFuturesOrder(args);
+
+    expect(result).toEqual({ pieceList: [1, 0.5], totalContracts: 1.5 });
+    expect(result).toEqual(sizeOrder({ ...args, exchangeClient: client }));
+    expect(connector.sizeFuturesOrder({ ...args, symbol: 'GHOSTUSDT' }).guardError).toContain('GHOSTUSDT');
+  });
+
+  it('splitFuturesOrderQty splits by the futures cap', () => {
+    const connector = buildConnector();
+    const client = loadBtcFuturesSymbol(connector);
+    const args = { symbol: 'BTCUSDT', fullQty: 1.25, orderKind: 'market' as const };
+
+    const pieceList = connector.splitFuturesOrderQty(args);
+
+    expect(pieceList).toEqual([0.5, 0.5, 0.25]);
+    expect(pieceList).toEqual(splitOrderQty({ ...args, exchangeClient: client }));
+  });
+
+  it('assertFuturesSymbolLoaded refuses a symbol whose spec is not loaded', () => {
+    const connector = buildConnector();
+    loadBtcFuturesSymbol(connector);
+
+    expect(connector.assertFuturesSymbolLoaded({ symbol: 'BTCUSDT', orderKind: 'limit' })).toBeUndefined();
+    expect(connector.assertFuturesSymbolLoaded({ symbol: 'GHOSTUSDT', orderKind: 'market' })).toContain('GHOSTUSDT not loaded');
   });
 });

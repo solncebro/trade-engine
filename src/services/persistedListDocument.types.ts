@@ -10,6 +10,30 @@ interface ListDocumentLogger {
   error(message: string): void;
 }
 
+interface ListDocumentFlushConfirmed {
+  ok: true;
+  revision: number;
+}
+
+interface ListDocumentFlushUnconfirmed {
+  ok: false;
+  revision: number;
+  reason:
+    | 'io-unavailable'
+    | 'document-unread'
+    | 'write-failed'
+    | 'revision-superseded'
+    | 'invalid-revision';
+}
+
+type ListDocumentFlushResult =
+  ListDocumentFlushConfirmed | ListDocumentFlushUnconfirmed;
+
+interface ListDocumentPendingConfirmation {
+  revision: number;
+  isConfirmed: boolean;
+}
+
 interface PersistedListDocumentArgs<TRecord> {
   /** null = memory only: nothing is read or written, nothing throws. */
   io: ListDocumentIo | null;
@@ -29,4 +53,10 @@ interface PersistedListDocumentArgs<TRecord> {
   retryMs?: number;
 }
 
-export type { ListDocumentIo, ListDocumentLogger, PersistedListDocumentArgs };
+export type {
+  ListDocumentFlushResult,
+  ListDocumentIo,
+  ListDocumentLogger,
+  ListDocumentPendingConfirmation,
+  PersistedListDocumentArgs,
+};

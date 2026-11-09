@@ -94,13 +94,24 @@ interface SizeLegListResult {
   droppedCount: number;
 }
 
+// The ExchangeConnector delegates take the same arguments minus the client: the connector supplies
+// its own futures client, so an app never holds the raw exchange-engine client to size an order.
+type SizeFuturesOrderArgs = Omit<SizeOrderArgs, 'exchangeClient'>;
+
+type SplitFuturesOrderQtyArgs = Omit<SplitOrderQtyArgs, 'exchangeClient'>;
+
+type AssertFuturesSymbolLoadedArgs = Omit<AssertSymbolLoadedArgs, 'exchangeClient'>;
+
 export type {
   OrderKind,
   AssertSymbolLoadedArgs,
+  AssertFuturesSymbolLoadedArgs,
   SplitOrderQtyArgs,
+  SplitFuturesOrderQtyArgs,
   RebalanceTailPiecesArgs,
   RebalancedTailPieces,
   SizeOrderArgs,
+  SizeFuturesOrderArgs,
   SizeOrderResult,
   SizeLegInput,
   SizeLegListArgs,

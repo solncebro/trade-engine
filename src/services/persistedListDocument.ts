@@ -1,12 +1,16 @@
 import type {
+  ListDocumentFlushResult,
   ListDocumentIo,
   ListDocumentLogger,
+  ListDocumentPendingConfirmation,
   PersistedListDocumentArgs,
 } from './persistedListDocument.types';
 
 import { describeError } from '../utils/errorFormatter.utils';
 
 const DEFAULT_RETRY_MS = 30_000;
+/** Ten failures in a row at the default retry pace is five minutes without the cloud. */
+const ERROR_AFTER_CONSECUTIVE_FAILURE_COUNT = 10;
 
 /**
  * An in-memory keyed list mirrored, write-behind, into ONE document — the memory is the truth while
@@ -37,15 +41,23 @@ export class PersistedListDocument<TRecord> {
   private readonly keyOf: (record: TRecord) => string;
   private readonly parse: (raw: unknown) => TRecord | null;
   private readonly serialize: (record: TRecord) => unknown;
-  private readonly selectDropped:
-    | ((recordList: TRecord[]) => TRecord[])
-    | null;
+  private readonly selectDropped: ((recordList: TRecord[]) => TRecord[]) | null;
   private readonly retryMs: number;
   private readonly recordByKey = new Map<string, TRecord>();
+  private currentRevision = 0;
+  private lastConfirmedRevision = -1;
+  /** Failed reads and writes in a row: each one is a warning (the memory is intact and the retry is
+   *  armed); only a streak long enough to mean the cloud is really gone is an error. */
+  private consecutiveFailureCount = 0;
+  private readonly pendingConfirmationSet =
+    new Set<ListDocumentPendingConfirmation>();
 
   private writeInFlight: Promise<void> | null = null;
   private isDirty = false;
   private isDocumentUnread = false;
+  /** No confirmation before load(): until then the document's records are unknown, and a confirming
+   *  write would put this memory over them. */
+  private isLoadRequested = false;
   /** Memory and the document are out of step — the last write failed or was withheld. */
   private isDocumentBehind = false;
   private retryTimer: NodeJS.Timeout | null = null;
@@ -68,6 +80,8 @@ export class PersistedListDocument<TRecord> {
 
   /** True when the document was read (absent or listless counts); false leaves writes withheld. */
   async load(): Promise<boolean> {
+    this.isLoadRequested = true;
+
     return this.readDocument();
   }
 
@@ -83,9 +97,19 @@ export class PersistedListDocument<TRecord> {
     return Array.from(this.recordByKey.values());
   }
 
+  get revision(): number {
+    return this.currentRevision;
+  }
+
+  /** The newest revision the document is known to hold (-1 until the first confirmed write). */
+  get confirmedRevision(): number {
+    return this.lastConfirmedRevision;
+  }
+
   set(record: TRecord): void {
     this.recordByKey.set(this.keyOf(record), record);
     this.dropSelected();
+    this.currentRevision += 1;
     this.schedulePersist();
   }
 
@@ -99,13 +123,70 @@ export class PersistedListDocument<TRecord> {
 
     if (!wasPresent && !this.isDocumentUnread) return;
 
+    this.currentRevision += 1;
     this.schedulePersist();
   }
 
   clear(): void {
     this.rememberForgotten(this.recordByKey.keys());
     this.recordByKey.clear();
+    this.currentRevision += 1;
     this.schedulePersist();
+  }
+
+  async flushConfirmed(
+    revision = this.currentRevision
+  ): Promise<ListDocumentFlushResult> {
+    if (
+      !Number.isSafeInteger(revision) ||
+      revision < 0 ||
+      revision > this.currentRevision
+    ) {
+      return { ok: false, revision, reason: 'invalid-revision' };
+    }
+
+    if (this.io === null) {
+      return { ok: false, revision, reason: 'io-unavailable' };
+    }
+
+    if (!this.isLoadRequested) {
+      return { ok: false, revision, reason: 'document-unread' };
+    }
+
+    const confirmation: ListDocumentPendingConfirmation = {
+      revision,
+      isConfirmed: this.lastConfirmedRevision === revision,
+    };
+
+    this.pendingConfirmationSet.add(confirmation);
+
+    try {
+      if (!confirmation.isConfirmed) {
+        if (
+          revision === this.currentRevision &&
+          this.writeInFlight === null &&
+          !this.isDocumentBehind
+        ) {
+          this.schedulePersist();
+        }
+
+        await this.flush();
+      }
+
+      if (this.isDocumentUnread) {
+        return { ok: false, revision, reason: 'document-unread' };
+      }
+
+      if (confirmation.isConfirmed) return { ok: true, revision };
+
+      if (revision !== this.currentRevision) {
+        return { ok: false, revision, reason: 'revision-superseded' };
+      }
+
+      return { ok: false, revision, reason: 'write-failed' };
+    } finally {
+      this.pendingConfirmationSet.delete(confirmation);
+    }
   }
 
   /** Waits out the write in flight AND forces the one still owed: a write left to the retry timer is
@@ -147,11 +228,12 @@ export class PersistedListDocument<TRecord> {
       if (Array.isArray(rawList)) this.absorb(rawList);
 
       this.isDocumentUnread = false;
+      this.consecutiveFailureCount = 0;
 
       return true;
     } catch (error: unknown) {
       this.isDocumentUnread = true;
-      this.logger.error(
+      this.reportFailure(
         `${this.logLabel} read failed (${describeError(error)}) — nothing remembered, and writing is withheld until the document can be read`
       );
       this.armRetry();
@@ -237,21 +319,36 @@ export class PersistedListDocument<TRecord> {
     }
 
     try {
+      const revision = this.currentRevision;
       const recordList = this.list().map(record => this.serialize(record));
 
       await this.io.write(this.documentName, {
         recordList,
         updatedAtMs: Date.now(),
       });
+      this.lastConfirmedRevision = revision;
+
+      for (const confirmation of this.pendingConfirmationSet) {
+        if (confirmation.revision === revision) confirmation.isConfirmed = true;
+      }
+
       this.isDocumentBehind = false;
+      this.consecutiveFailureCount = 0;
       this.forgottenKeySet.clear();
     } catch (error: unknown) {
       this.isDocumentBehind = true;
-      this.logger.error(
+      this.reportFailure(
         `${this.logLabel} write failed (${describeError(error)}) — memory still holds it in this process, retrying in ${this.retryMs / 1000}s`
       );
       this.armRetry();
     }
+  }
+
+  private reportFailure(message: string): void {
+    this.consecutiveFailureCount += 1;
+
+    if (this.consecutiveFailureCount >= ERROR_AFTER_CONSECUTIVE_FAILURE_COUNT) this.logger.error(message);
+    else this.logger.warn(message);
   }
 
   private armRetry(): void {

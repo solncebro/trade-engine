@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { promises as fs, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
@@ -25,6 +25,7 @@ const mockFirestoreState = {
   failGetCount: 0,
   isGetHanging: false,
   isEchoMuted: false,
+  settings: jest.fn(),
 };
 
 function mockClone<V>(value: V): V {
@@ -174,7 +175,7 @@ jest.mock('firebase-admin', () => {
     };
   };
 
-  const firestore = Object.assign(() => ({ doc: (path: string) => makeDocumentReference(path) }), { FieldPath: MockFieldPath, FieldValue: MockFieldValue });
+  const firestore = Object.assign(() => ({ settings: mockFirestoreState.settings, doc: (path: string) => makeDocumentReference(path) }), { FieldPath: MockFieldPath, FieldValue: MockFieldValue });
 
   return {
     apps: [{}],
@@ -240,6 +241,7 @@ beforeEach(() => {
   mockFirestoreState.failGetCount = 0;
   mockFirestoreState.isGetHanging = false;
   mockFirestoreState.isEchoMuted = false;
+  mockFirestoreState.settings.mockClear();
 });
 
 afterEach(async () => {
@@ -494,6 +496,102 @@ describe('FirebaseServiceBase — disk copy of the last good snapshot', () => {
     expect(service.getData().volumeUsdt).toBe(300);
   });
 
+  it('bounds a hanging backfill, retries without waiting for it and ignores its late completion', async () => {
+    writeFileSync(cacheFilePath, JSON.stringify({ documentPath: DOCUMENT_PATH, savedAtMs: 1, data: { ...DEFAULT_SETTINGS, volumeUsdt: 300 } }));
+    mockFirestoreState.documentByPath.set(DOCUMENT_PATH, { isActive: true });
+    const { service } = createService({ snapshotCacheFilePath: cacheFilePath, initialReadTimeoutMs: 20, connectionRetryIntervalMs: 20 });
+    track(service);
+    const reference = service.getDocumentReference();
+    const originalUpdate = reference.update.bind(reference);
+    let releaseBackfill: () => void = () => undefined;
+    const pendingBackfill = new Promise<void>(resolve => { releaseBackfill = resolve; });
+    const update = jest.spyOn(reference, 'update').mockImplementationOnce(async () => {
+      await pendingBackfill;
+
+      return originalUpdate({ volumeUsdt: DEFAULT_SETTINGS.volumeUsdt });
+    });
+    const get = jest.spyOn(reference, 'get');
+    const initialized = service.initialize();
+    const sameInitialization = service.initialize();
+
+    expect(sameInitialization).toBe(initialized);
+    await initialized;
+    expect(service.getData().volumeUsdt).toBe(300);
+    expect(service.isConnected()).toBe(false);
+    await new Promise(resolve => setTimeout(resolve, 150));
+    expect(get.mock.calls.length).toBeGreaterThanOrEqual(2);
+    expect(service.isConnected()).toBe(true);
+    expect(service.getData().volumeUsdt).toBe(DEFAULT_SETTINGS.volumeUsdt);
+    expect(mockFirestoreState.listenerList.filter(listener => listener.isActive)).toHaveLength(1);
+    releaseBackfill();
+    await new Promise(resolve => setTimeout(resolve, 10));
+
+    expect(update.mock.calls.length).toBeGreaterThanOrEqual(2);
+    expect(service.getData().volumeUsdt).toBe(DEFAULT_SETTINGS.volumeUsdt);
+    expect(mockFirestoreState.listenerList.filter(listener => listener.isActive)).toHaveLength(1);
+  });
+
+  it('does not hold initialization on a hanging initialization notice', async () => {
+    writeFileSync(cacheFilePath, JSON.stringify({ documentPath: DOCUMENT_PATH, savedAtMs: 1, data: { ...DEFAULT_SETTINGS, volumeUsdt: 300 } }));
+    mockFirestoreState.documentByPath.set(DOCUMENT_PATH, { isActive: true });
+    const { service } = createService({ snapshotCacheFilePath: cacheFilePath, initialReadTimeoutMs: 20, connectionRetryIntervalMs: 60_000 });
+    track(service);
+    service.onNotify = jest.fn(() => new Promise<void>(() => undefined));
+    await service.initialize();
+
+    expect(service.onNotify).toHaveBeenCalledWith('Backfilled missing default keys in Firebase');
+    expect(service.isConnected()).toBe(true);
+    expect(service.getData().volumeUsdt).toBe(DEFAULT_SETTINGS.volumeUsdt);
+    expect(mockFirestoreState.listenerList.filter(listener => listener.isActive)).toHaveLength(1);
+  });
+
+  it('bounds a hanging disk save without replacing the last usable copy afterwards', async () => {
+    writeFileSync(cacheFilePath, JSON.stringify({ documentPath: DOCUMENT_PATH, savedAtMs: 1, data: { ...DEFAULT_SETTINGS, volumeUsdt: 300 } }));
+    mockFirestoreState.documentByPath.set(DOCUMENT_PATH, { ...DEFAULT_SETTINGS, volumeUsdt: 400 });
+    const { service } = createService({ snapshotCacheFilePath: cacheFilePath, initialReadTimeoutMs: 20, connectionRetryIntervalMs: 60_000 });
+    track(service);
+    let releaseWrite: () => void = () => undefined;
+    const pendingWrite = new Promise<void>(resolve => { releaseWrite = resolve; });
+    const write = jest.spyOn(fs, 'writeFile').mockImplementationOnce(() => pendingWrite);
+    await service.initialize();
+
+    expect(service.getData().volumeUsdt).toBe(300);
+    releaseWrite();
+    await flushMicrotasks();
+    expect(service.getData().volumeUsdt).toBe(300);
+    expect(JSON.parse(readFileSync(cacheFilePath, 'utf8')).data.volumeUsdt).toBe(300);
+    expect(mockFirestoreState.listenerList.filter(listener => listener.isActive)).toHaveLength(0);
+    write.mockRestore();
+  });
+
+  it('bounds a hanging fallback file read and never applies its late data', async () => {
+    mockFirestoreState.failGetCount = 1;
+    const { service } = createService({ snapshotCacheFilePath: cacheFilePath, initialReadTimeoutMs: 20 });
+    track(service);
+    let releaseRead: (value: string) => void = () => undefined;
+    const pendingRead = new Promise<string>(resolve => { releaseRead = resolve; });
+    const read = jest.spyOn(fs, 'readFile').mockImplementationOnce(() => pendingRead);
+
+    await expect(service.initialize()).rejects.toThrow('14 UNAVAILABLE');
+    expect(service.getData().volumeUsdt).toBe(DEFAULT_SETTINGS.volumeUsdt);
+    releaseRead(JSON.stringify({ documentPath: DOCUMENT_PATH, savedAtMs: 1, data: { ...DEFAULT_SETTINGS, volumeUsdt: 300 } }));
+    await flushMicrotasks();
+
+    expect(service.getData().volumeUsdt).toBe(DEFAULT_SETTINGS.volumeUsdt);
+    expect(mockFirestoreState.listenerList.filter(listener => listener.isActive)).toHaveLength(0);
+    read.mockRestore();
+  });
+
+  it('rejects the original startup failure without waiting for its error notice', async () => {
+    mockFirestoreState.failGetCount = 1;
+    const { service } = createService({ snapshotCacheFilePath: cacheFilePath, initialReadTimeoutMs: 20 });
+    track(service);
+    service.onError = jest.fn(() => new Promise<void>(() => undefined));
+
+    await expect(service.initialize()).rejects.toThrow('14 UNAVAILABLE');
+    expect(service.onError).toHaveBeenCalledWith('Failed to initialize Firebase service', expect.any(Error));
+  });
+
   it('refuses a disk copy of ANOTHER document and throws as before', async () => {
     writeFileSync(cacheFilePath, JSON.stringify({ documentPath: 'bot-bybit/settings', savedAtMs: 1, data: { ...DEFAULT_SETTINGS } }));
     mockFirestoreState.failGetCount = 1;
@@ -624,4 +722,76 @@ describe('FirebaseServiceBase — sibling documents and maps of items', () => {
 
     expect(mockFirestoreState.documentByPath.get('bot-binance/chasers')).toEqual({});
   });
+});
+
+
+describe('FirebaseServiceBase — explicit cloud-only boundaries', () => {
+  it('starts a new attempt after a timed-out read and ignores the late result', async () => {
+    let release = (_value: Record<string, unknown> | null) => {};
+    const pending = new Promise<Record<string, unknown> | null>(resolve => { release = resolve; });
+    const readDocument = jest.fn<Promise<Record<string, unknown> | null>, [string]>()
+      .mockImplementationOnce(() => pending)
+      .mockImplementation(async () => ({ ...DEFAULT_SETTINGS, volumeUsdt: 200 }));
+    const { service } = createService({ readDocument, initialReadTimeoutMs: 20 });
+    track(service);
+    await expect(service.initialize()).rejects.toThrow('exceeded 20ms');
+    await expect(service.initialize()).resolves.toBeUndefined();
+    expect(readDocument).toHaveBeenCalledTimes(2);
+    expect(service.getData().volumeUsdt).toBe(200);
+    release({ ...DEFAULT_SETTINGS, volumeUsdt: 999 });
+    await flushMicrotasks();
+    expect(service.getData().volumeUsdt).toBe(200);
+    expect(activeListenerList()).toHaveLength(1);
+  });
+
+  it('starts without a disk copy while the creation notice hangs', async () => {
+    const readDocument = jest.fn(async () => null);
+    const writeDocument = jest.fn(async () => undefined);
+    const { service } = createService({ readDocument, writeDocument, initialReadTimeoutMs: 20 });
+    track(service);
+    service.onNotify = jest.fn(() => new Promise<void>(() => undefined));
+
+    await expect(service.initialize()).resolves.toBeUndefined();
+    expect(service.onNotify).toHaveBeenCalledWith('No data found in Firebase — created document with defaults');
+    expect(activeListenerList()).toHaveLength(1);
+  });
+
+  it('gives the read and the default write each their own deadline', async () => {
+    const readDocument = jest.fn(() => new Promise<Record<string, unknown> | null>(resolve => { setTimeout(() => resolve(null), 60); }));
+    const writeDocument = jest.fn(() => new Promise<void>(resolve => { setTimeout(resolve, 60); }));
+    const { service } = createService({ readDocument, writeDocument, initialReadTimeoutMs: 100 });
+    track(service);
+
+    await expect(service.initialize()).resolves.toBeUndefined();
+    expect(writeDocument).toHaveBeenCalledTimes(1);
+  });
+
+  it('still fails a single step that exceeds its own deadline', async () => {
+    const readDocument = jest.fn(async () => null);
+    const writeDocument = jest.fn(() => new Promise<void>(() => undefined));
+    const { service } = createService({ readDocument, writeDocument, initialReadTimeoutMs: 20 });
+    track(service);
+
+    await expect(service.initialize()).rejects.toThrow('exceeded 20ms');
+  });
+
+  it('uses the configured write confirmation for initial defaults and settings updates', async () => {
+    const writeDocument = jest.fn(async (args: NonNullable<Parameters<NonNullable<ConstructorParameters<typeof FirebaseServiceBase<TestSettings>>[0]['writeDocument']>>[0]>) => {
+      const previous = mockFirestoreState.documentByPath.get(args.documentPath) ?? {};
+      mockFirestoreState.documentByPath.set(args.documentPath, args.kind === 'replace' ? args.data : { ...previous, ...args.data });
+    });
+    const { service } = createService({ writeDocument });
+    track(service);
+    const reference = service.getDocumentReference();
+    const set = jest.spyOn(reference, 'set');
+    const update = jest.spyOn(reference, 'update');
+    await service.initialize();
+    await service.updateData({ volumeUsdt: 200 });
+    expect(writeDocument).toHaveBeenNthCalledWith(1, { documentPath: DOCUMENT_PATH, data: DEFAULT_SETTINGS, kind: 'replace' });
+    expect(writeDocument).toHaveBeenNthCalledWith(2, { documentPath: DOCUMENT_PATH, data: { volumeUsdt: 200 }, kind: 'update' });
+    expect(set).not.toHaveBeenCalled();
+    expect(update).not.toHaveBeenCalled();
+    expect(service.getData().volumeUsdt).toBe(200);
+  });
+
 });

@@ -10,12 +10,12 @@
 |---|---|
 | `exchange-connector.md` (этот файл) | зависимость, инициализация, demo trading, прямой доступ к клиентам, mark price, тикеры, символы с префиксами, публичные методы коннектора, ограничение частоты записи, повтор чтений, обработка ошибок |
 | [exchange-connector-client-api.md](exchange-connector-client-api.md) | полный справочник методов `ExchangeClient` (`connector.spot` / `connector.futures`) |
-| [exchange-connector-orders.md](exchange-connector-orders.md) | создание ордеров (`buildCreateOrderArgs`), чем OKX отличается от Binance и Bybit, методы `PositionManager` |
+| [exchange-connector-orders.md](exchange-connector-orders.md) | создание ордеров (`buildCreateOrderArgs`), чем OKX отличается от Binance и Bybit, методы `PositionManager`, методы коннектора без сырого клиента |
 | [exchange-connector-streams.md](exchange-connector-streams.md) | `KlineSubscriptionWatchdog`, обобщённый `StreamSubscriptionWatchdog`, стакан (`OrderBookTracker`) |
 
 ## Зависимость
 
-Использует `@solncebro/exchange-engine` `>=0.26.0 <1.0.0` (с 3.24.0: субсчета, обрыв и возврат личного потока, ступени плеча; из реестра npm; открытый диапазон вместо точной версии — с 3.21.0, чтобы в дереве потребителя не заводилось второй копии слоя связи). Все низкоуровневые операции делегируются этой библиотеке. **Прямые импорты из `@solncebro/exchange-engine` сторонними потребителями запрещены** — единая точка входа `@solncebro/trade-engine`.
+Использует `@solncebro/exchange-engine` `>=0.27.0 <1.0.0` (с 3.24.0: субсчета, обрыв и возврат личного потока, ступени плеча; из реестра npm; открытый диапазон вместо точной версии — с 3.21.0, чтобы в дереве потребителя не заводилось второй копии слоя связи). Все низкоуровневые операции делегируются этой библиотеке. **Прямые импорты из `@solncebro/exchange-engine` сторонними потребителями запрещены** — единая точка входа `@solncebro/trade-engine`.
 
 Начиная с exchange-engine 0.22.1 он объявляет `@solncebro/websocket-engine` `>=0.6.0 <1.0.0` одолженной (peer) зависимостью и собственной копии канала не заводит — trade-engine поэтому тоже объявляет `@solncebro/websocket-engine` прямой зависимостью (не импортирует его сам), чтобы в процессе потребителя канал всегда был ровно один.
 
@@ -175,7 +175,7 @@ Bybit и OKX читают ступени без ключа.
 
 ## Заявки и позиции — в отдельном файле
 
-Создание ордеров, отличия OKX и методы `PositionManager` вынесены в [`exchange-connector-orders.md`](exchange-connector-orders.md) (см. таблицу «Детальная документация» вверху).
+Создание ордеров, отличия OKX, методы `PositionManager` и методы коннектора без сырого клиента (`readKlines`, `isUserDataStreamConnected`, `getRateLimitState`, `amountToFuturesPrecision`, делегаты сайзинга) вынесены в [`exchange-connector-orders.md`](exchange-connector-orders.md) (см. таблицу «Детальная документация» вверху).
 
 **Восьмой параметр `tradeSymbolsRefreshConfig`** (опционально, `TradeSymbolsRefreshConfig`) — расписание встроенного обновления инструментов: `{ tradeSymbolsRefreshIntervalMs? }`, умолчание — 24 часа, `0` (или меньше) выключает таймер совсем. Подробности — раздел «Суточное обновление инструментов» ниже.
 
@@ -207,7 +207,7 @@ Bybit и OKX читают ступени без ключа.
 | `resolveFuturesSymbol(raw)` / `resolveSpotSymbol(raw)` | `Promise<ResolvedSymbol>` | Ввод человека/сигнала → имя на бирже `{ symbol, isFound }` (3.24.0) |
 | `waitForTickersReady(timeoutMs?, marketType?)` | `Promise<boolean>` | Ожидание первого снимка тикеров (3.24.0) |
 | `ensureSpotTradeSymbolLoaded(symbol)` | `Promise<boolean>` | Спецификация спотового символа, при нужде догрузка (3.24.0) |
-| `getFuturesOrderRules(symbol)` | `FuturesOrderRules \| null` | Сетка цены/объёма и пороги размера заявки (`{ symbol, tickSize, stepSize, minAmount, minNotionalUsd }`) для точки безубыточности с поправкой на комиссию и деления объёма на лоты; `null`, пока спецификация не загружена (`ensureFuturesTradeSymbolLoaded`) (3.24.0) |
+| `getFuturesOrderRules(symbol)` | `FuturesOrderRules \| null` | Сетка цены/объёма и пороги размера заявки (`{ symbol, tickSize, stepSize, minAmount, maxAmount, minNotionalUsd }`) для точки безубыточности с поправкой на комиссию и деления объёма на лоты; `null`, пока спецификация не загружена (`ensureFuturesTradeSymbolLoaded`) (3.24.0) |
 | `shareMarketDataFrom(primary)` / `isMarketDataFollower()` | `void` / `boolean` | Общие рыночные данные главного счёта и субсчетов (3.24.0) |
 | `getUserDataStreamRouter(marketType?)` | `UserDataStreamRouter` | Один личный поток на рынок (3.24.0) |
 | `get subAccounts` | `SubAccountGateway` | Субсчета главного счёта (3.24.0) |
