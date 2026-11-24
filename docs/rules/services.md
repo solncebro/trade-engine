@@ -427,10 +427,10 @@ class RateLimitedRequestQueue {
 Retry на 429 и 5xx с exponential backoff и поддержкой `Retry-After` header.
 
 ```typescript
-withRetryOn429<T>({ fn, contextLabel, maxRetries?, baseDelayMs? }): Promise<T>
+withRetryOn429<T>({ fn, contextLabel, maxRetries?, baseDelayMs?, signal? }): Promise<T>
 ```
 
-Defaults: `maxRetries = 3`, `baseDelayMs = 1000`, exponential `delay * 2^(attempt-1)`. Используется:
+Defaults: `maxRetries = 3`, `baseDelayMs = 1000`, exponential `delay * 2^(attempt-1)`. Необязательный `signal` (`AbortSignal`) — срок вызывающего: после его срабатывания ни попытка, ни пауза не начинаются, идущая пауза `Retry-After` обрывается, цикл бросает `signal.reason` (3.26.0). Срок на всю операцию задаёт `OperationDeadline` (`src/utils/operationDeadline.ts`): `race` обрывает ожидание шага в срок, `signal` доходит до транспорта; по сроку — `DeadlineExceededError` (поля `operationLabel`, `timeoutMs`; исход неизвестен; экспортируется из entry вместе с `DeadlineExceededErrorArgs`). Используется:
 - `withRetryOn429`: внутри `PositionManager.cancelOrder/cancelBatchOrders/cancelAllOrders/modifyOrder/modifyBatchOrders/setLeverage/setMarginMode/setPositionMode/readPositionMode` (3.24.0).
 - Читающие вызовы `ExchangeConnector` (`initialize()` — loadTradeSymbols, `updateTickers()` — fetchTickers, `fetchOrderBook`) — тот же `withRetryOn429`; отдельный `withReadRetry` удалён в 3.22.0 как побайтовый дубль.
 
@@ -460,6 +460,9 @@ Defaults: `maxRetries = 3`, `baseDelayMs = 1000`, exponential `delay * 2^(attemp
 | `formatPrice(symbol, price)` | строка на тиковой сетке символа; `—` для `null`/`undefined`/`NaN` |
 | `snapPriceToTick(symbol, price, rounding = 'nearest')` | то же числом — для записи в базу/журнал. `rounding: StepRounding` — `'nearest'` (ближайший шаг), `'up'` (не ниже цены), `'down'` (не выше): например, цена лимитной продажи, которая не должна встать ниже плановой, берётся с `'up'`. Математика сетки — в exchange-engine (`priceToPrecision`), здесь только прокидка |
 | `configurePriceTickSnapper(snapper)` | ручная установка источника сетки (бэктест, утилиты); `null` — сброс. Снаппер получает `(symbol, price, rounding)` и обязан учитывать направление |
+| `readPriceTickSize(symbol)` | шаг цены, который использует установленная сетка; `null` — сетки нет или символ неизвестен. Нужен коду, который не делит состояние модуля с основным потоком (рабочий поток), чтобы восстановить ту же сетку |
+| `configurePriceTickSizeReader(reader)` | источник шага цены; ставится сразу ПОСЛЕ `configurePriceTickSnapper` (тот сбрасывает прежний, чтобы шаг и снаппер описывали одну сетку); `null` — сброс. Коннектор ставит оба сам |
+| `createPriceTickSnapper(readTickSize)` | снаппер по источнику шага `(symbol) => number \| null`: `roundToStep` из exchange-engine (та же, что в конце `priceToPrecision`), учитывает направление; символ без шага (`null`, не больше нуля) возвращается как есть. Для рабочего потока: шаги читаются `readPriceTickSize` в основном потоке, снаппер собирается и ставится в потоке. Коннектор сам его не использует: при нулевом шаге `priceToPrecision` округляет до 8 знаков, фабрика оставляет значение |
 
 **Подключение автоматическое:** `ExchangeConnector.initialize()` сам ставит снаппер из своих загруженных фильтров символов (futures, затем spot). Приложению делать НИЧЕГО не нужно — достаточно инициализировать коннектор.
 

@@ -13,6 +13,11 @@ export interface ReadAllPositionsArgs {
   marketType: MarketTypeEnum;
 }
 
+export interface ReadPositionStateByDirectionArgs {
+  symbol: string;
+  marketType: MarketTypeEnum;
+}
+
 export interface ReadOpenOrderListArgs {
   symbol: string;
   marketType: MarketTypeEnum;
@@ -51,7 +56,7 @@ export interface ReadOpenPlainOrderListArgs {
 }
 
 export interface ReadOpenConditionalOrderListArgs {
-  /** Omitted — every symbol of the account. */
+  /** Given — the exchange is asked for this symbol only; omitted — every symbol of the account. */
   symbol?: string;
   /** Settlement coin of the conditional order list; default 'USDT'. */
   settleCoin?: string;
@@ -101,6 +106,12 @@ export type PositionStateResult =
   | { kind: 'present'; position: Position }
   | { kind: 'absent'; confidence: 'confirmed' | 'unconfirmed'; reason: PositionAbsenceReason; errorText?: string; positionUpdatedAtMs?: number }
   | { kind: 'ambiguous'; reason: PositionAmbiguityReason; position: Position };
+
+/** Both sides of one symbol from ONE read; each side by exactly the rules of readPositionState. */
+export interface PositionStateByDirection {
+  long: PositionStateResult;
+  short: PositionStateResult;
+}
 
 export type StopOrderType = 'Market' | 'Limit';
 
@@ -248,6 +259,13 @@ export interface SetLeverageArgs {
   symbol: string;
   leverage: number;
   direction?: Direction;
+  /**
+   * Budget for the WHOLE call, counted from it: the wait behind the symbol's other leverage and entry
+   * work, the write queue, every attempt and every Retry-After pause. Past it the call rejects with
+   * `DeadlineExceededError` (outcome unknown), the symbol's queue moves on at once, no attempt or pause
+   * starts any more and the request in flight is aborted. Omitted: no limit of its own.
+   */
+  timeoutMs?: number;
 }
 
 export interface SetPositionModeArgs {

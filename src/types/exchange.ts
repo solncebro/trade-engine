@@ -27,7 +27,11 @@ export interface ExchangeResponseData extends ExtensibleRecord {
   orderId?: string;
   symbol?: string;
   side?: string;
+  /** Placement: the amount the exchange accepted, from its answer (Binance cuts a closing order
+   *  larger than the position right there). Absent when the answer carries only the number (Bybit, OKX). */
   amount?: number;
+  /** Placement: the order status from the exchange answer; absent where `amount` is absent. */
+  status?: string;
   price?: number;
   average?: number;
   timestamp?: number;

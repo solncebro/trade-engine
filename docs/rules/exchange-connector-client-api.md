@@ -41,7 +41,7 @@
 
 **Ордера:**
 - `createOrderWebSocket(args: CreateOrderWebSocketArgs)` → `Order` — создание ордера через WebSocket
-- `cancelOrder(symbol, orderId)` → `Order` — отмена ордера
+- `cancelOrder(symbol, orderId)` → `CancelOrderResult` (`{ orderId, isCancelled: true, filledAmount: number | null }`) — отмена ордера; заявка после отмены не перечитывается, отказ (в том числе «заявки уже нет») — ошибка с кодом биржи
 - `getOrder(symbol, orderId)` → `Order` — получение ордера
 - `fetchOpenOrders(symbol)` → `Order[]` — открытые ордера
 - `fetchOrderHistory(symbol)` → `Order[]` — история ордеров

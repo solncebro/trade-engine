@@ -1,7 +1,7 @@
 import * as crypto from 'crypto';
 
 import { ExchangeError, Exchange as ExchangeInstance, ExchangeNameEnum, OrderSideEnum, PositionModeEnum, PositionSideEnum, TimeInForceEnum, TradeSymbolTypeEnum } from '@solncebro/exchange-engine';
-import type { CreateOrderWebSocketArgs, ExchangeClient, ExchangeRateLimitState, FetchPageWithLimitArgs, Kline, KlineHandler, KlineInterval, LeverageTier, LeverageTierListBySymbol, MarkPriceHandler, MarkPriceUpdate, OrderBook, OrderBookHandler, OrderRateLimit, PublicTradeHandler, StepRounding, SubscribeKlinesArgs, SubscribeOrderbookArgs, SubscribePublicTradesArgs, Ticker, TickerBySymbol } from '@solncebro/exchange-engine';
+import type { CreateOrderWebSocketArgs, ExchangeClient, ExchangeRateLimitState, FetchPageWithLimitArgs, Kline, KlineHandler, KlineInterval, LeverageTier, LeverageTierListBySymbol, MarkPriceHandler, MarkPriceUpdate, Order, OrderBook, OrderBookHandler, OrderRateLimit, PublicTradeHandler, StepRounding, SubscribeKlinesArgs, SubscribeOrderbookArgs, SubscribePublicTradesArgs, Ticker, TickerBySymbol } from '@solncebro/exchange-engine';
 
 import { KlineSubscriptionWatchdog } from './klineSubscriptionWatchdog';
 import type { KlineSubscriptionWatchdogConfig } from './klineSubscriptionWatchdog.types';
@@ -26,15 +26,16 @@ import { RateLimitedRequestQueue } from '../core/RateLimitedRequestQueue';
 import { withRetryOn429 } from '../core/withRetryOn429';
 import {
   ExchangeConfig,
+  ExchangeResponseData,
   MarketTypeEnum,
   OrderParams,
   OrderResult,
   OrderTypeEnum,
 } from '../types';
-import { describeExchangeRefusal, formatErrorMessage } from '../utils/errorFormatter.utils';
+import { describeError, describeExchangeRefusal, formatErrorMessage } from '../utils/errorFormatter.utils';
 import { configureAmountStepSnapper } from '../utils/numberFormat';
 import { isSpot } from '../utils/order.utils';
-import { configurePriceTickSnapper } from '../utils/priceFormat';
+import { configurePriceTickSizeReader, configurePriceTickSnapper } from '../utils/priceFormat';
 import { assertSymbolLoaded, sizeOrder, splitOrderQty } from '../utils/sizeOrder';
 import type { AssertFuturesSymbolLoadedArgs, SizeFuturesOrderArgs, SizeOrderResult, SplitFuturesOrderQtyArgs } from '../utils/sizeOrder.types';
 import { sleep } from '../utils/sleep';
@@ -67,6 +68,14 @@ export interface StreamWatchdogConfigMap {
 // negative value) switches the schedule off entirely and leaves the caller to refresh by hand.
 export interface TradeSymbolsRefreshConfig {
   tradeSymbolsRefreshIntervalMs?: number;
+}
+
+// The bulk ticker poll (every 30 s). Omitted field = the default: enabled, futures and spot. A consumer
+// that needs only a few prices turns it off (or narrows the markets) and reads single symbols through
+// refreshTicker instead of paying for the whole exchange list.
+export interface TickerPollingConfig {
+  isEnabled?: boolean;
+  marketTypeList?: MarketTypeEnum[];
 }
 
 /** A symbol typed by a human / a signal, resolved against this exchange. */
@@ -157,6 +166,31 @@ const TICKERS_READY_DEFAULT_TIMEOUT_MS = 30_000;
 const TICKERS_READY_POLL_MS = 500;
 const RESOLVE_SYMBOL_TICKERS_WAIT_MS = 15_000;
 const MULTIPLIER_SUFFIX_QUOTE_LIST = ['USDT', 'USDC'];
+// A symbol refreshed (single read or bulk poll) this recently is served from the cache.
+const TICKER_REFRESH_MIN_INTERVAL_MS = 5000;
+// Exchanges whose create-order result carries the exchange's own acceptance time in updatedTimestamp
+// (Binance new-order response `updateTime`). exchange-engine stamps its local clock into the Bybit
+// create-order result, so passing that through would present the bot's clock as the exchange's.
+const ORDER_ACCEPTANCE_TIME_EXCHANGE_NAME_SET: ReadonlySet<ExchangeNameEnum> = new Set([ExchangeNameEnum.Binance]);
+
+function readExchangeAcceptedAtMs(exchangeName: ExchangeNameEnum, order: Pick<Order, 'updatedTimestamp'>): number | undefined {
+  if (!ORDER_ACCEPTANCE_TIME_EXCHANGE_NAME_SET.has(exchangeName)) {
+    return undefined;
+  }
+
+  const acceptedAtMs = order.updatedTimestamp;
+
+  return Number.isFinite(acceptedAtMs) && acceptedAtMs > 0 ? acceptedAtMs : undefined;
+}
+
+// Only what the exchange itself answered to the placement: the exchange layer marks it, and an
+// answer with the number alone (Bybit, OKX) leaves both keys out — the request is never echoed here.
+function readAcceptedPlacement(order: Pick<Order, 'acceptedAmount' | 'acceptedStatus'>): Partial<Pick<ExchangeResponseData, 'amount' | 'status'>> {
+  return {
+    ...(order.acceptedAmount === undefined ? {} : { amount: order.acceptedAmount }),
+    ...(order.acceptedStatus === undefined ? {} : { status: order.acceptedStatus }),
+  };
+}
 
 function readReduceOnly(orderParams: OrderParams): boolean {
   if (orderParams.reduceOnly === true) {
@@ -217,6 +251,10 @@ export class ExchangeConnector {
   private isKeylessTierSkipLogged: boolean = false;
   private firstTickerRoundPromise: Promise<void> | null = null;
   private readonly tickerSnapshotMarketTypeSet: Set<MarketTypeEnum> = new Set();
+  private readonly isTickerPollingEnabled: boolean;
+  private readonly tickerPollingMarketTypeList: MarketTypeEnum[];
+  private readonly tickerRefreshedAtMsByKey: Map<string, number> = new Map();
+  private readonly tickerRefreshInFlightByKey: Map<string, Promise<Ticker | null>> = new Map();
   // Opt-in market-data sharing between connectors of one exchange (master + sub-accounts): the follower
   // reads the primary's tickers and leverage tiers and copies its trade-symbol specs instead of loading
   // all of it again per account. See shareMarketDataFrom.
@@ -243,9 +281,12 @@ export class ExchangeConnector {
     klineWatchdogConfig?: KlineSubscriptionWatchdogConfig,
     rateLimitConfig?: RateLimitConfig | null,
     streamWatchdogConfig?: StreamWatchdogConfigMap,
-    tradeSymbolsRefreshConfig?: TradeSymbolsRefreshConfig
+    tradeSymbolsRefreshConfig?: TradeSymbolsRefreshConfig,
+    tickerPollingConfig?: TickerPollingConfig
   ) {
     this.exchangeName = exchangeName;
+    this.isTickerPollingEnabled = tickerPollingConfig?.isEnabled !== false;
+    this.tickerPollingMarketTypeList = tickerPollingConfig?.marketTypeList ?? [MarketTypeEnum.Futures, MarketTypeEnum.Spot];
     this.isDemoMode = config.isDemoMode === true;
     this.isKeyless = (config.apiKey ?? '').trim() === '' || (config.secret ?? '').trim() === '';
     this.currentFuturesPositionMode = futuresPositionMode;
@@ -688,6 +729,12 @@ export class ExchangeConnector {
           ? this.exchange.spot.priceToPrecision(symbol, price, rounding)
           : price
     );
+    // Same lookup order as the snapper above, so the reported tick is the one the snapper rounds to.
+    configurePriceTickSizeReader((symbol) => {
+      const tradeSymbol = this.exchange.futures.tradeSymbols.get(symbol) ?? this.exchange.spot.tradeSymbols.get(symbol);
+
+      return tradeSymbol === undefined ? null : parseFloat(tradeSymbol.filter.tickSize);
+    });
   }
 
   /**
@@ -797,7 +844,7 @@ export class ExchangeConnector {
   }
 
   private async startWatchingTickers(): Promise<void> {
-    if (this.isWatchingTickers) {
+    if (this.isWatchingTickers || !this.isTickerPollingEnabled) {
       return;
     }
 
@@ -834,20 +881,95 @@ export class ExchangeConnector {
 
   private async updateTickers(): Promise<void> {
     try {
-      const [futuresTickerBySymbol, spotTickerBySymbol] = await Promise.all([
-        withRetryOn429({
-          fn: () => this.exchange.futures.fetchTickers(),
-          contextLabel: `fetchTickers futures ${this.exchangeName}`,
-        }),
-        withRetryOn429({
-          fn: () => this.exchange.spot.fetchTickers(),
-          contextLabel: `fetchTickers spot ${this.exchangeName}`,
-        }),
-      ]);
-      this.processTickerList(futuresTickerBySymbol, MarketTypeEnum.Futures);
-      this.processTickerList(spotTickerBySymbol, MarketTypeEnum.Spot);
+      const tickerBySymbolList = await Promise.all(
+        this.tickerPollingMarketTypeList.map(marketType =>
+          withRetryOn429({
+            fn: () => this.getClient(marketType).fetchTickers(),
+            contextLabel: `fetchTickers ${marketType} ${this.exchangeName}`,
+          })
+        )
+      );
+
+      this.tickerPollingMarketTypeList.forEach((marketType, index) => {
+        this.processTickerList(tickerBySymbolList[index], marketType);
+      });
     } catch (error) {
       logger.warn({ error }, 'Failed to update tickers');
+    }
+  }
+
+  /**
+   * Reads ONE symbol's ticker now and stores it in the same cache (same key) the bulk poll fills, so
+   * getTicker sees it. For a consumer that runs with the bulk poll off or narrowed. A symbol refreshed
+   * under 5 s ago is served from the cache, concurrent calls for one symbol share one request, a
+   * follower hands the call to its primary. Never throws: a failed read warns and returns whatever
+   * the cache holds (possibly null). `shouldServeCacheOnFailure: false` returns null on a failed read
+   * instead: the cache may be a bulk-poll price up to 30 s old, which a caller asking for a fresh price
+   * must not take for one (the ticker's timestamp cannot tell — Binance puts the 24h window's close time
+   * there, Bybit the time of the answer).
+   */
+  public async refreshTicker(
+    symbol: string,
+    marketType: MarketTypeEnum,
+    options?: { shouldServeCacheOnFailure?: boolean }
+  ): Promise<Ticker | null> {
+    if (this.marketDataPrimary !== null) {
+      return this.marketDataPrimary.refreshTicker(symbol, marketType, options);
+    }
+
+    const tickerKey = this.getTickerKey(normalizeSymbol(symbol), marketType);
+    const cachedTicker = this.tickersByMarketTypeAndSymbol.get(tickerKey) ?? null;
+    const refreshedAtMs = this.tickerRefreshedAtMsByKey.get(tickerKey);
+
+    if (cachedTicker !== null && refreshedAtMs !== undefined && Date.now() - refreshedAtMs < TICKER_REFRESH_MIN_INTERVAL_MS) {
+      return cachedTicker;
+    }
+
+    const freshTicker = await this.fetchSingleTickerShared(symbol, marketType, tickerKey);
+
+    if (freshTicker !== null || options?.shouldServeCacheOnFailure === false) {
+      return freshTicker;
+    }
+
+    return this.tickersByMarketTypeAndSymbol.get(tickerKey) ?? null;
+  }
+
+  // Concurrent callers share one request whatever they do on its failure, so the shared result is the
+  // read alone: null = the read failed, and each caller decides about the cache itself.
+  private fetchSingleTickerShared(symbol: string, marketType: MarketTypeEnum, tickerKey: string): Promise<Ticker | null> {
+    const inFlight = this.tickerRefreshInFlightByKey.get(tickerKey);
+
+    if (inFlight !== undefined) {
+      return inFlight;
+    }
+
+    const request = this.fetchSingleTicker(symbol, marketType, tickerKey).finally(() => {
+      this.tickerRefreshInFlightByKey.delete(tickerKey);
+    });
+
+    this.tickerRefreshInFlightByKey.set(tickerKey, request);
+
+    return request;
+  }
+
+  private async fetchSingleTicker(symbol: string, marketType: MarketTypeEnum, tickerKey: string): Promise<Ticker | null> {
+    try {
+      const ticker = await withRetryOn429({
+        fn: () => this.getClient(marketType).fetchTicker(symbol),
+        contextLabel: `fetchTicker ${marketType} ${symbol} ${this.exchangeName}`,
+      });
+
+      this.tickersByMarketTypeAndSymbol.set(tickerKey, ticker);
+      this.tickerRefreshedAtMsByKey.set(tickerKey, Date.now());
+
+      return ticker;
+    } catch (error) {
+      logger.warn(
+        { exchange: this.exchangeName, marketType, symbol, errorText: describeError(error) },
+        '[ExchangeConnector] single ticker read failed'
+      );
+
+      return null;
     }
   }
 
@@ -855,10 +977,13 @@ export class ExchangeConnector {
     tickerBySymbol: TickerBySymbol,
     marketType: MarketTypeEnum
   ): void {
+    const refreshedAtMs = Date.now();
+
     for (const [symbol, ticker] of tickerBySymbol) {
       const normalizedSymbol = normalizeSymbol(symbol);
       const tickerKey = this.getTickerKey(normalizedSymbol, marketType);
       this.tickersByMarketTypeAndSymbol.set(tickerKey, ticker);
+      this.tickerRefreshedAtMsByKey.set(tickerKey, refreshedAtMs);
     }
 
     if (tickerBySymbol.size > 0) {
@@ -879,6 +1004,11 @@ export class ExchangeConnector {
   ): Promise<boolean> {
     if (this.marketDataPrimary !== null) {
       return this.marketDataPrimary.waitForTickersReady(timeoutMs, marketType);
+    }
+
+    // No bulk snapshot of this market will ever come: do not make the caller sit out the timeout.
+    if (!this.isTickerPollingEnabled || !this.tickerPollingMarketTypeList.includes(marketType)) {
+      return this.tickerSnapshotMarketTypeSet.has(marketType);
     }
 
     const deadlineMs = Date.now() + timeoutMs;
@@ -999,9 +1129,29 @@ export class ExchangeConnector {
   }
 
   /**
+   * The same candidates in the same order (as is, the 10…1000000 prefix, the multiplier after the base)
+   * against the instruments list (`tradeSymbols`) instead of the ticker cache. The cache stays empty
+   * when the all-coin poll is off, the list is loaded at start and refreshed daily either way. Reached
+   * only after the cache found nothing, so a coin the cache knows resolves exactly as before.
+   */
+  private findSymbolInTradeSymbols(symbol: string, marketType: MarketTypeEnum): string | null {
+    const tradeSymbolBySymbol = this.getClient(marketType).tradeSymbols;
+    const quote = MULTIPLIER_SUFFIX_QUOTE_LIST.find(item => symbol.length > item.length && symbol.endsWith(item));
+    const base = quote === undefined ? null : symbol.slice(0, -quote.length);
+    const candidateList = [
+      symbol,
+      ...this.symbolPrefixList.map(prefix => `${prefix}${symbol}`),
+      ...(quote === undefined || base === null ? [] : this.symbolPrefixList.map(prefix => `${base}${prefix}${quote}`)),
+    ];
+
+    return candidateList.find(candidate => tradeSymbolBySymbol.has(candidate)) ?? null;
+  }
+
+  /**
    * Human / signal input → this exchange's futures symbol: "$pepe", "#BTC", "BTC/USDT", "BTCUSDT.P"
    * (parseRawSymbolInput), then the 1000-style prefix by the ticker cache (waits for its first
-   * snapshot), then the trading spec (a coin listed after start is fetched on demand). `isFound`
+   * snapshot), then the same candidates by the instruments list (the cache is empty with the poll off),
+   * then the trading spec (a coin listed after start is fetched on demand). `isFound`
    * false: not listed on this exchange (or the input had no symbol in it); `symbol` is then the best
    * guess, for the message to the human.
    */
@@ -1025,6 +1175,7 @@ export class ExchangeConnector {
 
     const symbol = this.findSymbolWithPrefix(parsedSymbol, marketType)
       ?? this.findSymbolWithMultiplierSuffix(parsedSymbol, marketType)
+      ?? this.findSymbolInTradeSymbols(parsedSymbol, marketType)
       ?? parsedSymbol;
     const isFound = isSpot(marketType)
       ? await this.ensureSpotTradeSymbolLoaded(symbol)
@@ -1223,7 +1374,9 @@ export class ExchangeConnector {
           id: order.id,
           orderId: order.id,
           symbol: order.symbol,
+          timestamp: readExchangeAcceptedAtMs(this.exchangeName, order),
           rateLimit: order.rateLimit,
+          ...readAcceptedPlacement(order),
         },
       };
     } catch (error) {
@@ -1302,7 +1455,9 @@ export class ExchangeConnector {
             id: outcome.order.id,
             orderId: outcome.order.id,
             symbol: outcome.order.symbol,
+            timestamp: readExchangeAcceptedAtMs(this.exchangeName, outcome.order),
             rateLimit: outcome.rateLimit ?? outcome.order.rateLimit,
+            ...readAcceptedPlacement(outcome.order),
           },
         };
       });

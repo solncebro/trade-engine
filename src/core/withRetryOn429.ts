@@ -76,6 +76,7 @@ interface ExecuteWithRetryArgs<T> extends RetryPolicy {
   fn: () => Promise<T>;
   contextLabel: string;
   maxRetries: number;
+  signal?: AbortSignal;
 }
 
 interface ResultWithError {
@@ -93,16 +94,40 @@ class RetryableResultError extends Error {
   }
 }
 
+// A Retry-After pause has no upper bound of its own; under a caller's deadline it ends with the deadline.
+function pauseBeforeRetry(delayMs: number, signal: AbortSignal | undefined): Promise<void> {
+  if (signal === undefined) {
+    return sleep(delayMs);
+  }
+
+  return new Promise((resolve, reject) => {
+    const onAbort = (): void => {
+      clearTimeout(timer);
+      reject(signal.reason);
+    };
+    const timer = setTimeout(() => {
+      signal.removeEventListener('abort', onAbort);
+      resolve();
+    }, delayMs);
+
+    signal.addEventListener('abort', onAbort, { once: true });
+  });
+}
+
 // Shared backoff-retry core. The caller supplies WHAT counts as retryable and HOW long to wait, so the
 // same loop serves the exchange (retry on thrown 429/5xx) and the journal (retry on a returned error).
 async function executeWithRetry<T>(args: ExecuteWithRetryArgs<T>): Promise<T> {
   let lastError: unknown;
 
   for (let attempt = 1; attempt <= args.maxRetries; attempt += 1) {
+    args.signal?.throwIfAborted();
+
     try {
       return await args.fn();
     } catch (error) {
       lastError = error;
+      // The caller's deadline ran out during the attempt: the operation ends here, whatever the error.
+      args.signal?.throwIfAborted();
 
       if (!args.isRetryable(error)) {
         throw error;
@@ -123,7 +148,7 @@ async function executeWithRetry<T>(args: ExecuteWithRetryArgs<T>): Promise<T> {
         `[Retry] ${args.contextLabel} attempt ${attempt}/${args.maxRetries} after ${backoffMs}ms`
       );
 
-      await sleep(backoffMs);
+      await pauseBeforeRetry(backoffMs, args.signal);
     }
   }
 
@@ -142,6 +167,7 @@ export async function withRetryOn429<T>(args: WithRetryOn429Args<T>): Promise<T>
     fn: args.fn,
     contextLabel: args.contextLabel,
     maxRetries: args.maxRetries ?? DEFAULT_MAX_RETRIES,
+    signal: args.signal,
     ...buildExchangeRetryPolicy(args.baseDelayMs ?? DEFAULT_BASE_DELAY_MS),
   });
 }

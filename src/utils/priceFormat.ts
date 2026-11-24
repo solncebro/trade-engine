@@ -1,3 +1,4 @@
+import { roundToStep } from '@solncebro/exchange-engine';
 import type { StepRounding } from '@solncebro/exchange-engine';
 
 /**
@@ -20,6 +21,12 @@ import type { StepRounding } from '@solncebro/exchange-engine';
 type PriceTickSnapper = (symbol: string, price: number, rounding: StepRounding) => number;
 
 /**
+ * Tick size the installed grid uses for a symbol, `null` when the symbol is unknown. Installed together
+ * with the snapper so both always describe one grid.
+ */
+type PriceTickSizeReader = (symbol: string) => number | null;
+
+/**
  * Digit cap for a price that could NOT be snapped (no snapper configured, symbol filters not loaded,
  * a snapper that threw): the tick grid of a perpetual never needs more, and it stops an unsnapped
  * value from printing its whole 16-digit tail.
@@ -30,6 +37,7 @@ const UNSNAPPED_PRICE_MAX_DIGITS = 8;
 const ABSENT_PRICE_TEXT = '—';
 
 let tickSnapper: PriceTickSnapper | null = null;
+let tickSizeReader: PriceTickSizeReader | null = null;
 
 /**
  * Install the tick-grid source. Called automatically by `ExchangeConnector.initialize()`; call it
@@ -37,6 +45,54 @@ let tickSnapper: PriceTickSnapper | null = null;
  */
 function configurePriceTickSnapper(snapper: PriceTickSnapper | null): void {
   tickSnapper = snapper;
+  // A new snapper may be a different grid; the old reader would describe a grid that is gone. The
+  // installer sets its reader right after, so an unpaired snapper reports an unknown tick instead of a wrong one.
+  tickSizeReader = null;
+}
+
+/**
+ * A snapper over a bare tick-size source, for a place that cannot reach the connector's loaded filters
+ * (a worker thread: it has its own module instances). Rounds with the same `roundToStep` the exchange
+ * client's `priceToPrecision` ends in, so it lands on the same grid; a symbol without a tick (unknown,
+ * `null`, non-positive) comes back unchanged — the connector's snapper treats an unknown symbol the same way.
+ */
+function createPriceTickSnapper(readTickSize: PriceTickSizeReader): PriceTickSnapper {
+  return (symbol, price, rounding) => {
+    const tickSize = readTickSize(symbol);
+
+    if (tickSize === null || !Number.isFinite(tickSize) || tickSize <= 0) {
+      return price;
+    }
+
+    return roundToStep(price, String(tickSize), rounding);
+  };
+}
+
+/**
+ * Install the tick-size source describing the SAME grid as the snapper — call it right after
+ * `configurePriceTickSnapper`, which clears it. `null` clears it.
+ */
+function configurePriceTickSizeReader(reader: PriceTickSizeReader | null): void {
+  tickSizeReader = reader;
+}
+
+/**
+ * Tick size of the currently installed price grid for the symbol; `null` when no grid is installed,
+ * the symbol is unknown, or the reader throws. Lets code that cannot share this module's state (a
+ * worker thread) rebuild the same grid.
+ */
+function readPriceTickSize(symbol: string): number | null {
+  if (tickSnapper === null || tickSizeReader === null) {
+    return null;
+  }
+
+  try {
+    const tickSize = tickSizeReader(symbol);
+
+    return tickSize !== null && Number.isFinite(tickSize) && tickSize > 0 ? tickSize : null;
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -83,9 +139,13 @@ function formatPrice(symbol: string, price: number | null | undefined): string {
 
 export {
   ABSENT_PRICE_TEXT,
+  configurePriceTickSizeReader,
   configurePriceTickSnapper,
+  createPriceTickSnapper,
   formatPrice,
+  PriceTickSizeReader,
   PriceTickSnapper,
+  readPriceTickSize,
   snapPriceToTick,
   trimNumberTail,
 };

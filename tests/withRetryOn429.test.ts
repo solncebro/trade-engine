@@ -90,4 +90,65 @@ describe('withRetryOn429', () => {
     ).rejects.toThrow();
     expect(fn).toHaveBeenCalledTimes(2);
   }, 5_000);
+
+  describe('with a signal', () => {
+    beforeEach(() => {
+      jest.useFakeTimers({ now: 1000 });
+    });
+
+    afterEach(() => {
+      jest.useRealTimers();
+    });
+
+    it('makes no attempt once the signal already fired', async () => {
+      const controller = new AbortController();
+      const reason = new Error('deadline');
+      controller.abort(reason);
+      const fn = jest.fn().mockResolvedValue('ok');
+
+      await expect(withRetryOn429({ fn, contextLabel: 'test-aborted', signal: controller.signal })).rejects.toBe(reason);
+      expect(fn).not.toHaveBeenCalled();
+    });
+
+    it('ends a Retry-After pause when the signal fires and starts no further attempt', async () => {
+      const controller = new AbortController();
+      const reason = new Error('deadline');
+      const fn = jest.fn().mockRejectedValue(makeAxiosError(429, { 'retry-after': '60' }));
+      let settledAtMs: number | null = null;
+      const outcome = withRetryOn429({ fn, contextLabel: 'test-pause', signal: controller.signal })
+        .catch((error: unknown) => error)
+        .finally(() => { settledAtMs = Date.now(); });
+
+      await jest.advanceTimersByTimeAsync(5000);
+      controller.abort(reason);
+
+      expect(await outcome).toBe(reason);
+      expect(settledAtMs).toBe(6000);
+      await jest.advanceTimersByTimeAsync(300_000);
+      expect(fn).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not retry an attempt that failed after the signal fired', async () => {
+      const controller = new AbortController();
+      const reason = new Error('deadline');
+      const fn = jest.fn().mockImplementationOnce(async () => {
+        controller.abort(reason);
+        throw makeAxiosError(503);
+      });
+
+      await expect(withRetryOn429({ fn, contextLabel: 'test-late-failure', signal: controller.signal })).rejects.toBe(reason);
+      expect(fn).toHaveBeenCalledTimes(1);
+    });
+
+    it('retries exactly as without a signal while it has not fired', async () => {
+      const controller = new AbortController();
+      const fn = jest.fn().mockRejectedValueOnce(makeAxiosError(500)).mockResolvedValueOnce('ok');
+      const outcome = withRetryOn429({ fn, contextLabel: 'test-live-signal', baseDelayMs: 50, signal: controller.signal });
+
+      await jest.advanceTimersByTimeAsync(50);
+
+      expect(await outcome).toBe('ok');
+      expect(fn).toHaveBeenCalledTimes(2);
+    });
+  });
 });

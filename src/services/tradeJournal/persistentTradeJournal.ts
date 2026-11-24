@@ -37,6 +37,7 @@ const MS_PER_DAY = 86_400_000;
 const DEFAULT_SHEET_RECONCILE_LOOKBACK_DAYS = 7;
 const SUPABASE_MAX_ATTEMPTS = 3;
 const SUPABASE_RETRY_BASE_DELAY_MS = 500;
+const PERSISTED_TERMINAL_ID_LIMIT = 1000;
 
 interface QueuedJournalEvent {
   tradeKey: string;
@@ -70,6 +71,7 @@ export class PersistentTradeJournal {
   private readonly summaryById: Map<string, Record<string, unknown>> = new Map();
   private readonly seqById: Map<string, number> = new Map();
   private readonly dirtyIdSet: Set<string> = new Set();
+  private readonly persistedTerminalIdSet = new Set<string>();
   private eventQueueList: QueuedJournalEvent[] = [];
   private supabaseClient: SupabaseClient | null = null;
   private isSupabaseEnabled = false;
@@ -276,6 +278,7 @@ export class PersistentTradeJournal {
   // Immediately persist a single summary, bypassing the batched flush. Used before dropping a closed
   // setup's resume state so the terminal status is guaranteed in the DB first. Returns false when there
   // is no summary to persist — the caller must then KEEP the resume state so the trade replays.
+  // Returns true also when the batch flush already persisted and evicted the terminal summary.
   async flushSummaryNow(id: string): Promise<boolean> {
     return this.runSerialized(() => this.flushSummaryConfirmed(id));
   }
@@ -288,6 +291,12 @@ export class PersistentTradeJournal {
     const summary = this.summaryById.get(id);
 
     if (summary === undefined) {
+      if (this.persistedTerminalIdSet.has(id)) {
+        logger.info({ table: this.schema.tradesTable, tradeId: id, stage: 'summary_write_already_confirmed' }, '[PersistentTradeJournal] Immediate summary write skipped — the terminal summary was already persisted by the batch flush');
+
+        return true;
+      }
+
       logger.warn({ id }, '[PersistentTradeJournal] flushSummaryNow — no in-memory summary; keeping resume state so the trade replays');
 
       return false;
@@ -496,11 +505,13 @@ export class PersistentTradeJournal {
     return (data ?? []) as Record<string, unknown>[];
   }
 
-  async removePaperState(keyValue: string): Promise<void> {
-    await this.removePaperStateConfirmed(keyValue);
+  async removePaperState(keyValue: string, extraMatch?: Record<string, string | number>): Promise<void> {
+    await this.removePaperStateConfirmed(keyValue, extraMatch);
   }
 
-  async removePaperStateConfirmed(keyValue: string): Promise<boolean> {
+  // `extraMatch` narrows the delete to the resume state of one specific entry, so a late confirmation of
+  // an older close cannot remove the state a newer entry of the same key already wrote.
+  async removePaperStateConfirmed(keyValue: string, extraMatch?: Record<string, string | number>): Promise<boolean> {
     if (!this.isSupabaseEnabled || this.supabaseClient === null) {
       return false;
     }
@@ -508,7 +519,15 @@ export class PersistentTradeJournal {
     const client = this.supabaseClient;
 
     const { error } = await withResultRetry({
-      fn: async () => client.from(this.schema.paperStateTable).delete().eq(this.schema.paperStateKeyColumn, keyValue),
+      fn: async () => {
+        let query = client.from(this.schema.paperStateTable).delete().eq(this.schema.paperStateKeyColumn, keyValue);
+
+        for (const [column, value] of Object.entries(extraMatch ?? {})) {
+          query = query.eq(column, value);
+        }
+
+        return query;
+      },
       contextLabel: 'removePaperState',
       maxRetries: SUPABASE_MAX_ATTEMPTS,
       baseDelayMs: this.retryBaseDelayMs,
@@ -813,6 +832,21 @@ export class PersistentTradeJournal {
       if (summary !== undefined && this.isTerminal(summary) && !this.dirtyIdSet.has(id)) {
         this.summaryById.delete(id);
         this.seqById.delete(id);
+        this.rememberPersistedTerminalId(id);
+      }
+    }
+  }
+
+  // Bounded memory of ids evicted after a confirmed write, so a later immediate write can tell
+  // "already persisted" from "never journaled".
+  private rememberPersistedTerminalId(id: string): void {
+    this.persistedTerminalIdSet.add(id);
+
+    if (this.persistedTerminalIdSet.size > PERSISTED_TERMINAL_ID_LIMIT) {
+      const oldestId = this.persistedTerminalIdSet.values().next().value;
+
+      if (oldestId !== undefined) {
+        this.persistedTerminalIdSet.delete(oldestId);
       }
     }
   }

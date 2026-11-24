@@ -770,3 +770,71 @@ describe('ExchangeConnector read and sizing delegates', () => {
     expect(connector.assertFuturesSymbolLoaded({ symbol: 'GHOSTUSDT', orderKind: 'market' })).toContain('GHOSTUSDT not loaded');
   });
 });
+
+describe('ExchangeConnector.createOrder exchange acceptance time', () => {
+  const orderParams = {
+    symbol: 'BTCUSDT',
+    amount: 1,
+    price: 100,
+    type: OrderTypeEnum.Limit,
+    side: OrderSideEnum.Buy,
+    marketType: MarketTypeEnum.Futures,
+  };
+
+  function buildConnector(exchangeName: ExchangeNameEnum): ExchangeConnector {
+    return new ExchangeConnector(exchangeName, { apiKey: 'k', secret: 's' } as ExchangeConfig);
+  }
+
+  it('passes the Binance acceptance time into responseData.timestamp', async () => {
+    const connector = buildConnector(ExchangeNameEnum.Binance);
+    (connector.futures.createOrderWebSocket as jest.Mock).mockResolvedValue({
+      id: 'oid1',
+      symbol: 'BTCUSDT',
+      timestamp: 1700000000000,
+      updatedTimestamp: 1700000000123,
+    });
+
+    const result = await connector.createOrder(orderParams);
+
+    expect(result.responseData?.timestamp).toBe(1700000000123);
+  });
+
+  it('leaves the timestamp undefined when the order carries no usable time', async () => {
+    const connector = buildConnector(ExchangeNameEnum.Binance);
+    const createOrderMock = connector.futures.createOrderWebSocket as jest.Mock;
+
+    for (const updatedTimestamp of [undefined, 0, Number.NaN, -5]) {
+      createOrderMock.mockResolvedValue({ id: 'oid1', symbol: 'BTCUSDT', updatedTimestamp });
+
+      const result = await connector.createOrder(orderParams);
+
+      expect(result.responseData?.timestamp).toBeUndefined();
+    }
+  });
+
+  it('never passes the Bybit order time through, because exchange-engine fills it from its own clock', async () => {
+    const connector = buildConnector(ExchangeNameEnum.Bybit);
+    (connector.futures.createOrderWebSocket as jest.Mock).mockResolvedValue({
+      id: 'oid1',
+      symbol: 'BTCUSDT',
+      updatedTimestamp: 1700000000123,
+    });
+
+    const result = await connector.createOrder(orderParams);
+
+    expect(result.responseData?.timestamp).toBeUndefined();
+  });
+
+  it('passes the acceptance time through for batch orders too', async () => {
+    const connector = buildConnector(ExchangeNameEnum.Binance);
+    (connector.futures.createBatchOrders as jest.Mock).mockResolvedValue([
+      { order: { id: 'ok-1', symbol: 'BTCUSDT', updatedTimestamp: 1700000000456 }, isSuccess: true, errorCode: null, errorText: null },
+      { order: { id: 'ok-2', symbol: 'BTCUSDT' }, isSuccess: true, errorCode: null, errorText: null },
+    ]);
+
+    const resultList = await connector.createBatchOrders([orderParams, orderParams]);
+
+    expect(resultList[0].responseData?.timestamp).toBe(1700000000456);
+    expect(resultList[1].responseData?.timestamp).toBeUndefined();
+  });
+});

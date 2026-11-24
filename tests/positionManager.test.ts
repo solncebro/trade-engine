@@ -15,6 +15,7 @@ import { logger } from '../src/core/logger';
 import { RateLimitedRequestQueue } from '../src/core/RateLimitedRequestQueue';
 import { ExchangeConnector } from '../src/services/exchangeConnector';
 import { ExchangeConfig } from '../src/types';
+import { DeadlineExceededError } from '../src/utils/operationDeadline';
 
 jest.mock('../src/core/logger', () => ({
   logger: {
@@ -37,7 +38,7 @@ jest.mock('@solncebro/exchange-engine', () => {
         amountToPrecision: (_s: string, a: number) => a,
         priceToPrecision: (_s: string, p: number) => p,
         createOrderWebSocket: jest.fn().mockResolvedValue({ id: 'oid', symbol: 'BTCUSDT' }),
-        cancelOrder: jest.fn().mockResolvedValue(undefined),
+        cancelOrder: jest.fn().mockImplementation(async (_symbol: string, orderId: string) => ({ orderId, isCancelled: true, filledAmount: null })),
         cancelBatchOrders: jest.fn().mockImplementation(async (_symbol: string, orderIdList: string[]) =>
           orderIdList.map(orderId => ({ orderId, isSuccess: true, errorCode: null, errorText: null }))
         ),
@@ -81,7 +82,7 @@ jest.mock('@solncebro/exchange-engine', () => {
         amountToPrecision: (_s: string, a: number) => a,
         priceToPrecision: (_s: string, p: number) => p,
         createOrderWebSocket: jest.fn().mockResolvedValue({ id: 'oid', symbol: 'BTCUSDT' }),
-        cancelOrder: jest.fn().mockResolvedValue(undefined),
+        cancelOrder: jest.fn().mockImplementation(async (_symbol: string, orderId: string) => ({ orderId, isCancelled: true, filledAmount: null })),
         cancelBatchOrders: jest.fn().mockImplementation(async (_symbol: string, orderIdList: string[]) =>
           orderIdList.map(orderId => ({ orderId, isSuccess: true, errorCode: null, errorText: null }))
         ),
@@ -994,6 +995,178 @@ describe('PositionManager — setup helpers', () => {
   });
 });
 
+// rubber sets leverage ahead of the kline close under its own cap; a hanging request must not keep
+// the symbol's queue — and the entry order queued behind it — after that cap (22.11.2026).
+describe('PositionManager — setLeverage deadline', () => {
+  const hangingSetLeverage = (): jest.Mock => {
+    const signalList: Array<AbortSignal | undefined> = [];
+    const mock = jest.fn((_leverage: number, _symbol: string, options?: { signal?: AbortSignal }) => {
+      signalList.push(options?.signal);
+
+      return new Promise(() => undefined);
+    });
+
+    Object.assign(mock, { signalList });
+
+    return mock;
+  };
+
+  const make429 = (retryAfterSeconds: number): Error => Object.assign(new Error('Too many requests'), {
+    response: { status: 429, headers: { 'retry-after': String(retryAfterSeconds) } },
+  });
+
+  beforeEach(() => {
+    jest.useFakeTimers({ now: 1000 });
+  });
+
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
+  it('rejects a hanging request with DeadlineExceededError no later than the deadline and aborts it', async () => {
+    const conn = createConnector(ExchangeNameEnum.Binance, PositionModeEnum.OneWay);
+    const setLeverageMock = hangingSetLeverage();
+    (conn.futures.setLeverage as jest.Mock).mockImplementationOnce(setLeverageMock);
+    let settledAtMs: number | null = null;
+    const outcome = conn.positionManager.setLeverage({ symbol: 'BTCUSDT', leverage: 5, timeoutMs: 8000 })
+      .then(() => 'resolved', (error: unknown) => error)
+      .finally(() => { settledAtMs = Date.now(); });
+
+    await jest.advanceTimersByTimeAsync(7999);
+    expect(settledAtMs).toBeNull();
+    await jest.advanceTimersByTimeAsync(1);
+
+    const error = await outcome;
+
+    expect(error).toBeInstanceOf(DeadlineExceededError);
+    expect(error).toMatchObject({ timeoutMs: 8000, operationLabel: 'setLeverage BTCUSDT leverage=5' });
+    expect(settledAtMs).toBe(9000);
+    const { signalList } = setLeverageMock as jest.Mock & { signalList: Array<AbortSignal | undefined> };
+    expect(signalList).toHaveLength(1);
+    expect(signalList[0]?.aborted).toBe(true);
+    expect(signalList[0]?.reason).toBe(error);
+  });
+
+  it('lets the entry order of the same symbol go at the deadline without waiting for the hanging request', async () => {
+    const conn = createConnector(ExchangeNameEnum.Binance, PositionModeEnum.OneWay);
+    (conn.futures.setLeverage as jest.Mock).mockImplementationOnce(hangingSetLeverage());
+    const createOrder = jest.spyOn(conn, 'createOrder');
+    const leverage = conn.positionManager.setLeverage({ symbol: 'BTCUSDT', leverage: 5, timeoutMs: 8000 }).catch((error: unknown) => error);
+    const entry = conn.positionManager.openPositionLimit({
+      symbol: 'BTCUSDT', marketType: MarketTypeEnum.Futures, direction: 'short', amount: 0.01, price: 50000,
+    });
+
+    await jest.advanceTimersByTimeAsync(7999);
+    expect(createOrder).not.toHaveBeenCalled();
+    await jest.advanceTimersByTimeAsync(1);
+    await entry;
+
+    expect(await leverage).toBeInstanceOf(DeadlineExceededError);
+    expect(createOrder).toHaveBeenCalledTimes(1);
+  });
+
+  it('starts neither a retry nor a Retry-After pause once the deadline ran out', async () => {
+    const conn = createConnector(ExchangeNameEnum.Binance, PositionModeEnum.OneWay);
+    const setLev = conn.futures.setLeverage as jest.Mock;
+    setLev.mockClear();
+    setLev.mockRejectedValue(make429(60));
+    const outcome = conn.positionManager.setLeverage({ symbol: 'BTCUSDT', leverage: 5, timeoutMs: 8000 }).catch((error: unknown) => error);
+
+    await jest.advanceTimersByTimeAsync(8000);
+    expect(await outcome).toBeInstanceOf(DeadlineExceededError);
+    await jest.advanceTimersByTimeAsync(300_000);
+
+    expect(setLev).toHaveBeenCalledTimes(1);
+  });
+
+  it('sends nothing when the deadline ran out while the call still waited behind another operation of the symbol', async () => {
+    const conn = createConnector(ExchangeNameEnum.Binance, PositionModeEnum.OneWay);
+    const setLev = conn.futures.setLeverage as jest.Mock;
+    let releaseOrder: () => void = () => undefined;
+    const orderPending = new Promise<void>(resolve => { releaseOrder = resolve; });
+    jest.spyOn(conn, 'createOrder').mockImplementationOnce(async orderParams => {
+      await orderPending;
+
+      return { orderId: 'first', orderParams, exchangeName: ExchangeNameEnum.Binance };
+    });
+    setLev.mockClear();
+    const entry = conn.positionManager.openPositionLimit({
+      symbol: 'BTCUSDT', marketType: MarketTypeEnum.Futures, direction: 'short', amount: 0.01, price: 50000,
+    });
+    const outcome = conn.positionManager.setLeverage({ symbol: 'BTCUSDT', leverage: 5, timeoutMs: 8000 }).catch((error: unknown) => error);
+
+    await jest.advanceTimersByTimeAsync(8000);
+    expect(await outcome).toBeInstanceOf(DeadlineExceededError);
+    releaseOrder();
+    await entry;
+    await jest.advanceTimersByTimeAsync(1000);
+
+    expect(setLev).not.toHaveBeenCalled();
+  });
+
+  it('keeps no leverage memory after an unknown outcome: the next set really goes to the exchange', async () => {
+    const conn = createConnector(ExchangeNameEnum.Binance, PositionModeEnum.OneWay);
+    const setLev = conn.futures.setLeverage as jest.Mock;
+    let answerLate: (value: { confirmedLeverage: number }) => void = () => undefined;
+    setLev.mockClear();
+    setLev.mockImplementationOnce(() => new Promise(resolve => { answerLate = resolve; }));
+    const first = conn.positionManager.setLeverage({ symbol: 'BTCUSDT', leverage: 5, timeoutMs: 8000 }).catch((error: unknown) => error);
+
+    await jest.advanceTimersByTimeAsync(8000);
+    expect(await first).toBeInstanceOf(DeadlineExceededError);
+    answerLate({ confirmedLeverage: 5 });
+    await jest.advanceTimersByTimeAsync(0);
+
+    const second = await conn.positionManager.setLeverage({ symbol: 'BTCUSDT', leverage: 5, timeoutMs: 8000 });
+
+    expect(setLev).toHaveBeenCalledTimes(2);
+    expect(second.confirmedLeverage).toBe(5);
+  });
+
+  it.each([-1, Number.NaN, Number.POSITIVE_INFINITY])('refuses the deadline %s without touching the exchange', async timeoutMs => {
+    const conn = createConnector(ExchangeNameEnum.Binance, PositionModeEnum.OneWay);
+    const setLev = conn.futures.setLeverage as jest.Mock;
+    setLev.mockClear();
+
+    await expect(conn.positionManager.setLeverage({ symbol: 'BTCUSDT', leverage: 5, timeoutMs })).rejects.toThrow('timeoutMs must be a non-negative finite number');
+    expect(setLev).not.toHaveBeenCalled();
+  });
+
+  it('forwards the direction together with the deadline signal', async () => {
+    const conn = createConnector(ExchangeNameEnum.Bybit, PositionModeEnum.Hedge);
+    const setLev = conn.futures.setLeverage as jest.Mock;
+    setLev.mockClear();
+
+    await conn.positionManager.setLeverage({ symbol: 'BTCUSDT', leverage: 7, direction: 'long', timeoutMs: 8000 });
+
+    expect(setLev.mock.calls[0][2]).toEqual({ direction: 'long', signal: expect.any(AbortSignal) });
+    expect(setLev.mock.calls[0][2].signal.aborted).toBe(false);
+  });
+
+  it('without a deadline keeps waiting for a slow answer, holds the entry behind it and sends the same call as before', async () => {
+    const conn = createConnector(ExchangeNameEnum.Binance, PositionModeEnum.OneWay);
+    const setLev = conn.futures.setLeverage as jest.Mock;
+    setLev.mockClear();
+    setLev.mockImplementationOnce((leverage: number) => new Promise(resolve => {
+      setTimeout(() => resolve({ confirmedLeverage: leverage }), 60_000);
+    }));
+    const createOrder = jest.spyOn(conn, 'createOrder');
+    const leverage = conn.positionManager.setLeverage({ symbol: 'BTCUSDT', leverage: 5 });
+    const entry = conn.positionManager.openPositionLimit({
+      symbol: 'BTCUSDT', marketType: MarketTypeEnum.Futures, direction: 'short', amount: 0.01, price: 50000,
+    });
+
+    await jest.advanceTimersByTimeAsync(59_999);
+    expect(createOrder).not.toHaveBeenCalled();
+    await jest.advanceTimersByTimeAsync(1);
+
+    expect((await leverage).confirmedLeverage).toBe(5);
+    await entry;
+    expect(createOrder).toHaveBeenCalledTimes(1);
+    expect(setLev.mock.calls[0]).toEqual([5, 'BTCUSDT']);
+  });
+});
+
 describe('PositionManager — account reads', () => {
   it('reads account trades outside the write queue with the exchange page options', async () => {
     const conn = createConnector(ExchangeNameEnum.Binance, PositionModeEnum.Hedge);
@@ -1130,20 +1303,28 @@ describe('PositionManager — history, mark price, balance and open order reads'
     expect(conn.spot.fetchOpenOrders).toHaveBeenCalledWith('BTCUSDT');
   });
 
-  it('readOpenConditionalOrderList reads USDT by default and filters by symbol', async () => {
+  it('readOpenConditionalOrderList reads the whole USDT account by default', async () => {
     const conn = createConnector(ExchangeNameEnum.Binance, PositionModeEnum.OneWay);
     const btcOrder = { id: 'c1', symbol: 'BTCUSDT', status: 'open', isConditional: true };
     const ethOrder = { id: 'c2', symbol: 'ETHUSDT', status: 'open', isConditional: true };
     (conn.futures.fetchOpenConditionalOrders as jest.Mock).mockResolvedValue([btcOrder, ethOrder]);
 
     await expect(conn.positionManager.readOpenConditionalOrderList()).resolves.toEqual([btcOrder, ethOrder]);
-    expect(conn.futures.fetchOpenConditionalOrders).toHaveBeenLastCalledWith('USDT');
-
-    await expect(conn.positionManager.readOpenConditionalOrderList({ symbol: 'BTCUSDT' })).resolves.toEqual([btcOrder]);
+    expect(conn.futures.fetchOpenConditionalOrders).toHaveBeenLastCalledWith('USDT', undefined);
 
     await conn.positionManager.readOpenConditionalOrderList({ settleCoin: 'USDC' });
-    expect(conn.futures.fetchOpenConditionalOrders).toHaveBeenLastCalledWith('USDC');
+    expect(conn.futures.fetchOpenConditionalOrders).toHaveBeenLastCalledWith('USDC', undefined);
     expect(conn.futures.fetchOpenOrders).not.toHaveBeenCalled();
+  });
+
+  it('readOpenConditionalOrderList asks the exchange for the one symbol instead of reading the account', async () => {
+    const conn = createConnector(ExchangeNameEnum.Binance, PositionModeEnum.OneWay);
+    const btcOrder = { id: 'c1', symbol: 'BTCUSDT', status: 'open', isConditional: true };
+    (conn.futures.fetchOpenConditionalOrders as jest.Mock).mockResolvedValue([btcOrder]);
+
+    await expect(conn.positionManager.readOpenConditionalOrderList({ symbol: 'BTCUSDT' })).resolves.toEqual([btcOrder]);
+    expect(conn.futures.fetchOpenConditionalOrders).toHaveBeenCalledTimes(1);
+    expect(conn.futures.fetchOpenConditionalOrders).toHaveBeenCalledWith('USDT', 'BTCUSDT');
   });
 
   it.each([
@@ -1337,6 +1518,41 @@ describe('PositionManager — cancel routing', () => {
 
     expect(spotSpy).toHaveBeenCalledWith('BTCUSDT', 'oid1');
     expect(futSpy).not.toHaveBeenCalled();
+  });
+
+  // Исход отмены — ответ биржи на неё саму: одно обращение, без чтения заявки после.
+  it.each([
+    ['Binance plain order: the answer carries the fill', { orderId: '2395886953', isCancelled: true, filledAmount: 0 }],
+    ['Bybit or a conditional order: the fill is unknown', { orderId: '2d113348-463b-406f-870a-3f1cc5deacc1', isCancelled: true, filledAmount: null }],
+  ])('cancelOrder returns the cancel outcome (%s) in one call, reading nothing back', async (_label, outcome) => {
+    const conn = createConnector(ExchangeNameEnum.Binance, PositionModeEnum.OneWay);
+    const futSpy = conn.futures.cancelOrder as jest.Mock;
+    const getOrderSpy = conn.futures.getOrder as jest.Mock;
+    futSpy.mockClear();
+    getOrderSpy.mockClear();
+    futSpy.mockResolvedValueOnce(outcome);
+
+    const result = await conn.positionManager.cancelOrder({
+      symbol: 'DOGEUSDT',
+      marketType: MarketTypeEnum.Futures,
+      orderId: outcome.orderId,
+    });
+
+    expect(result).toEqual(outcome);
+    expect(futSpy).toHaveBeenCalledTimes(1);
+    expect(getOrderSpy).not.toHaveBeenCalled();
+  });
+
+  it('cancelOrder keeps the exchange error with its code (order already gone)', async () => {
+    const conn = createConnector(ExchangeNameEnum.Bybit, PositionModeEnum.OneWay);
+    const futSpy = conn.futures.cancelOrder as jest.Mock;
+    futSpy.mockRejectedValueOnce(Object.assign(new Error('Bybit API error 110001: order not exists or too late to cancel'), { code: 110001 }));
+
+    await expect(conn.positionManager.cancelOrder({
+      symbol: 'DOGEUSDT',
+      marketType: MarketTypeEnum.Futures,
+      orderId: 'gone',
+    })).rejects.toMatchObject({ code: 110001 });
   });
 
   it('cancelBatchOrders routes to futures client for marketType=Futures', async () => {
@@ -1812,6 +2028,40 @@ describe('PositionManager — readPositionState', () => {
     expect(result.kind === 'ambiguous' && result.reason).toBe('side_mismatch');
   });
 
+  // Живой ответ демо Binance 23.11.2026: одностороннюю короткую позицию биржа отдаёт стороной
+  // BOTH, направление — отдельно. Прежде вопрос «длинная?» получал «есть позиция».
+  it.each([
+    ['long', 'ambiguous'],
+    ['short', 'present'],
+  ] as const)('oneWay Binance with a short read back as side BOTH: direction=%s is %s, like Bybit', async (direction, expectedKind) => {
+    const conn = createConnector(ExchangeNameEnum.Binance, PositionModeEnum.OneWay);
+    (conn.futures.fetchPositionSnapshot as jest.Mock).mockResolvedValueOnce(
+      { ...makeSnapshot({ contracts: 103, side: PositionSideEnum.Both, positionIdx: 0, entryPrice: 0.05875 }), direction: 'short', updatedAtMs: 1795448664295 },
+    );
+
+    const result = await conn.positionManager.readPositionState({
+      symbol: 'DOGEUSDT',
+      marketType: MarketTypeEnum.Futures,
+      direction,
+    });
+
+    expect(result.kind).toBe(expectedKind);
+    expect(result.kind === 'ambiguous' && result.reason).toBe(expectedKind === 'ambiguous' ? 'side_mismatch' : false);
+  });
+
+  it('oneWay: an empty slot (side BOTH, no direction) stays a confirmed absence for either side', async () => {
+    const conn = createConnector(ExchangeNameEnum.Binance, PositionModeEnum.OneWay);
+    (conn.futures.fetchPositionSnapshot as jest.Mock)
+      .mockResolvedValueOnce({ ...makeSnapshot({ contracts: 0, side: PositionSideEnum.Both, positionIdx: 0 }), direction: null })
+      .mockResolvedValueOnce({ ...makeSnapshot({ contracts: 0, side: PositionSideEnum.Both, positionIdx: 0 }), direction: null });
+
+    const longResult = await conn.positionManager.readPositionState({ symbol: 'DOGEUSDT', marketType: MarketTypeEnum.Futures, direction: 'long' });
+    const shortResult = await conn.positionManager.readPositionState({ symbol: 'DOGEUSDT', marketType: MarketTypeEnum.Futures, direction: 'short' });
+
+    expect(longResult.kind === 'absent' && longResult.reason).toBe('zero_contracts');
+    expect(shortResult.kind === 'absent' && shortResult.reason).toBe('zero_contracts');
+  });
+
   it('returns absent/unconfirmed with reason=fetch_error on exception', async () => {
     const conn = createConnector(ExchangeNameEnum.Bybit, PositionModeEnum.OneWay);
     (conn.futures.fetchPositionSnapshot as jest.Mock).mockRejectedValueOnce(new Error('network timeout'));
@@ -1826,6 +2076,199 @@ describe('PositionManager — readPositionState', () => {
     expect(result.kind === 'absent' && result.confidence).toBe('unconfirmed');
     expect(result.kind === 'absent' && result.reason).toBe('fetch_error');
     expect(result.kind === 'absent' && result.errorText).toBe('network timeout');
+  });
+});
+
+describe('PositionManager — readPositionStateByDirection (both sides of one coin in one read)', () => {
+  function makePosition(overrides: Partial<{ contracts: number; side: PositionSideEnum; positionIdx: number; symbol: string; updatedAtMs: number }> = {}) {
+    return {
+      symbol: 'DOGEUSDT',
+      side: PositionSideEnum.Both,
+      direction: null,
+      contracts: 0,
+      entryPrice: 0,
+      markPrice: 0.05884,
+      unrealizedPnl: 0,
+      leverage: 3,
+      marginMode: MarginModeEnum.Cross,
+      liquidationPrice: 0,
+      positionIdx: 0,
+      info: {},
+      ...overrides,
+    };
+  }
+
+  it('throws for Spot marketType', async () => {
+    const conn = createConnector(ExchangeNameEnum.Bybit, PositionModeEnum.OneWay);
+
+    await expect(
+      conn.positionManager.readPositionStateByDirection({ symbol: 'DOGEUSDT', marketType: MarketTypeEnum.Spot }),
+    ).rejects.toThrow('readPositionStateByDirection supports MarketTypeEnum.Futures only');
+  });
+
+  it('asks the exchange once for the one coin — never per side, never the whole account', async () => {
+    const conn = createConnector(ExchangeNameEnum.Bybit, PositionModeEnum.Hedge);
+    const listSpy = conn.futures.fetchPositionList as jest.Mock;
+    const snapshotSpy = conn.futures.fetchPositionSnapshot as jest.Mock;
+    const allSpy = conn.futures.fetchAllPositions as jest.Mock;
+    listSpy.mockClear();
+    snapshotSpy.mockClear();
+    allSpy.mockClear();
+    listSpy.mockResolvedValueOnce([
+      makePosition({ positionIdx: 1, side: PositionSideEnum.Long, contracts: 100 }),
+      makePosition({ positionIdx: 2, side: PositionSideEnum.Short, contracts: 50 }),
+    ]);
+
+    const result = await conn.positionManager.readPositionStateByDirection({ symbol: 'DOGEUSDT', marketType: MarketTypeEnum.Futures });
+
+    expect(listSpy).toHaveBeenCalledTimes(1);
+    expect(listSpy).toHaveBeenCalledWith('DOGEUSDT');
+    expect(snapshotSpy).not.toHaveBeenCalled();
+    expect(allSpy).not.toHaveBeenCalled();
+    expect(result.long.kind === 'present' && result.long.position.contracts).toBe(100);
+    expect(result.short.kind === 'present' && result.short.position.contracts).toBe(50);
+  });
+
+  it('hedge: an empty side is a confirmed absence by zero contracts, like readPositionState', async () => {
+    const conn = createConnector(ExchangeNameEnum.Binance, PositionModeEnum.Hedge);
+    (conn.futures.fetchPositionList as jest.Mock).mockResolvedValueOnce([
+      makePosition({ positionIdx: 1, side: PositionSideEnum.Long, contracts: 0, updatedAtMs: 1700000000000 }),
+      makePosition({ positionIdx: 2, side: PositionSideEnum.Short, contracts: 103 }),
+    ]);
+
+    const result = await conn.positionManager.readPositionStateByDirection({ symbol: 'DOGEUSDT', marketType: MarketTypeEnum.Futures });
+
+    expect(result.long).toEqual({ kind: 'absent', confidence: 'confirmed', reason: 'zero_contracts', positionUpdatedAtMs: 1700000000000 });
+    expect(result.short.kind).toBe('present');
+  });
+
+  it('hedge: a side missing from the answer is a confirmed absence without a record', async () => {
+    const conn = createConnector(ExchangeNameEnum.Bybit, PositionModeEnum.Hedge);
+    (conn.futures.fetchPositionList as jest.Mock).mockResolvedValueOnce([
+      makePosition({ positionIdx: 2, side: PositionSideEnum.Short, contracts: 7 }),
+    ]);
+
+    const result = await conn.positionManager.readPositionStateByDirection({ symbol: 'DOGEUSDT', marketType: MarketTypeEnum.Futures });
+
+    expect(result.long).toEqual({ kind: 'absent', confidence: 'confirmed', reason: 'no_record' });
+    expect(result.short.kind).toBe('present');
+  });
+
+  it('one-way Bybit (side "Sell"): the one entry answers for both sides by the same rules as readPositionState', async () => {
+    const conn = createConnector(ExchangeNameEnum.Bybit, PositionModeEnum.OneWay);
+    (conn.futures.fetchPositionList as jest.Mock).mockResolvedValueOnce([
+      { ...makePosition({ positionIdx: 0, side: PositionSideEnum.Short, contracts: 103 }), direction: 'short' },
+    ]);
+
+    const result = await conn.positionManager.readPositionStateByDirection({ symbol: 'DOGEUSDT', marketType: MarketTypeEnum.Futures });
+
+    expect(result.short.kind === 'present' && result.short.position.contracts).toBe(103);
+    expect(result.long.kind === 'ambiguous' && result.long.reason).toBe('side_mismatch');
+  });
+
+  // Живой ответ демо Binance 23.11.2026: одностороннюю короткую позицию биржа отдаёт стороной BOTH,
+  // направление — отдельно. Без разбора по направлению длинная сторона прочиталась бы «есть».
+  it('one-way Binance (side BOTH, direction short): the short side is present, the long side a side mismatch', async () => {
+    const conn = createConnector(ExchangeNameEnum.Binance, PositionModeEnum.OneWay);
+    (conn.futures.fetchPositionList as jest.Mock).mockResolvedValueOnce([
+      { ...makePosition({ positionIdx: 0, side: PositionSideEnum.Both, contracts: 103, updatedAtMs: 1795448664295 }), direction: 'short' },
+    ]);
+
+    const result = await conn.positionManager.readPositionStateByDirection({ symbol: 'DOGEUSDT', marketType: MarketTypeEnum.Futures });
+
+    expect(result.short.kind === 'present' && result.short.position.contracts).toBe(103);
+    expect(result.long.kind === 'ambiguous' && result.long.reason).toBe('side_mismatch');
+  });
+
+  it('one-way: a coin without a position (live Bybit answer: size 0, side empty) is a confirmed absence on both sides', async () => {
+    const conn = createConnector(ExchangeNameEnum.Bybit, PositionModeEnum.OneWay);
+    (conn.futures.fetchPositionList as jest.Mock).mockResolvedValueOnce([makePosition({ updatedAtMs: 1790355662609 })]);
+
+    const result = await conn.positionManager.readPositionStateByDirection({ symbol: 'DOGEUSDT', marketType: MarketTypeEnum.Futures });
+
+    expect(result.long).toEqual({ kind: 'absent', confidence: 'confirmed', reason: 'zero_contracts', positionUpdatedAtMs: 1790355662609 });
+    expect(result.short).toEqual({ kind: 'absent', confidence: 'confirmed', reason: 'zero_contracts', positionUpdatedAtMs: 1790355662609 });
+  });
+
+  it('an empty answer is a confirmed absence on both sides', async () => {
+    const conn = createConnector(ExchangeNameEnum.Binance, PositionModeEnum.OneWay);
+    (conn.futures.fetchPositionList as jest.Mock).mockResolvedValueOnce([]);
+
+    const result = await conn.positionManager.readPositionStateByDirection({ symbol: 'DOGEUSDT', marketType: MarketTypeEnum.Futures });
+
+    expect(result.long).toEqual({ kind: 'absent', confidence: 'confirmed', reason: 'no_record' });
+    expect(result.short).toEqual({ kind: 'absent', confidence: 'confirmed', reason: 'no_record' });
+  });
+
+  it('a failed read is never "no position": both sides are unconfirmed with the reason', async () => {
+    const conn = createConnector(ExchangeNameEnum.Bybit, PositionModeEnum.OneWay);
+    (conn.futures.fetchPositionList as jest.Mock).mockRejectedValueOnce(new Error('network timeout'));
+
+    const result = await conn.positionManager.readPositionStateByDirection({ symbol: 'DOGEUSDT', marketType: MarketTypeEnum.Futures });
+
+    expect(result.long).toEqual({ kind: 'absent', confidence: 'unconfirmed', reason: 'fetch_error', errorText: 'network timeout' });
+    expect(result.short).toEqual({ kind: 'absent', confidence: 'unconfirmed', reason: 'fetch_error', errorText: 'network timeout' });
+  });
+
+  it('one-way connector but hedge entries in the answer: unconfirmed, as the per-side read refuses to pick a side', async () => {
+    const conn = createConnector(ExchangeNameEnum.Bybit, PositionModeEnum.OneWay);
+    (conn.futures.fetchPositionList as jest.Mock).mockResolvedValueOnce([
+      makePosition({ positionIdx: 1, side: PositionSideEnum.Long, contracts: 5 }),
+    ]);
+
+    const result = await conn.positionManager.readPositionStateByDirection({ symbol: 'DOGEUSDT', marketType: MarketTypeEnum.Futures });
+
+    expect(result.long.kind === 'absent' && result.long.confidence).toBe('unconfirmed');
+    expect(result.short.kind === 'absent' && result.short.confidence).toBe('unconfirmed');
+  });
+
+  it('ignores entries of another coin', async () => {
+    const conn = createConnector(ExchangeNameEnum.Bybit, PositionModeEnum.Hedge);
+    (conn.futures.fetchPositionList as jest.Mock).mockResolvedValueOnce([
+      makePosition({ symbol: 'ETHUSDT', positionIdx: 1, side: PositionSideEnum.Long, contracts: 5 }),
+    ]);
+
+    const result = await conn.positionManager.readPositionStateByDirection({ symbol: 'DOGEUSDT', marketType: MarketTypeEnum.Futures });
+
+    expect(result.long).toEqual({ kind: 'absent', confidence: 'confirmed', reason: 'no_record' });
+  });
+});
+
+describe('PositionManager — placement answer: accepted amount and status', () => {
+  type PlaceCase = [string, (conn: ExchangeConnector) => Promise<{ responseData?: { amount?: number; status?: string } }>];
+
+  const placeCaseList: PlaceCase[] = [
+    ['openPositionLimit', conn => conn.positionManager.openPositionLimit({ symbol: 'DOGEUSDT', marketType: MarketTypeEnum.Futures, direction: 'short', amount: 103, price: 0.06765 })],
+    ['openPositionMarket', conn => conn.positionManager.openPositionMarket({ symbol: 'DOGEUSDT', marketType: MarketTypeEnum.Futures, direction: 'short', amount: 103 })],
+    ['closePositionLimit', conn => conn.positionManager.closePositionLimit({ symbol: 'DOGEUSDT', marketType: MarketTypeEnum.Futures, direction: 'short', amount: 206, price: 0.04999 })],
+    ['closePositionMarket', conn => conn.positionManager.closePositionMarket({ symbol: 'DOGEUSDT', marketType: MarketTypeEnum.Futures, direction: 'short', amount: 204 })],
+    ['placeStopLoss', conn => conn.positionManager.placeStopLoss({ symbol: 'DOGEUSDT', marketType: MarketTypeEnum.Futures, direction: 'short', amount: 206, triggerPrice: 0.07941 })],
+    ['placeTakeProfit', conn => conn.positionManager.placeTakeProfit({ symbol: 'DOGEUSDT', marketType: MarketTypeEnum.Futures, direction: 'short', amount: 206, triggerPrice: 0.05 })],
+  ];
+
+  it.each(placeCaseList)('%s: carries the amount and status the exchange answered (Binance cuts a closing order to the position)', async (_label, place) => {
+    const conn = createConnector(ExchangeNameEnum.Binance, PositionModeEnum.OneWay);
+    (conn.futures.createOrderWebSocket as jest.Mock).mockResolvedValueOnce({
+      id: '2395886996', symbol: 'DOGEUSDT', amount: 103, status: 'open', acceptedAmount: 103, acceptedStatus: 'open',
+    });
+
+    const result = await place(conn);
+
+    expect(result.responseData?.amount).toBe(103);
+    expect(result.responseData?.status).toBe('open');
+  });
+
+  it.each(placeCaseList)('%s: no accepted amount or status when the exchange answered with the number only (Bybit)', async (_label, place) => {
+    const conn = createConnector(ExchangeNameEnum.Bybit, PositionModeEnum.OneWay);
+    (conn.futures.createOrderWebSocket as jest.Mock).mockResolvedValueOnce({
+      id: '3c07d855-caf0-45e3-8c00-26a99429bbdd', symbol: 'DOGEUSDT', amount: 206, status: 'open',
+    });
+
+    const result = await place(conn);
+
+    expect(result.responseData).toBeDefined();
+    expect(result.responseData).not.toHaveProperty('amount');
+    expect(result.responseData).not.toHaveProperty('status');
   });
 });
 
@@ -1882,7 +2325,7 @@ describe('PositionManager — readAllPositions', () => {
 });
 
 describe('PositionManager — readOpenOrderList', () => {
-  it('futures: merges plain + conditional, filters conditional by symbol, dedupes by id', async () => {
+  it('futures: merges plain + conditional of the one symbol asked of the exchange, dedupes by id', async () => {
     const conn = createConnector(ExchangeNameEnum.Bybit, PositionModeEnum.OneWay);
     (conn.futures.fetchOpenOrders as jest.Mock).mockResolvedValueOnce([
       { id: 'o1', symbol: 'BTCUSDT', status: 'open' },
@@ -1891,7 +2334,6 @@ describe('PositionManager — readOpenOrderList', () => {
     (conn.futures.fetchOpenConditionalOrders as jest.Mock).mockResolvedValueOnce([
       { id: 'o2', symbol: 'BTCUSDT', status: 'open', isConditional: true },
       { id: 'o3', symbol: 'BTCUSDT', status: 'open', isConditional: true },
-      { id: 'o4', symbol: 'ETHUSDT', status: 'open', isConditional: true },
     ]);
 
     const result = await conn.positionManager.readOpenOrderList({
@@ -1899,7 +2341,8 @@ describe('PositionManager — readOpenOrderList', () => {
       marketType: MarketTypeEnum.Futures,
     });
 
-    expect(conn.futures.fetchOpenConditionalOrders).toHaveBeenCalledWith('USDT');
+    expect(conn.futures.fetchOpenOrders).toHaveBeenCalledWith('BTCUSDT');
+    expect(conn.futures.fetchOpenConditionalOrders).toHaveBeenCalledWith('USDT', 'BTCUSDT');
     expect(result.map(order => order.id).sort()).toEqual(['o1', 'o2', 'o3']);
   });
 

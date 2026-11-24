@@ -364,7 +364,7 @@ merge-written document cannot resurrect a removed key.
 | `isSpot(marketType)` | Check if market type is spot |
 | `normalizeSymbol(symbol)` | Remove exchange suffixes (`:`, `/`, `.`, `-`) |
 | `parseRawSymbolInput(raw)` | Human / signal input (`$pepe`, `#BTC`, `BTC/USDT`, `BTCUSDT.P`, `PEPE/USDT:USDT`) → `PEPEUSDT`; `null` for empty input |
-| `connector.resolveFuturesSymbol(raw)` / `resolveSpotSymbol(raw)` | Input → the exchange's symbol `{ symbol, isFound }`: 1000-prefix by tickers, Bybit multiplier suffix (`SHIB1000USDT`), spec load for a fresh listing |
+| `connector.resolveFuturesSymbol(raw)` / `resolveSpotSymbol(raw)` | Input → the exchange's symbol `{ symbol, isFound }`: 1000-prefix by tickers, Bybit multiplier suffix (`SHIB1000USDT`), the same candidates by the instruments list when the ticker cache lacks the coin (poll off), spec load for a fresh listing |
 | `connector.findSymbolWithPrefix(symbol, marketType)` | Like `resolveSymbolWithPrefix`, but a miss is `null` |
 | `connector.waitForTickersReady(timeoutMs?)` | Waits for the first ticker snapshot after `initialize()`; `false` on timeout, never throws |
 | `connector.shareMarketDataFrom(primary)` | Before `initialize()`: a sub-account connector reuses the primary's instruments, tickers and leverage tiers |
@@ -443,7 +443,7 @@ Every removal or rename ships with a "what to do" row in `CHANGELOG.md` → `###
 ## Requirements
 
 - Node.js >= 22
-- `@solncebro/exchange-engine` >= 0.27.0 (installed as a dependency; apps never import it directly)
+- `@solncebro/exchange-engine` >= 0.28.0 (installed as a dependency; apps never import it directly)
 - `@solncebro/telegram-engine` >= 0.6.0
 
 ## License

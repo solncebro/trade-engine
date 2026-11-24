@@ -53,7 +53,7 @@ jest.mock('@solncebro/exchange-engine', () => {
 
 const TICKER = { symbol: 'X', lastPrice: 1 };
 
-function buildConnector(config: Partial<ExchangeConfig> = {}): { connector: ExchangeConnector; futures: FakeClient; spot: FakeClient } {
+function buildConnector(config: Partial<ExchangeConfig> = {}, tickerPollingConfig?: { isEnabled?: boolean }): { connector: ExchangeConnector; futures: FakeClient; spot: FakeClient } {
   const connector = new ExchangeConnector(
     ExchangeNameEnum.Binance,
     { apiKey: 'k', secret: 's', ...config } as ExchangeConfig,
@@ -62,7 +62,8 @@ function buildConnector(config: Partial<ExchangeConfig> = {}): { connector: Exch
     { isEnabled: false },
     null,
     undefined,
-    { tradeSymbolsRefreshIntervalMs: 0 }
+    { tradeSymbolsRefreshIntervalMs: 0 },
+    tickerPollingConfig
   );
   const clients = mockCreatedClientList[mockCreatedClientList.length - 1];
 
@@ -140,6 +141,22 @@ describe('ExchangeConnector symbol resolution', () => {
     });
 
     expect(await connector.resolveFuturesSymbol('new')).toEqual({ symbol: 'NEWUSDT', isFound: true });
+    await connector.disconnect();
+  });
+
+  it('resolveFuturesSymbol: poll off, ticker cache empty — found by the instruments list in the same candidate order', async () => {
+    const { connector, futures } = buildConnector({}, { isEnabled: false });
+    futures.tradeSymbols.set('1000PEPEUSDT', {});
+    futures.tradeSymbols.set('SHIB1000USDT', {});
+    futures.tradeSymbols.set('LINKUSDT', {});
+    futures.tradeSymbols.set('100LINKUSDT', {});
+    await connector.initialize();
+
+    expect(futures.fetchTickers).not.toHaveBeenCalled();
+    expect(await connector.resolveFuturesSymbol('PEPE')).toEqual({ symbol: '1000PEPEUSDT', isFound: true });
+    expect(await connector.resolveFuturesSymbol('#shib')).toEqual({ symbol: 'SHIB1000USDT', isFound: true });
+    expect(await connector.resolveFuturesSymbol('$link')).toEqual({ symbol: 'LINKUSDT', isFound: true });
+    expect(await connector.resolveFuturesSymbol('nope')).toEqual({ symbol: 'NOPEUSDT', isFound: false });
     await connector.disconnect();
   });
 

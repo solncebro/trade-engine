@@ -23,6 +23,7 @@ export {
   formatWebSocketConnectionsReport,
   parseBybitOrderbookRawFrame,
   parseOkxOrderbookRawFrame,
+  roundToStep,
 } from '@solncebro/exchange-engine';
 
 export { isOrderSuccessful, isSpot } from './utils/order.utils';

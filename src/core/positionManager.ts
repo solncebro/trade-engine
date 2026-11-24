@@ -1,6 +1,7 @@
 import {
   AccountTrade,
   CancelBatchOrdersResult,
+  CancelOrderResult,
   ClosedPnl,
   ExchangeNameEnum,
   FeeRate,
@@ -19,6 +20,7 @@ import {
   Position,
   PositionModeEnum,
   PositionSideEnum,
+  SetLeverageOptions,
   SetLeverageResult,
   TriggerByEnum,
 } from '@solncebro/exchange-engine';
@@ -51,6 +53,7 @@ import {
   PositionManagerAddIsolatedPositionMarginArgs,
   PositionManagerModifyBatchOrdersArgs,
   PositionManagerModifyOrderArgs,
+  PositionStateByDirection,
   PositionStateResult,
   ReadAccountTradesArgs,
   ReadAllPositionsArgs,
@@ -66,6 +69,7 @@ import {
   ReadOrderExecutionSummaryArgs,
   ReadOrderHistoryArgs,
   ReadPositionStateArgs,
+  ReadPositionStateByDirectionArgs,
   SetLeverageArgs,
   SetMarginModeArgs,
   SetPositionModeArgs,
@@ -80,7 +84,8 @@ import { OrderParams, OrderResult } from '../types/orders';
 import { readAccountBalance } from '../utils/accountBalance';
 import type { AccountBalanceSnapshot } from '../utils/accountBalance.types';
 import { describeError } from '../utils/errorFormatter.utils';
-import { roundPercent } from '../utils/numberFormat';
+import { roundPercent, snapAmountToStep } from '../utils/numberFormat';
+import { DeadlineExceededError, OperationDeadline } from '../utils/operationDeadline';
 import { PerKeySerializer } from '../utils/perKeySerializer';
 import { snapPriceToTick } from '../utils/priceFormat';
 
@@ -93,6 +98,36 @@ const SPOT_SHORT_ERROR_MESSAGE =
 const READ_POSITION_STATE_LOG_THROTTLE_MS = 300_000;
 const FUNDING_RATE_HISTORY_PAGE_LIMIT = 1000;
 const DEFAULT_CONDITIONAL_SETTLE_COIN = 'USDT';
+
+interface ClassifyPositionSnapshotArgs {
+  snapshot: Position | null;
+  direction: Direction;
+  isHedge: boolean;
+}
+
+interface SelectPositionSnapshotArgs {
+  positionList: Position[];
+  symbol: string;
+  /** undefined — one-way mode. */
+  positionIdx: number | undefined;
+}
+
+// The same choice fetchPositionSnapshot makes on the exchange layer, applied to the symbol's list:
+// one-way takes the single slot and refuses hedge entries (a side cannot be picked safely), hedge
+// takes the side's own slot.
+function selectPositionSnapshot(args: SelectPositionSnapshotArgs): Position | null {
+  const { positionList, symbol, positionIdx } = args;
+
+  if (positionIdx !== undefined) {
+    return positionList.find(position => position.positionIdx === positionIdx) ?? null;
+  }
+
+  if (positionList.some(position => position.positionIdx === 1 || position.positionIdx === 2)) {
+    throw new Error(`${symbol} position list has hedge entries while the account is read in one-way mode`);
+  }
+
+  return positionList[0] ?? null;
+}
 
 export class PositionManager {
   private readonly leverageAndEntrySerializer = new PerKeySerializer();
@@ -138,7 +173,7 @@ export class PositionManager {
         symbol: args.symbol,
         leverage: args.leverage,
         direction: args.direction,
-      });
+      }, null);
 
       if (result.confirmedLeverage !== args.leverage) {
         throw new Error('Leverage was not confirmed for the first limit order');
@@ -427,23 +462,28 @@ export class PositionManager {
     });
   }
 
-  public async cancelOrder(args: CancelOrderArgs): Promise<void> {
+  // The outcome is the exchange's answer to the cancel itself — nothing is read back. A refusal
+  // (including "already gone": Binance -2011, Bybit 110001) is thrown with the exchange code.
+  public async cancelOrder(args: CancelOrderArgs): Promise<CancelOrderResult> {
     const client = this.exchangeConnector.getClient(args.marketType);
     logger.info(
       { symbol: args.symbol, orderId: args.orderId, marketType: args.marketType },
       `[PositionManager] ${args.symbol} cancelOrder request orderId=${args.orderId} marketType=${args.marketType}`
     );
-    await this.executeWrite(
+    const result = await this.executeWrite(
       () => withRetryOn429({
         fn: () => client.cancelOrder(args.symbol, args.orderId),
         contextLabel: `cancelOrder ${args.symbol} orderId=${args.orderId}`,
       }),
       `cancelOrder ${args.symbol}`
     );
+    const filledAmount = result.filledAmount === null ? null : snapAmountToStep(args.symbol, result.filledAmount);
     logger.info(
-      { symbol: args.symbol, orderId: args.orderId, marketType: args.marketType },
-      `[PositionManager] ${args.symbol} cancelOrder response ok orderId=${args.orderId}`
+      { symbol: args.symbol, orderId: args.orderId, marketType: args.marketType, filledAmount },
+      `[PositionManager] ${args.symbol} cancelOrder response ok orderId=${args.orderId} filledAmount=${filledAmount ?? 'unknown'}`
     );
+
+    return result;
   }
 
   public async cancelBatchOrders(args: CancelBatchOrdersArgs): Promise<CancelBatchOrdersResult> {
@@ -644,25 +684,65 @@ export class PositionManager {
   }
 
   public async setLeverage(args: SetLeverageArgs): Promise<SetLeverageResult> {
-    return this.leverageAndEntrySerializer.run(args.symbol, () => this.setLeverageUnlocked(args));
+    if (args.timeoutMs === undefined) {
+      return this.leverageAndEntrySerializer.run(args.symbol, () => this.setLeverageUnlocked(args, null));
+    }
+
+    const deadline = new OperationDeadline({
+      timeoutMs: args.timeoutMs,
+      operationLabel: `setLeverage ${args.symbol} leverage=${args.leverage}`,
+    });
+
+    try {
+      // Cut on both sides of the symbol queue: the outer race answers while the call still waits
+      // behind another operation of the symbol; the inner one ends the queued task itself, so the
+      // queue — and the entry order waiting in it — moves on while the exchange still holds the request.
+      return await deadline.race(
+        this.leverageAndEntrySerializer.run(args.symbol, () => deadline.race(this.setLeverageUnlocked(args, deadline)))
+      );
+    } catch (error) {
+      if (error instanceof DeadlineExceededError) {
+        logger.warn(
+          { symbol: args.symbol, leverage: args.leverage, timeoutMs: args.timeoutMs },
+          `[PositionManager] ${args.symbol} setLeverage leverage=${args.leverage} exceeded its ${args.timeoutMs}ms deadline; outcome unknown, the symbol queue is released`
+        );
+      }
+
+      throw error;
+    } finally {
+      deadline.dispose();
+    }
   }
 
-  private async setLeverageUnlocked(args: SetLeverageArgs): Promise<SetLeverageResult> {
+  private async setLeverageUnlocked(args: SetLeverageArgs, deadline: OperationDeadline | null): Promise<SetLeverageResult> {
+    deadline?.throwIfExpired();
     logger.info(
       { symbol: args.symbol, leverage: args.leverage },
       `[PositionManager] ${args.symbol} setLeverage request leverage=${args.leverage}`
     );
+    const signal = deadline?.signal;
     const result = await this.executeWrite(
-      () => withRetryOn429({
-        fn: () => args.direction === undefined
-          ? this.exchangeConnector.futures.setLeverage(args.leverage, args.symbol)
-          : this.exchangeConnector.futures.setLeverage(args.leverage, args.symbol, {
-              direction: args.direction,
-            }),
-        contextLabel: `setLeverage ${args.symbol} leverage=${args.leverage}`,
-      }),
+      () => {
+        // The write queue may hand over its slot after the deadline: nothing is sent then.
+        deadline?.throwIfExpired();
+
+        return withRetryOn429({
+          fn: () => this.sendSetLeverage(args, signal),
+          contextLabel: `setLeverage ${args.symbol} leverage=${args.leverage}`,
+          signal,
+        });
+      },
       `setLeverage ${args.symbol}`
     );
+
+    if (deadline?.isExpired) {
+      logger.warn(
+        { symbol: args.symbol, leverage: args.leverage, confirmedLeverage: result.confirmedLeverage },
+        `[PositionManager] ${args.symbol} setLeverage answered after its deadline: confirmed=${result.confirmedLeverage ?? 'none'} requested=${args.leverage}; the caller was already told the outcome is unknown`
+      );
+
+      return result;
+    }
 
     // The log states what the exchange CONFIRMED, not an echo of the request: before 14.08.2026
     // this line printed the requested value as "response ok", which read as a confirmation while
@@ -673,6 +753,19 @@ export class PositionManager {
     );
 
     return result;
+  }
+
+  private sendSetLeverage(args: SetLeverageArgs, signal: AbortSignal | undefined): Promise<SetLeverageResult> {
+    if (args.direction === undefined && signal === undefined) {
+      return this.exchangeConnector.futures.setLeverage(args.leverage, args.symbol);
+    }
+
+    const options: SetLeverageOptions = {
+      ...(args.direction !== undefined ? { direction: args.direction } : {}),
+      ...(signal !== undefined ? { signal } : {}),
+    };
+
+    return this.exchangeConnector.futures.setLeverage(args.leverage, args.symbol, options);
   }
 
   public async setMarginMode(args: SetMarginModeArgs): Promise<void> {
@@ -814,7 +907,7 @@ export class PositionManager {
     }
 
     if (args.leverage !== undefined) {
-      await this.setLeverageUnlocked({ symbol: args.symbol, leverage: args.leverage });
+      await this.setLeverageUnlocked({ symbol: args.symbol, leverage: args.leverage }, null);
     }
 
     if (args.marginMode !== undefined) {
@@ -869,9 +962,7 @@ export class PositionManager {
     }
 
     const isHedge = this.exchangeConnector.futuresPositionMode === PositionModeEnum.Hedge;
-    const expectedPositionIdx = direction === 'long' ? 1 : 2;
-    const expectedSide = direction === 'long' ? PositionSideEnum.Long : PositionSideEnum.Short;
-    const positionIdx = isHedge ? expectedPositionIdx : undefined;
+    const positionIdx = isHedge ? this.directionToPositionIdx(direction) : undefined;
 
     let snapshot: Position | null;
 
@@ -895,6 +986,61 @@ export class PositionManager {
       return { kind: 'absent', confidence: 'unconfirmed', reason: 'fetch_error', errorText };
     }
 
+    return this.classifyPositionSnapshot({ snapshot, direction, isHedge });
+  }
+
+  // One read of the symbol's position list answers for both sides; each side is classified by the
+  // very rules of readPositionState, so the pair equals two per-side reads at the cost of one.
+  public async readPositionStateByDirection(args: ReadPositionStateByDirectionArgs): Promise<PositionStateByDirection> {
+    const { symbol, marketType } = args;
+
+    if (marketType !== MarketTypeEnum.Futures) {
+      throw new Error(`readPositionStateByDirection supports MarketTypeEnum.Futures only (got ${marketType})`);
+    }
+
+    const isHedge = this.exchangeConnector.futuresPositionMode === PositionModeEnum.Hedge;
+
+    try {
+      const positionList = (await this.exchangeConnector.futures.fetchPositionList(symbol)).filter(position => position.symbol === symbol);
+      const longSnapshot = selectPositionSnapshot({ positionList, symbol, positionIdx: isHedge ? this.directionToPositionIdx('long') : undefined });
+      const shortSnapshot = selectPositionSnapshot({ positionList, symbol, positionIdx: isHedge ? this.directionToPositionIdx('short') : undefined });
+
+      this.readStateLogThrottle.throttled({
+        logger,
+        level: 'info',
+        key: `readPositionStateByDirection:${symbol}`,
+        windowMs: READ_POSITION_STATE_LOG_THROTTLE_MS,
+        payload: { symbol, count: positionList.length, longContracts: longSnapshot?.contracts ?? null, shortContracts: shortSnapshot?.contracts ?? null },
+        message: `[PositionManager] ${symbol} readPositionStateByDirection fetchPositionList response count=${positionList.length} long=${longSnapshot?.contracts ?? 'null'} short=${shortSnapshot?.contracts ?? 'null'}`,
+      });
+
+      return {
+        long: this.classifyPositionSnapshot({ snapshot: longSnapshot, direction: 'long', isHedge }),
+        short: this.classifyPositionSnapshot({ snapshot: shortSnapshot, direction: 'short', isHedge }),
+      };
+    } catch (error: unknown) {
+      const errorText = describeError(error);
+      logger.warn(
+        { symbol, error },
+        `[PositionManager] ${symbol} readPositionStateByDirection fetchPositionList failed — returning absent/unconfirmed for both sides`,
+      );
+
+      return {
+        long: { kind: 'absent', confidence: 'unconfirmed', reason: 'fetch_error', errorText },
+        short: { kind: 'absent', confidence: 'unconfirmed', reason: 'fetch_error', errorText },
+      };
+    }
+  }
+
+  private directionToPositionIdx(direction: Direction): number {
+    return direction === 'long' ? 1 : 2;
+  }
+
+  private classifyPositionSnapshot(args: ClassifyPositionSnapshotArgs): PositionStateResult {
+    const { snapshot, direction, isHedge } = args;
+    const expectedPositionIdx = this.directionToPositionIdx(direction);
+    const expectedSide = direction === 'long' ? PositionSideEnum.Long : PositionSideEnum.Short;
+
     if (snapshot === null) {
       return { kind: 'absent', confidence: 'confirmed', reason: 'no_record' };
     }
@@ -910,6 +1056,19 @@ export class PositionManager {
     }
 
     if (!isHedge && snapshot.side !== PositionSideEnum.Both && snapshot.side !== expectedSide) {
+      return { kind: 'ambiguous', reason: 'side_mismatch', position: snapshot };
+    }
+
+    // One-way Binance reports the single slot as side BOTH and keeps the direction apart (live demo
+    // answer 23.11.2026: a short read back as side "both", direction "short"), so the slot goes by
+    // direction — the opposite one is the same side mismatch Bybit's "Sell" gives above.
+    const oppositeDirection: Direction = direction === 'long' ? 'short' : 'long';
+    const isOppositeOneWaySlot = !isHedge
+      && snapshot.contracts > 0
+      && snapshot.side === PositionSideEnum.Both
+      && snapshot.direction === oppositeDirection;
+
+    if (isOppositeOneWaySlot) {
       return { kind: 'ambiguous', reason: 'side_mismatch', position: snapshot };
     }
 
@@ -943,10 +1102,9 @@ export class PositionManager {
     }
   }
 
-  // Binance keeps conditional (algo) orders OUT of the plain open-order list — a stop resting on
-  // the symbol is invisible to fetchOpenOrders and must be read separately. Bybit's plain list may
-  // already include them, so both calls run and duplicates (same order.id) are dropped, keeping the
-  // first occurrence.
+  // The plain list holds plain orders only on every exchange (Bybit's is asked with its own filter),
+  // so a stop resting on the symbol is read by the conditional call. Duplicates (same order.id) are
+  // still dropped, keeping the first occurrence, so an id is never listed twice.
   public async readOpenOrderList(args: ReadOpenOrderListArgs): Promise<Order[]> {
     const { symbol, marketType } = args;
     const client = this.exchangeConnector.getClient(marketType);
@@ -977,16 +1135,15 @@ export class PositionManager {
           contextLabel: `readOpenOrderList plain ${symbol}`,
         }),
         withRetryOn429({
-          fn: () => client.fetchOpenConditionalOrders('USDT'),
+          fn: () => client.fetchOpenConditionalOrders(DEFAULT_CONDITIONAL_SETTLE_COIN, symbol),
           contextLabel: `readOpenOrderList conditional ${symbol}`,
         }),
       ]);
 
-      const symbolConditionalOrderList = conditionalOrderList.filter(order => order.symbol === symbol);
       const seenIdSet = new Set<string>();
       const mergedOrderList: Order[] = [];
 
-      for (const order of [...plainOrderList, ...symbolConditionalOrderList]) {
+      for (const order of [...plainOrderList, ...conditionalOrderList]) {
         if (seenIdSet.has(order.id)) {
           continue;
         }
@@ -996,8 +1153,8 @@ export class PositionManager {
       }
 
       logger.info(
-        { symbol, marketType, plainCount: plainOrderList.length, conditionalCount: symbolConditionalOrderList.length, count: mergedOrderList.length },
-        `[PositionManager] ${symbol} readOpenOrderList response count=${mergedOrderList.length} (plain=${plainOrderList.length}, conditional=${symbolConditionalOrderList.length})`
+        { symbol, marketType, plainCount: plainOrderList.length, conditionalCount: conditionalOrderList.length, count: mergedOrderList.length },
+        `[PositionManager] ${symbol} readOpenOrderList response count=${mergedOrderList.length} (plain=${plainOrderList.length}, conditional=${conditionalOrderList.length})`
       );
 
       return mergedOrderList;
@@ -1095,8 +1252,7 @@ export class PositionManager {
     return readAccountBalance(this.exchangeConnector.futures);
   }
 
-  // Only the plain list: Binance keeps conditional (algo) orders out of it — they are read by
-  // readOpenConditionalOrderList.
+  // Only the plain list, on every exchange: conditional orders are read by readOpenConditionalOrderList.
   public async readOpenPlainOrderList(args: ReadOpenPlainOrderListArgs): Promise<Order[]> {
     const { marketType, symbol } = args;
     const client = this.exchangeConnector.getClient(marketType);
@@ -1107,21 +1263,16 @@ export class PositionManager {
     });
   }
 
-  // The exchange answers the conditional list per settlement coin, never per symbol — the symbol
-  // filter is applied here.
+  // With a symbol the exchange itself answers for that symbol only — a one-symbol action never
+  // reads the whole account.
   public async readOpenConditionalOrderList(args: ReadOpenConditionalOrderListArgs = {}): Promise<Order[]> {
     const { symbol } = args;
     const settleCoin = args.settleCoin ?? DEFAULT_CONDITIONAL_SETTLE_COIN;
-    const orderList = await withRetryOn429({
-      fn: () => this.exchangeConnector.futures.fetchOpenConditionalOrders(settleCoin),
+
+    return withRetryOn429({
+      fn: () => this.exchangeConnector.futures.fetchOpenConditionalOrders(settleCoin, symbol),
       contextLabel: `readOpenConditionalOrderList ${symbol ?? 'all'} ${settleCoin}`,
     });
-
-    if (symbol === undefined) {
-      return orderList;
-    }
-
-    return orderList.filter(order => order.symbol === symbol);
   }
 
   public async readPositionLeverage(symbol: string): Promise<number | null> {

@@ -15,7 +15,7 @@
 
 ## Зависимость
 
-Использует `@solncebro/exchange-engine` `>=0.27.0 <1.0.0` (с 3.24.0: субсчета, обрыв и возврат личного потока, ступени плеча; из реестра npm; открытый диапазон вместо точной версии — с 3.21.0, чтобы в дереве потребителя не заводилось второй копии слоя связи). Все низкоуровневые операции делегируются этой библиотеке. **Прямые импорты из `@solncebro/exchange-engine` сторонними потребителями запрещены** — единая точка входа `@solncebro/trade-engine`.
+Использует `@solncebro/exchange-engine` `>=0.28.0 <1.0.0` (с 3.24.0: субсчета, обрыв и возврат личного потока, ступени плеча; из реестра npm; открытый диапазон вместо точной версии — с 3.21.0, чтобы в дереве потребителя не заводилось второй копии слоя связи). Все низкоуровневые операции делегируются этой библиотеке. **Прямые импорты из `@solncebro/exchange-engine` сторонними потребителями запрещены** — единая точка входа `@solncebro/trade-engine`.
 
 Начиная с exchange-engine 0.22.1 он объявляет `@solncebro/websocket-engine` `>=0.6.0 <1.0.0` одолженной (peer) зависимостью и собственной копии канала не заводит — trade-engine поэтому тоже объявляет `@solncebro/websocket-engine` прямой зависимостью (не импортирует его сам), чтобы в процессе потребителя канал всегда был ровно один.
 
@@ -32,12 +32,13 @@ const connector = new ExchangeConnector(
   klineWatchdogConfig,   // 5-й — опционально (3.5.0)
   rateLimitConfig,       // 6-й — опционально (3.5.0)
   streamWatchdogConfig,  // 7-й — опционально (3.6.0): orderbook/publicTrade/markPrice watchdog
-  tradeSymbolsRefreshConfig // 8-й — опционально: { tradeSymbolsRefreshIntervalMs } (сутки; 0 — выключить)
+  tradeSymbolsRefreshConfig, // 8-й — опционально: { tradeSymbolsRefreshIntervalMs } (сутки; 0 — выключить)
+  tickerPollingConfig        // 9-й — опционально (3.26.0): { isEnabled, marketTypeList } общего опроса тикеров
 );
 await connector.initialize();
 // → loadTradeSymbols (futures + spot) обёрнут в withRetryOn429
 // → getOrderRateLimit() → создаётся RateLimitedRequestQueue (если rateLimitConfig не null)
-// → installPriceTickSnapper() (3.17.0) — подключает formatPrice/snapPriceToTick к тиковой сетке символов
+// → installPriceTickSnapper() (3.17.0) — подключает formatPrice/snapPriceToTick к тиковой сетке символов и ставит рядом источник шага цены для readPriceTickSize
 // → fetchTickers через withRetryOn429, периодическое обновление каждые 30 сек
 // → klineWatchdog запускается (если включён)
 // → заводится суточное обновление инструментов: ближайшие 00:05 UTC + случайный сдвиг 0–120 сек
@@ -110,7 +111,8 @@ connector.stopWatchingMarkPrices();  // отписка + очистка кэша
 ## Тикеры
 
 - Хранятся в `Map<string, Ticker>` с ключом `"marketType:symbol"` (например `"futures:BTCUSDT"`)
-- Обновляются каждые 30 секунд через `updateTickers()`
+- Обновляются каждые 30 секунд через `updateTickers()` — только по рынкам из `tickerPollingConfig.marketTypeList` (умолчание: фьючерсы и спот); при `isEnabled: false` общего опроса нет вовсе (3.26.0)
+- Один символ: `refreshTicker(symbol, marketType)` → `Ticker | null` — читает `fetchTicker`, пишет в тот же кэш тем же ключом; моложе 5 с — из кэша, одновременные вызовы делят один запрос, у ведомого коннектора вызов уходит основному; при отказе — `warn` и кэш (не бросает); третий аргумент `{ shouldServeCacheOnFailure?: boolean }`: `false` — строгое чтение, при отказе возвращается `null`, а не кэш (кэш может быть ценой общего опроса возрастом до 30 с, и тот, кто просит свежую цену, не должен принять её за свежую) (3.26.0)
 - Получение: `getTicker(symbol, marketType)` → `Ticker | undefined`
 - Ticker содержит: `{ lastPrice, priceChangePercent, high, low, ... }`
 
@@ -136,6 +138,7 @@ connector.stopWatchingMarkPrices();  // отписка + очистка кэша
 `resolveFuturesSymbol(raw)` / `resolveSpotSymbol(raw)` → `{ symbol, isFound }` (`ResolvedSymbol`):
 1. разбор ввода; 2. `waitForTickersReady(15 с)`; 3. `findSymbolWithPrefix` (как есть, затем 10…1000000 спереди);
 4. множитель ПОСЛЕ основы — у Bybit `SHIB1000USDT` (только здесь, `resolveSymbolWithPrefix` так не ищет);
+4а. не нашли в кэше тикеров (опрос выключен, кэш пуст) — те же кандидаты в том же порядке по списку инструментов `tradeSymbols` рынка (3.26.0); найденное в кэше выбирается как раньше;
 5. `ensureFuturesTradeSymbolLoaded` / `ensureSpotTradeSymbolLoaded` — спецификация, при нужде догрузка.
 `findSymbolWithPrefix` — промах = null; `resolveSymbolWithPrefix` — прежний: промах = предупреждение + исходное имя.
 
@@ -143,6 +146,7 @@ connector.stopWatchingMarkPrices();  // отписка + очистка кэша
 
 `initialize()` запускает кэш тикеров без ожидания. `waitForTickersReady(timeoutMs = 30000, marketType = Futures)`
 ждёт первый снимок рынка; не бросает, `false` — не дождались (чтение упало, следующий круг через 30 с).
+Если общий опрос выключен или рынка нет в `tickerPollingConfig.marketTypeList`, возвращает `false` сразу, без ожидания (3.26.0).
 
 ## Коннектор без ключей (3.24.0)
 
@@ -176,6 +180,8 @@ Bybit и OKX читают ступени без ключа.
 ## Заявки и позиции — в отдельном файле
 
 Создание ордеров, отличия OKX, методы `PositionManager` и методы коннектора без сырого клиента (`readKlines`, `isUserDataStreamConnected`, `getRateLimitState`, `amountToFuturesPrecision`, делегаты сайзинга) вынесены в [`exchange-connector-orders.md`](exchange-connector-orders.md) (см. таблицу «Детальная документация» вверху).
+
+**Девятый параметр `tickerPollingConfig`** (опционально, `TickerPollingConfig`, 3.26.0) — общий опрос тикеров: `{ isEnabled?, marketTypeList? }`, умолчание — включён, `[Futures, Spot]`.
 
 **Восьмой параметр `tradeSymbolsRefreshConfig`** (опционально, `TradeSymbolsRefreshConfig`) — расписание встроенного обновления инструментов: `{ tradeSymbolsRefreshIntervalMs? }`, умолчание — 24 часа, `0` (или меньше) выключает таймер совсем. Подробности — раздел «Суточное обновление инструментов» ниже.
 
@@ -212,6 +218,7 @@ Bybit и OKX читают ступени без ключа.
 | `getUserDataStreamRouter(marketType?)` | `UserDataStreamRouter` | Один личный поток на рынок (3.24.0) |
 | `get subAccounts` | `SubAccountGateway` | Субсчета главного счёта (3.24.0) |
 | `getTicker(symbol, marketType)` | `Ticker \| undefined` | Текущий тикер из кэша |
+| `refreshTicker(symbol, marketType, options?)` | `Promise<Ticker \| null>` | Прочитать один тикер и положить в кэш; не бросает; `options.shouldServeCacheOnFailure: false` — при отказе `null` вместо кэша (3.26.0) |
 | `startWatchingMarkPrices()` | `void` | Подписка на real-time mark price (idempotent) |
 | `stopWatchingMarkPrices()` | `void` | Отписка и очистка кэша mark price |
 | `getMarkPrice(symbol)` | `MarkPriceUpdate \| undefined` | Последний mark price из кэша |

@@ -522,7 +522,36 @@ describe('PersistentTradeJournal buffering', () => {
     await journal.shutdown();
 
     expect(tradesTable()[0].status).toBe('closed');
-    await expect(journal.flushSummaryNow('T')).resolves.toBe(false);
+    // Eviction is asserted through getSummary; flushSummaryNow now confirms a batch-persisted terminal summary.
+    expect(journal.getSummary('T')).toBeUndefined();
+    await expect(journal.flushSummaryNow('T')).resolves.toBe(true);
+  });
+
+  it('confirms an immediate write for a terminal summary the batch flush already persisted', async () => {
+    let writeCount = 0;
+    mockBeforeWrite = async () => { writeCount += 1; };
+    const journal = createJournal();
+
+    try {
+      journal.putSummary('CLOSED', { id: 'CLOSED', symbol: 'BTCUSDT', status: 'closed', mode: 'paper' });
+      await journal.shutdown();
+
+      // One summary write is several database operations (insert-if-absent plus guarded update).
+      const writeCountAfterBatch = writeCount;
+
+      expect(writeCountAfterBatch).toBeGreaterThan(0);
+      await expect(journal.flushSummaryNow('CLOSED')).resolves.toBe(true);
+      expect(writeCount).toBe(writeCountAfterBatch);
+      expect(tradesTable()[0].status).toBe('closed');
+    } finally {
+      mockBeforeWrite = null;
+    }
+  });
+
+  it('still reports false for an id that was never journaled', async () => {
+    const journal = createJournal();
+
+    await expect(journal.flushSummaryNow('unknown-id')).resolves.toBe(false);
   });
 });
 
@@ -874,6 +903,28 @@ describe('PersistentTradeJournal paper state', () => {
 
     await expect(journal.savePaperStateConfirmed({ symbol: 'BTCUSDT' })).resolves.toBe(true);
     await expect(journal.removePaperStateConfirmed('BTCUSDT')).resolves.toBe(true);
+  });
+
+  it('narrows the paper-state delete to the entry named by extraMatch', async () => {
+    mockTableByName.set('test_paper_state', [
+      { symbol: 'BTCUSDT', entry_time: 1795248022791 },
+      { symbol: 'BTCUSDT', entry_time: 1795248099999 },
+    ]);
+    const journal = createJournal();
+
+    await expect(journal.removePaperStateConfirmed('BTCUSDT', { entry_time: 1795248022791 })).resolves.toBe(true);
+    expect(mockTableByName.get('test_paper_state')).toEqual([{ symbol: 'BTCUSDT', entry_time: 1795248099999 }]);
+  });
+
+  it('deletes by the key column alone when no extraMatch is given', async () => {
+    mockTableByName.set('test_paper_state', [
+      { symbol: 'BTCUSDT', entry_time: 1795248022791 },
+      { symbol: 'ETHUSDT', entry_time: 1795248022791 },
+    ]);
+    const journal = createJournal();
+
+    await expect(journal.removePaperStateConfirmed('BTCUSDT')).resolves.toBe(true);
+    expect(mockTableByName.get('test_paper_state')).toEqual([{ symbol: 'ETHUSDT', entry_time: 1795248022791 }]);
   });
 
   it('reports unconfirmed paper-state writes when the database is disabled', async () => {

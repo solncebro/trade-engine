@@ -4,7 +4,7 @@
 
 ## Реэкспорты из exchange-engine (3.19.0 — сквозной проброс типов)
 
-Из `@solncebro/exchange-engine` (`>=0.27.0 <1.0.0` с 3.24.0, из реестра npm — диапазон с 3.21.0) реэкспортируются:
+Из `@solncebro/exchange-engine` (`>=0.28.0 <1.0.0` с 3.26.0, из реестра npm — диапазон с 3.21.0) реэкспортируются:
 
 - **Значения** (enum'ы, константы, функции, классы) — поимённым списком в `src/types/index.ts` и `src/index.ts`/`src/exchange.ts`: `MARKET_TYPE_LIST`, `ExchangeNameEnum`, `MarginModeEnum`, `MarketTypeEnum`, `MarketUnitEnum`, `OrderFilterEnum`, `OrderSideEnum`, `OrderTypeEnum`, `PositionModeEnum`, `PositionSideEnum`, `SubAccountStatusEnum`, `SubAccountTransferDirectionEnum`, `SubAccountTransferStatusEnum` (3.24.0), `TimeInForceEnum`, `TradeSymbolTypeEnum`, `TriggerByEnum`, `WalletTypeEnum` (3.24.0), `WebSocketConnectionTypeEnum`, `WorkingTypeEnum`, `ExchangeError`, `formatWebSocketConnectionsReport`, `parseBybitOrderbookRawFrame`.
 - **Типы — сквозняком, без поимённого перечня**: `src/types/index.ts` (и, через `export * from './types'`, оба входа пакета — `.` и `./exchange`) делают `export type * from '@solncebro/exchange-engine'`. Любой тип нижней библиотеки виден потребителю автоматически, включая появившиеся уже после этой правки — заводить отдельный реэкспорт под новый тип не нужно.
@@ -17,6 +17,7 @@
 - **`PositionManager`** (`src/core/positionManager.ts`) — высокоуровневый семантический API; доступ через `ExchangeConnector.positionManager`.
 - **`RateLimitedRequestQueue`** (`src/core/RateLimitedRequestQueue.ts`, 3.5.0) — sliding-window очередь с RPS-лимитом.
 - **`KlineSubscriptionWatchdog`** (`src/services/klineSubscriptionWatchdog.ts`, 3.5.0) — мониторинг и автовосстановление kline-подписок.
+- **`DeadlineExceededError`** (`src/utils/operationDeadline.ts`, 3.26.0; тип `DeadlineExceededErrorArgs`) — срок операции вышел, исход неизвестен; бросает `PositionManager.setLeverage` при заданном `SetLeverageArgs.timeoutMs` (`timeoutMs` — срок на всю операцию, `signal` — необязательный сигнал отмены в `withRetryOn429`).
 - **`withRetryOn429`** / **`withResultRetry`** (`src/core/withRetryOn429.ts`, 3.5.0) — функциональные retry-обёртки (`withReadRetry` удалён в 3.22.0 — та же функция под вторым именем).
 - **`PremiumIndexCalculator`** (`src/services/premiumIndexCalculator.ts`) — per-symbol EMA «премии» (`midPrice − markPrice`, окно 30s); значение забирается через `getPremiumAvg`, расчёта ценовых границ в библиотеке нет (уехал вместе с `OrderCalculator` в 3.13.0); не auto-wired.
 - **`TrendCalculator`** (`src/core/trendCalculator.ts`, 3.14.0) — статический расчёт тренда по структуре рынка: `computePivotList` (вершины/впадины), `assessTrend` (направление, слом, сила 0–100). → [подробнее](trend.md)

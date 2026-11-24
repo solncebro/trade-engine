@@ -3,6 +3,7 @@ export {
   formatWebSocketConnectionsReport,
   parseBybitOrderbookRawFrame,
   parseOkxOrderbookRawFrame,
+  roundToStep,
 } from '@solncebro/exchange-engine';
 
 export { ExchangeConnector } from './services/exchangeConnector';
@@ -13,6 +14,7 @@ export type {
   ResolvedSymbol,
   StreamWatchdogConfigMap,
   StreamWatchdogStreamConfig,
+  TickerPollingConfig,
   TradeSymbolsRefreshConfig,
 } from './services/exchangeConnector';
 export { SubAccountGateway } from './services/subAccountGateway';
@@ -156,6 +158,7 @@ export type {
   PositionManagerModifyBatchOrderItem,
   PositionManagerModifyBatchOrdersArgs,
   PositionManagerModifyOrderArgs,
+  PositionStateByDirection,
   PositionStateResult,
   ReadAccountTradesArgs,
   ReadAllPositionsArgs,
@@ -171,6 +174,7 @@ export type {
   ReadOrderExecutionSummaryArgs,
   ReadOrderHistoryArgs,
   ReadPositionStateArgs,
+  ReadPositionStateByDirectionArgs,
   PositionManagerAddIsolatedPositionMarginArgs,
   SetLeverageArgs,
   SetMarginModeArgs,
@@ -299,6 +303,8 @@ export * from './utils/feederConnectionMonitor';
 export * from './utils/klineList';
 export * from './utils/loggedExchangeCall';
 export * from './utils/timeout';
+export { DeadlineExceededError } from './utils/operationDeadline';
+export type { DeadlineExceededErrorArgs } from './utils/operationDeadline.types';
 export * from './utils/sleep';
 export * from './utils/nestedField';
 export * from './utils/perKeySerializer';

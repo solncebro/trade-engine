@@ -1,6 +1,8 @@
 import {
+  configurePriceTickSizeReader,
   configurePriceTickSnapper,
   formatPrice,
+  readPriceTickSize,
   snapPriceToTick,
 } from '../src/utils/priceFormat';
 
@@ -112,5 +114,55 @@ describe('formatPrice', () => {
     });
 
     expect(formatPrice('PROMUSDT', 2.9615797)).toBe('2.9615797');
+  });
+});
+
+describe('readPriceTickSize', () => {
+  const readTickSize = (symbol: string): number | null => TICK_BY_SYMBOL[symbol] ?? null;
+
+  it('returns null when nothing is installed', () => {
+    expect(readPriceTickSize('PROMUSDT')).toBeNull();
+  });
+
+  it('returns null when a reader is set but no snapper is installed', () => {
+    configurePriceTickSizeReader(readTickSize);
+
+    expect(readPriceTickSize('PROMUSDT')).toBeNull();
+  });
+
+  it('returns the tick of a known symbol and null for an unknown one', () => {
+    configurePriceTickSnapper(snapper);
+    configurePriceTickSizeReader(readTickSize);
+
+    expect(readPriceTickSize('PROMUSDT')).toBe(0.0001);
+    expect(readPriceTickSize('NOPEUSDT')).toBeNull();
+  });
+
+  it('installing or clearing the snapper clears the reader', () => {
+    configurePriceTickSnapper(snapper);
+    configurePriceTickSizeReader(readTickSize);
+    configurePriceTickSnapper(snapper);
+
+    expect(readPriceTickSize('PROMUSDT')).toBeNull();
+
+    configurePriceTickSizeReader(readTickSize);
+    configurePriceTickSnapper(null);
+
+    expect(readPriceTickSize('PROMUSDT')).toBeNull();
+  });
+
+  it('treats a non-positive, non-finite or throwing reading as unknown', () => {
+    configurePriceTickSnapper(snapper);
+
+    configurePriceTickSizeReader(() => 0);
+    expect(readPriceTickSize('PROMUSDT')).toBeNull();
+
+    configurePriceTickSizeReader(() => Number.NaN);
+    expect(readPriceTickSize('PROMUSDT')).toBeNull();
+
+    configurePriceTickSizeReader(() => {
+      throw new Error('boom');
+    });
+    expect(readPriceTickSize('PROMUSDT')).toBeNull();
   });
 });

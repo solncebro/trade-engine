@@ -150,7 +150,7 @@ npx jest --config jest.integration.config.js --runInBand --testPathPatterns=<pat
 - **Ошибки — не исключения**: `createOrder()` возвращает `errorText` в результате, не бросает. Проверка через `isOrderSuccessful(result)`. Прямые вызовы `connector.spot`/`connector.futures` могут бросать исключения — потребитель обрабатывает их сам.
 - **Единая точка входа**: внешние приложения импортируют ТОЛЬКО из `@solncebro/trade-engine`. Прямые импорты из `@solncebro/exchange-engine` запрещены. Значения нижней библиотеки реэкспортируются поимённо (`formatWebSocketConnectionsReport` и т.д.) — кроме фабрики `Exchange`, которая остаётся доступна ТОЛЬКО как тип (3.19.0). Типы нижней библиотеки отдаются сквозняком — `export type * from '@solncebro/exchange-engine'` — без поимённого перечня, поэтому новый тип виден потребителю сам.
 - **Demo trading**: `ExchangeConfig.isDemoMode = true`, никаких ручных URL-переопределений.
-- **Биржи**: `@solncebro/exchange-engine` `>=0.27.0 <1.0.0` (из реестра npm, диапазон, а не точная версия — с 3.21.0; нижняя граница 0.26.0 — с 3.24.0). Bybit: WebSocket для ордеров.
+- **Биржи**: `@solncebro/exchange-engine` `>=0.28.0 <1.0.0` (из реестра npm, диапазон, а не точная версия — с 3.21.0; нижняя граница 0.28.0 — с 3.26.0). Bybit: WebSocket для ордеров.
 - **Telegram**: `@solncebro/telegram-engine` `>=0.6.0 <1.0.0` — единственный путь к Telegram; `telegraf` и `telegram` в зависимостях пакета не объявлены (3.24.0).
 - **Map-коллекции**: `SymbolMappingByExchange` и `ExchangeConnectorByName` — это `Map`, не объекты.
 
