@@ -105,6 +105,10 @@ export interface FuturesOrderRules {
   maxAmount: number;
 }
 
+export interface SubscribeConnectorKlinesArgs extends SubscribeKlinesArgs {
+  marketType: MarketTypeEnum;
+}
+
 export interface ReadKlinesArgs extends FetchPageWithLimitArgs {
   symbol: string;
   interval: KlineInterval;
@@ -1299,6 +1303,15 @@ export class ExchangeConnector {
 
   public unsubscribeOrderBook(symbol: string, marketType: MarketTypeEnum): void {
     this.orderBookTrackerByMarketType.get(marketType)?.unsubscribe(symbol);
+  }
+
+  // Goes through the watchdog-proxied client (getStreamClient) so the kline watchdog sees the subscription.
+  public subscribeKlines(args: SubscribeConnectorKlinesArgs): void {
+    this.getStreamClient(args.marketType).subscribeKlines({ symbol: args.symbol, interval: args.interval, handler: args.handler });
+  }
+
+  public unsubscribeKlines(args: SubscribeConnectorKlinesArgs): void {
+    this.getStreamClient(args.marketType).unsubscribeKlines({ symbol: args.symbol, interval: args.interval, handler: args.handler });
   }
 
   /** The live merged book, or null while no snapshot is held (not subscribed / not arrived yet / sequence broke). */

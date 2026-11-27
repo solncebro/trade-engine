@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.27.0] - 2026-11-27 — Подписка на клайны одной монеты через единую дверь коннектора
+
+- **`ExchangeConnector.subscribeKlines(args)` / `unsubscribeKlines(args)`** — подписка и отписка клайнов одной монеты через коннектор. Аргумент — `SubscribeConnectorKlinesArgs`: `symbol`, `interval`, `handler` (как у `SubscribeKlinesArgs`) плюс `marketType`. Вызов идёт через прокси-клиент рынка (`getStreamClient`), поэтому сторож клайнов видит подписку и следит за её здоровьем; обращение к сырому клиенту его обходит. Отписка принимает те же `symbol`, `interval`, `handler`, с которыми подписывались. Дополнение, ломающих изменений нет. (`src/services/exchangeConnector.ts`, `tests/exchangeConnectorKlines.test.ts`)
+- **Тип `SubscribeConnectorKlinesArgs`** экспортируется из корня пакета. (`src/index.ts`)
+- **Зависимости не менялись:** `@solncebro/exchange-engine` по-прежнему `>=0.28.0 <1.0.0`.
+
+Сборка проверена целиком (`yarn build`: lint → тесты → `tsc`) 27.11.2026: 61 набор, 948 тестов, ошибок lint и tsc нет — зелёная.
+
 ## [3.26.0] - 2026-11-17 — Выключаемый общий опрос тикеров и чтение одного тикера
 
 - **`TickerPollingConfig` — девятый параметр конструктора `ExchangeConnector`** (необязательный): `{ isEnabled?, marketTypeList? }`. Умолчание — как раньше: опрос включён, рынки `[Futures, Spot]`, поведение прежних потребителей не меняется. `marketTypeList` сужает опрос до перечисленных рынков; `isEnabled: false` — ни первого запроса, ни таймера. `waitForTickersReady` для рынка, которого общий опрос не ведёт (выключен или рынка нет в списке), сразу возвращает `false`, не дожидаясь срока. Ведомый коннектор (`shareMarketDataFrom`) по-прежнему сам не опрашивает.

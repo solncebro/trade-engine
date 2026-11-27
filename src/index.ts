@@ -14,6 +14,7 @@ export type {
   ResolvedSymbol,
   StreamWatchdogConfigMap,
   StreamWatchdogStreamConfig,
+  SubscribeConnectorKlinesArgs,
   TickerPollingConfig,
   TradeSymbolsRefreshConfig,
 } from './services/exchangeConnector';

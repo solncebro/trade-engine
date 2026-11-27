@@ -73,6 +73,7 @@
 | Rate Limit (3.5.0) | при `initialize()` — `getOrderRateLimit()` → `RateLimitedRequestQueue` для write-операций (можно override через `rateLimitConfig` в конструкторе) |
 | Kline Watchdog (3.5.0) | опциональный `KlineSubscriptionWatchdog` (5-й аргумент конструктора) — обёртывает `subscribeKlines`/`unsubscribeKlines` через Proxy, восстанавливает overdue-подписки; с 3.22.0 — обёртка над общим `StreamSubscriptionWatchdog` + `KlineWatchdogStrategy` |
 | Стакан (3.22.0) | `subscribeOrderBook`/`getOrderBook`/`unsubscribeOrderBook`/`fetchOrderBook` — единственная дверь к глубине; внутри `OrderBookTracker` |
+| Клайны одной монеты (3.27.0) | `subscribeKlines`/`unsubscribeKlines` — подписка на клайны одной монеты через прокси-клиент со сторожем |
 | Read Retry (3.5.0) | `initialize()` и `updateTickers()` обёрнуты в `withRetryOn429()` (`withReadRetry` удалён в 3.22.0 — та же функция под вторым именем) |
 | Аккаунт | `getAccountId()` — первые 16 символов SHA256-хеша API-ключа |
 

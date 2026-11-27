@@ -38,6 +38,7 @@ Watchdog handler-агностичен: примитивы `registerKey/recordFre
 Единственная дверь к глубине для потребителя — методы коннектора, не сырой клиент:
 
 - `subscribeOrderBook(symbol, marketType)` / `unsubscribeOrderBook(symbol, marketType)` — со счётчиком ссылок; топик открывается на первой подписке символа, закрывается на последней. Бросает, если у рынка нет потока стакана (Binance spot).
+- `subscribeKlines({ symbol, interval, marketType, handler })` / `unsubscribeKlines(тот же объект)` — подписка на клайны одной монеты через прокси-клиент (`getStreamClient`): сторож клайнов видит подписку; отписка передаёт тот же `handler`.
 - `getOrderBook(symbol, marketType): LiveOrderBook | null` — живая склеенная книга (числовые уровни, продавцы по возрастанию, покупатели по убыванию, `updateId`, время кадра); `null`, пока не пришёл первый снимок или пока после разрыва нумерации дельт ждём свежий.
 - `fetchOrderBook(symbol, marketType, limit?)` — разовое чтение по REST (запасной путь), под `withRetryOn429`.
 
